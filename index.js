@@ -916,6 +916,7 @@ async function handleCallback(callbackQuery) {
       if (action === 'UPDATE' && existingRow > 0) {
         await db.updateLead(existingRow, parsed);
         await sendTelegram('editMessageText', { chat_id: chatId, message_id: messageId, text: `✅ <b>Updated!</b> Row ${existingRow} — <b>${esc(parsed.factory_name || parsed.factory_number)}</b>`, parse_mode: 'HTML' });
+        if (parsed.stage === 'Order Won') notifyOrderWon(parsed, createdBy).catch(() => {});
       } else {
         const result = await db.addLead(parsed, createdBy);
         if (result.conflict) {
@@ -924,6 +925,7 @@ async function handleCallback(callbackQuery) {
         }
         savedRowIndex = result.rowIndex;
         await sendTelegram('editMessageText', { chat_id: chatId, message_id: messageId, text: `✅ <b>Added!</b> New entry for <b>${esc(parsed.factory_name || parsed.factory_number)}</b> saved.`, parse_mode: 'HTML' });
+        if (parsed.stage === 'Order Won') notifyOrderWon(parsed, createdBy).catch(() => {});
       }
     } catch (err) {
       console.error('DB write error:', err.message);
@@ -968,6 +970,11 @@ async function handleCallback(callbackQuery) {
     try {
       await db.updateLead(rowIndex, { stage: stageName, stage_number: String(stageNum) });
       await sendTelegram('editMessageText', { chat_id: chatId, message_id: messageId, text: `✅ <b>Stage Updated!</b>\n<b>${esc(factoryNum)} — ${esc(factoryName)}</b>\nNow: <b>${stageName} (#${stageNum})</b>`, parse_mode: 'HTML' });
+      if (stageName === 'Order Won') {
+        const leads = await db.getLeads();
+        const lead  = leads.find(l => l.rowIndex === String(rowIndex));
+        if (lead) notifyOrderWon(lead, '').catch(() => {});
+      }
     } catch (err) {
       await sendTelegram('editMessageText', { chat_id: chatId, message_id: messageId, text: '🚨 <b>Failed to update stage.</b>', parse_mode: 'HTML' });
     }
@@ -1013,7 +1020,11 @@ app.post('/api/leads', authMiddleware, async (req, res) => {
 });
 
 app.put('/api/leads/:row', authMiddleware, async (req, res) => {
-  try { res.json(await db.updateLead(parseInt(req.params.row, 10), req.body)); }
+  try {
+    const result = await db.updateLead(parseInt(req.params.row, 10), req.body);
+    if (req.body.stage === 'Order Won') notifyOrderWon(req.body, req.user.username).catch(() => {});
+    res.json(result);
+  }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1258,24 +1269,36 @@ app.post('/api/leads/:id/claim', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-//  WEBAUTHN — Biometric login
-//  Set RP_ID + ORIGIN in .env when accessing from a mobile device
-//  on your LAN (e.g. RP_ID=192.168.1.100, ORIGIN=http://192.168.1.100:3000)
+//  WEBAUTHN — Biometric login (auto-detects origin from request)
 // ============================================================
 const RP_NAME = 'SalesCRM';
-const RP_ID   = process.env.RP_ID   || 'localhost';
-const ORIGIN  = process.env.ORIGIN  || `http://localhost:${PORT}`;
+
+// Detect the correct origin + rpId from the incoming request.
+// Env vars override if set; otherwise uses the request's Origin header.
+function getWebAuthnConfig(req) {
+  const envOrigin = process.env.ORIGIN;
+  const envRpId   = process.env.RP_ID;
+  if (envOrigin && envRpId) return { origin: envOrigin, rpId: envRpId };
+  const reqOrigin = (req.headers.origin || req.headers.referer || '').replace(/\/$/, '');
+  const origin = envOrigin || reqOrigin || `http://localhost:${PORT}`;
+  let rpId = envRpId;
+  if (!rpId) {
+    try { rpId = new URL(origin).hostname; } catch { rpId = 'localhost'; }
+  }
+  return { origin, rpId };
+}
 
 // 1. Get registration options (challenge) — user must be logged in
 app.post('/api/webauthn/register-options', authMiddleware, async (req, res) => {
   try {
+    const { origin, rpId } = getWebAuthnConfig(req);
     const user = await db.getUserByName(req.user.username);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
     const existing = await db.getWebAuthnCred(user.id);
     const options  = await generateRegistrationOptions({
       rpName:          RP_NAME,
-      rpID:            RP_ID,
+      rpID:            rpId,
       userID:          String(user.id),
       userName:        user.display_name,
       userDisplayName: user.display_name,
@@ -1291,7 +1314,7 @@ app.post('/api/webauthn/register-options', authMiddleware, async (req, res) => {
       }] : [],
     });
 
-    cache.put(`wa_reg_${user.id}`, options.challenge, 120);
+    cache.put(`wa_reg_${user.id}`, { challenge: options.challenge, origin, rpId }, 120);
     res.json(options);
   } catch (err) {
     console.error('WebAuthn register-options:', err.message);
@@ -1305,14 +1328,15 @@ app.post('/api/webauthn/register-verify', authMiddleware, async (req, res) => {
     const user = await db.getUserByName(req.user.username);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const expectedChallenge = cache.get(`wa_reg_${user.id}`);
-    if (!expectedChallenge) return res.status(400).json({ error: 'Challenge expired — try again.' });
+    const cached = cache.get(`wa_reg_${user.id}`);
+    if (!cached) return res.status(400).json({ error: 'Challenge expired — try again.' });
+    const { challenge: expectedChallenge, origin, rpId } = cached;
 
     const verification = await verifyRegistrationResponse({
       response:          req.body,
       expectedChallenge,
-      expectedOrigin:    ORIGIN,
-      expectedRPID:      RP_ID,
+      expectedOrigin:    origin,
+      expectedRPID:      rpId,
     });
 
     if (!verification.verified) return res.status(400).json({ error: 'Verification failed' });
@@ -1336,15 +1360,16 @@ app.post('/api/webauthn/register-verify', authMiddleware, async (req, res) => {
 // 3. Get authentication options (public — no login required)
 app.post('/api/webauthn/auth-options', async (req, res) => {
   try {
+    const { origin, rpId } = getWebAuthnConfig(req);
     const sessionId = crypto.randomBytes(16).toString('hex');
     const options   = await generateAuthenticationOptions({
-      rpID:              RP_ID,
+      rpID:              rpId,
       timeout:           60000,
-      allowCredentials:  [],        // empty = discoverable (passkey picker)
+      allowCredentials:  [],
       userVerification:  'preferred',
     });
 
-    cache.put(`wa_auth_${sessionId}`, options.challenge, 120);
+    cache.put(`wa_auth_${sessionId}`, { challenge: options.challenge, origin, rpId }, 120);
     res.json({ ...options, sessionId });
   } catch (err) {
     console.error('WebAuthn auth-options:', err.message);
@@ -1358,8 +1383,9 @@ app.post('/api/webauthn/auth-verify', async (req, res) => {
     const { credential, sessionId } = req.body;
     if (!credential || !sessionId) return res.status(400).json({ error: 'Missing credential or sessionId' });
 
-    const expectedChallenge = cache.get(`wa_auth_${sessionId}`);
-    if (!expectedChallenge) return res.status(400).json({ error: 'Challenge expired — try again.' });
+    const cached = cache.get(`wa_auth_${sessionId}`);
+    if (!cached) return res.status(400).json({ error: 'Challenge expired — try again.' });
+    const { challenge: expectedChallenge, origin, rpId } = cached;
 
     const user = await db.getUserByWebAuthnCredId(credential.id);
     if (!user) return res.status(400).json({ error: 'No biometric registered for this device. Log in with your PIN first and enable biometric.' });
@@ -1369,8 +1395,8 @@ app.post('/api/webauthn/auth-verify', async (req, res) => {
     const verification = await verifyAuthenticationResponse({
       response:          credential,
       expectedChallenge,
-      expectedOrigin:    ORIGIN,
-      expectedRPID:      RP_ID,
+      expectedOrigin:    origin,
+      expectedRPID:      rpId,
       authenticator: {
         credentialID:        Buffer.from(cred.credentialID, 'base64url'),
         credentialPublicKey: Buffer.from(cred.credentialPublicKey, 'base64url'),
@@ -1381,7 +1407,6 @@ app.post('/api/webauthn/auth-verify', async (req, res) => {
 
     if (!verification.verified) return res.status(400).json({ error: 'Biometric check failed' });
 
-    // Update replay-attack counter
     cred.counter = verification.authenticationInfo.newCounter;
     await db.saveWebAuthnCred(user.id, cred);
     cache.remove(`wa_auth_${sessionId}`);
@@ -1860,6 +1885,162 @@ function confirmEditKeyboard(uuid, currentLeadType = '') {
 }
 
 // Broadcast a follow-up opportunity to all team members (bid system)
+// ============================================================
+//  DAILY BRIEFINGS & NOTIFICATIONS
+// ============================================================
+
+function todayIST() {
+  return new Date().toLocaleDateString('en-IN', {
+    timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric',
+  }); // "01/07/2026"
+}
+
+function nowHHMM() {
+  return new Date().toLocaleTimeString('en-IN', {
+    timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).trim(); // "09:00"
+}
+
+function parseFollowUpDate(s) {
+  if (!s) return null;
+  const [d, m, y] = s.split('/');
+  if (!d || !m || !y) return null;
+  return new Date(Number(y), Number(m) - 1, Number(d));
+}
+
+async function sendToAllTelegram(text, opts = {}) {
+  const users = await db.getAllUsers();
+  for (const u of users) {
+    if (!u.telegram_user_id) continue;
+    try { await sendTelegram('sendMessage', { chat_id: u.telegram_user_id, text, parse_mode: 'HTML', ...opts }); }
+    catch (_) {}
+  }
+}
+
+async function sendMorningBriefing() {
+  try {
+    const leads  = await db.getLeads();
+    const today  = todayIST();
+    const todayD = parseFollowUpDate(today);
+
+    const active   = leads.filter(l => l.stage !== 'Lost');
+    const hot      = active.filter(l => l.lead_type === 'Hot');
+    const warm     = active.filter(l => l.lead_type === 'Warm');
+    const dueToday = active.filter(l => l.follow_up === today);
+    const overdue  = active.filter(l => {
+      if (!l.follow_up) return false;
+      const d = parseFollowUpDate(l.follow_up);
+      return d && d < todayD;
+    });
+
+    const lines = [
+      `🌅 <b>Good Morning! Daily Briefing</b>`,
+      `📅 ${today}`,
+      ``,
+      `📊 <b>Pipeline</b>  🔥 Hot: <b>${hot.length}</b>  🟡 Warm: <b>${warm.length}</b>  📋 Total: <b>${active.length}</b>`,
+    ];
+
+    if (dueToday.length) {
+      lines.push(``, `📅 <b>Follow-ups Due Today (${dueToday.length})</b>`);
+      dueToday.slice(0, 8).forEach(l => {
+        const e = { Hot: '🔥', Warm: '🟡', Cold: '🔵' }[l.lead_type] || '◎';
+        lines.push(`${e} ${esc(l.factory_name || l.factory_number)} — ${esc(l.stage || '—')}`);
+      });
+      if (dueToday.length > 8) lines.push(`   …and ${dueToday.length - 8} more`);
+    }
+
+    if (overdue.length) {
+      lines.push(``, `⚠️ <b>Overdue Follow-ups (${overdue.length})</b>`);
+      overdue.slice(0, 5).forEach(l => {
+        lines.push(`◎ ${esc(l.factory_name || l.factory_number)} — was due ${esc(l.follow_up)}`);
+      });
+      if (overdue.length > 5) lines.push(`   …and ${overdue.length - 5} more`);
+    }
+
+    if (!dueToday.length && !overdue.length) lines.push(``, `✅ No follow-ups due today — have a great day!`);
+
+    await sendToAllTelegram(lines.join('\n'));
+    console.log('📅 Morning briefing sent');
+  } catch (err) { console.error('Morning briefing error:', err.message); }
+}
+
+async function sendEveningBriefing() {
+  try {
+    const leads = await db.getLeads();
+    const today = todayIST(); // "01/07/2026"
+
+    const todayLeads = leads.filter(l => (l.last_updated || '').startsWith(today));
+    const ordersWon  = todayLeads.filter(l => l.stage === 'Order Won');
+    const newLeads   = todayLeads.filter(l => {
+      // Rough: if created_by is set and it's in today's updates, count as new
+      const notUpdatedStages = ['Order Won', 'Lost', 'Repeat Customer'];
+      return !notUpdatedStages.includes(l.stage);
+    });
+
+    const lines = [
+      `🌆 <b>End of Day Summary</b>`,
+      `📅 ${today}`,
+      ``,
+      `📦 Leads touched today: <b>${todayLeads.length}</b>  |  🏆 Orders Won: <b>${ordersWon.length}</b>`,
+    ];
+
+    if (ordersWon.length) {
+      lines.push(``, `🏆 <b>Orders Won Today</b>`);
+      ordersWon.forEach(l => {
+        const items = (l.items || []).map(i => `${i.product} ${i.quantity}`.trim()).filter(Boolean).join(', ');
+        lines.push(`✅ <b>${esc(l.factory_name || l.factory_number)}</b>${items ? ' — ' + esc(items) : ''}`);
+      });
+    }
+
+    if (todayLeads.length) {
+      lines.push(``, `📋 <b>Activity</b>`);
+      todayLeads.slice(0, 10).forEach(l => {
+        const e = { Hot: '🔥', Warm: '🟡', Cold: '🔵' }[l.lead_type] || '◎';
+        lines.push(`${e} ${esc(l.factory_name || l.factory_number)} → ${esc(l.stage || '—')} <i>${esc(l.created_by || '')}</i>`);
+      });
+      if (todayLeads.length > 10) lines.push(`   …and ${todayLeads.length - 10} more`);
+    } else {
+      lines.push(``, `No leads were updated today.`);
+    }
+
+    await sendToAllTelegram(lines.join('\n'));
+    console.log('🌆 Evening briefing sent');
+  } catch (err) { console.error('Evening briefing error:', err.message); }
+}
+
+async function notifyOrderWon(lead, byUser) {
+  try {
+    const items = (lead.items || []).map(i => `${i.product} ${i.quantity}${i.rate ? ' @₹' + i.rate : ''}`).join(', ');
+    const text = [
+      `🏆 <b>Order Won!</b>`,
+      ``,
+      `🏭 <b>${esc(lead.factory_name || lead.factory_number)}</b>`,
+      items        ? `📦 ${esc(items)}`   : '',
+      lead.area    ? `📍 ${esc(lead.area)}` : '',
+      `👤 Closed by: <b>${esc(byUser)}</b>`,
+    ].filter(Boolean).join('\n');
+    await sendToAllTelegram(text);
+  } catch (_) {}
+}
+
+const _briefingSent = { morning: '', evening: '' };
+
+function startDailyBriefings() {
+  setInterval(async () => {
+    const hhmm = nowHHMM();
+    const today = todayIST();
+    if (hhmm === '09:00' && _briefingSent.morning !== today) {
+      _briefingSent.morning = today;
+      await sendMorningBriefing();
+    }
+    if (hhmm === '19:00' && _briefingSent.evening !== today) {
+      _briefingSent.evening = today;
+      await sendEveningBriefing();
+    }
+  }, 60000);
+  console.log('   Briefings   : ⏰ 9:00 AM & 7:00 PM IST');
+}
+
 async function broadcastFollowUpAvailable(leadId, dateStr) {
   const leads = await db.getLeads();
   const lead  = leads.find(l => l.rowIndex === String(leadId));
@@ -1949,6 +2130,8 @@ async function startServer() {
     console.log(`\n🚀 SalesCRM running at http://localhost:${PORT}`);
     console.log(`   Database    : PostgreSQL (Aiven)`);
     console.log(`   Admin login : ${ADMIN_USER} / ${ADMIN_PASS}`);
+
+    startDailyBriefings();
 
     if (usePolling()) {
       console.log('   Mode        : POLLING (no webhook URL set)');

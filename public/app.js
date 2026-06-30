@@ -305,6 +305,8 @@ function navigate(page) {
   if (pageEl) pageEl.classList.add('active');
   document.querySelector(`[data-page="${page}"]`)?.classList.add('active');
   document.getElementById('page-title').textContent = PAGE_TITLES[page] || page;
+  // Chat page needs edge-to-edge layout (no content padding)
+  document.getElementById('content')?.classList.toggle('chat-mode', page === 'chat');
   renderPage(page);
 }
 
@@ -1896,8 +1898,108 @@ if ('serviceWorker' in navigator) {
 // ============================================================
 //  CHAT — In-app lead parser (replaces Telegram bot flow)
 // ============================================================
+
+const CHAT_PRODUCTS = [
+  { label: 'Hotmelt', icon: '🟠' }, { label: 'Latex', icon: '🟡' },
+  { label: 'BC', icon: '🔵' },      { label: 'Toluene', icon: '🧪' },
+  { label: 'R6', icon: '🔶' },      { label: 'MEK', icon: '🧴' },
+  { label: 'PU Adhesive', icon: '🟣' }, { label: 'Silicon', icon: '⚪' },
+];
+
+// ── Mobile keyboard: keep chat pinned above keyboard ─────
+function setupChatViewport() {
+  if (!window.visualViewport || window._chatVpSetup) return;
+  window._chatVpSetup = true;
+  const adjust = () => {
+    if (state.page !== 'chat') return;
+    const container = document.querySelector('.chat-container');
+    if (!container) return;
+    const topbarH = document.getElementById('topbar')?.offsetHeight || 60;
+    container.style.height = (window.visualViewport.height - topbarH) + 'px';
+    const box = document.getElementById('chat-messages');
+    if (box) box.scrollTop = box.scrollHeight;
+  };
+  window.visualViewport.addEventListener('resize', adjust);
+}
+
 function chatFocusInput() {
-  setTimeout(() => document.getElementById('chat-input')?.focus(), 50);
+  setupChatViewport();
+  setTimeout(() => {
+    const input = document.getElementById('chat-input');
+    input?.focus();
+    const box = document.getElementById('chat-messages');
+    if (box) box.scrollTop = box.scrollHeight;
+  }, 50);
+}
+
+// ── Chip insert ──────────────────────────────────────────
+function chatInsertChip(text) {
+  const input = document.getElementById('chat-input');
+  if (!input) return;
+  const cur = input.value.trimEnd();
+  input.value = cur ? cur + ' ' + text : text;
+  input.focus();
+  input.selectionStart = input.selectionEnd = input.value.length;
+  chatInputChanged(input.value);
+}
+
+// ── Product autocomplete ─────────────────────────────────
+function chatInputChanged(val) {
+  const ac = document.getElementById('chat-autocomplete');
+  if (!ac) return;
+  const words = val.trimEnd().split(/\s+/);
+  const last  = words[words.length - 1].toLowerCase();
+  if (last.length < 2) { ac.className = 'chat-autocomplete'; return; }
+  const matches = CHAT_PRODUCTS.filter(p =>
+    p.label.toLowerCase().startsWith(last) && p.label.toLowerCase() !== last
+  );
+  if (!matches.length) { ac.className = 'chat-autocomplete'; return; }
+  ac.innerHTML = matches.map(m =>
+    `<div class="chat-ac-item" onmousedown="chatSelectProduct('${m.label}')">
+       <span class="chat-ac-icon">${m.icon}</span>${m.label}
+     </div>`
+  ).join('');
+  ac.className = 'chat-autocomplete open';
+}
+
+function chatSelectProduct(product) {
+  const input = document.getElementById('chat-input');
+  if (!input) return;
+  const words = input.value.trimEnd().split(/\s+/);
+  words[words.length - 1] = product;
+  input.value = words.join(' ') + ' ';
+  input.focus();
+  input.selectionStart = input.selectionEnd = input.value.length;
+  document.getElementById('chat-autocomplete').className = 'chat-autocomplete';
+}
+
+// ── Edit parsed — put data back into input for correction ─
+function chatEditParsed(parsedJson, msgEl) {
+  const parsed = JSON.parse(parsedJson);
+  const parts = [];
+  if (parsed.factory_number)   parts.push(parsed.factory_number);
+  if (parsed.factory_name)     parts.push(parsed.factory_name);
+  if (parsed.person_in_charge) parts.push(parsed.person_in_charge);
+  if (parsed.area)             parts.push(parsed.area);
+  (parsed.items || []).forEach(it => {
+    let s = it.product || '';
+    if (it.quantity) s += ' ' + it.quantity;
+    if (it.rate)     s += '@' + it.rate;
+    if (s.trim()) parts.push(s.trim());
+  });
+  if (parsed.lead_type && parsed.lead_type !== 'Cold') parts.push(parsed.lead_type.toLowerCase());
+  if (parsed.follow_up) parts.push('follow up ' + parsed.follow_up);
+  if (parsed.notes)     parts.push(parsed.notes);
+
+  // remove the preview bubble
+  if (msgEl) msgEl.remove();
+
+  const input = document.getElementById('chat-input');
+  if (input) {
+    input.value = parts.join(' ');
+    input.focus();
+    input.selectionStart = input.selectionEnd = input.value.length;
+  }
 }
 
 function chatAppendMessage(role, html) {
@@ -1950,7 +2052,8 @@ function buildChatPreview({ parsed, action, existingRow }) {
       <div class="chat-preview-items">${itemsHtml}</div>
       <div class="chat-preview-actions">
         <button class="btn-primary" onclick="chatConfirm(${JSON.stringify({ parsed: p, action, existingRow }).replace(/"/g, '&quot;')})">✅ Confirm</button>
-        <button class="btn-secondary" onclick="this.closest('.chat-preview-card').closest('.chat-msg').remove()">❌ Cancel</button>
+        <button class="btn-secondary" onclick="chatEditParsed('${JSON.stringify(p).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;')}', this.closest('.chat-msg'))">✏️ Edit</button>
+        <button class="btn-secondary" onclick="this.closest('.chat-msg').remove()">✕</button>
       </div>
     </div>`;
 }
@@ -1960,6 +2063,7 @@ async function chatSend() {
   const text  = (input?.value || '').trim();
   if (!text) return;
   input.value = '';
+  document.getElementById('chat-autocomplete').className = 'chat-autocomplete';
 
   chatAppendMessage('user', escHtml(text));
   const loadingDiv = chatAppendMessage('bot', '⏳ Parsing…');
@@ -2012,10 +2116,16 @@ async function chatConfirm({ parsed, action, existingRow }) {
   }
 }
 
-// Enter key sends, Shift+Enter adds newline
+// Enter key sends, Shift+Enter adds newline; blur hides autocomplete
 document.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('chat-input')?.addEventListener('keydown', e => {
+  const ci = document.getElementById('chat-input');
+  ci?.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chatSend(); }
+    if (e.key === 'Escape') document.getElementById('chat-autocomplete').className = 'chat-autocomplete';
+  });
+  ci?.addEventListener('blur', () => {
+    // short delay so onmousedown on ac item fires first
+    setTimeout(() => { document.getElementById('chat-autocomplete').className = 'chat-autocomplete'; }, 150);
   });
 });
 

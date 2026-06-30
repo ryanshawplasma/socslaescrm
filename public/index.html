@@ -357,14 +357,35 @@
           <div class="chat-container">
             <div id="chat-messages" class="chat-messages">
               <div class="chat-msg bot">
-                👋 <b>CRM Chat</b> — Type a lead message and I'll parse it for you.<br>
-                Example: <code>M277 Ramesh Industries Sureshji hotmelt 500@120 hot</code>
+                👋 <b>CRM Chat</b> — Type a lead and I'll parse it.<br>
+                E.g. <code>M277 Ramesh hotmelt 500@120 hot</code>
               </div>
             </div>
-            <div class="chat-input-row">
-              <textarea id="chat-input" rows="2"
-                placeholder="Type lead details... e.g. M277 Ramesh Industries hotmelt 500@120 hot"></textarea>
-              <button onclick="chatSend()" class="btn-primary chat-send-btn">Send</button>
+            <!-- Quick-insert chips -->
+            <div class="chat-chips-bar">
+              <button class="chat-chip chip-hot"  onclick="chatInsertChip('hot')">🔴 Hot</button>
+              <button class="chat-chip chip-warm" onclick="chatInsertChip('warm')">🟡 Warm</button>
+              <button class="chat-chip chip-cold" onclick="chatInsertChip('cold')">🔵 Cold</button>
+              <button class="chat-chip"           onclick="chatInsertChip('follow up')">📅 Follow-up</button>
+              <span class="chip-divider">|</span>
+              <button class="chat-chip" onclick="chatInsertChip('hotmelt')">Hotmelt</button>
+              <button class="chat-chip" onclick="chatInsertChip('latex')">Latex</button>
+              <button class="chat-chip" onclick="chatInsertChip('bc')">BC</button>
+              <button class="chat-chip" onclick="chatInsertChip('toluene')">Toluene</button>
+              <button class="chat-chip" onclick="chatInsertChip('r6')">R6</button>
+              <button class="chat-chip" onclick="chatInsertChip('mek')">MEK</button>
+              <button class="chat-chip" onclick="chatInsertChip('pu adhesive')">PU Adhesive</button>
+              <button class="chat-chip" onclick="chatInsertChip('silicon')">Silicon</button>
+            </div>
+            <!-- Input + autocomplete -->
+            <div class="chat-input-wrap">
+              <div id="chat-autocomplete" class="chat-autocomplete"></div>
+              <div class="chat-input-row">
+                <textarea id="chat-input" rows="2"
+                  placeholder="M277 Ramesh Industries hotmelt 500@120 hot..."
+                  oninput="chatInputChanged(this.value)"></textarea>
+                <button onclick="chatSend()" class="btn-primary chat-send-btn">Send</button>
+              </div>
             </div>
           </div>
         </section>

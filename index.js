@@ -1863,7 +1863,7 @@ function usePolling() {
 }
 
 async function startPolling() {
-  try { await axios.get(`${TELEGRAM_API}/deleteWebhook?drop_pending_updates=true`); } catch (_) {}
+  try { await axios.get(`${TELEGRAM_API}/deleteWebhook?drop_pending_updates=true`, { timeout: 5000 }); } catch (_) {}
   console.log('   Bot status  : 🟢 Listening via long-poll\n');
   let offset  = 0;
   let backoff = 3000;

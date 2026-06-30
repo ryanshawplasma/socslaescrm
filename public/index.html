@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SalesCRM</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#3b82f6" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="SalesCRM" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link rel="stylesheet" href="style.css" />
+  <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
+</head>
+<body>
+
+  <!-- ── LOGIN OVERLAY ─────────────────────────────────────── -->
+  <div id="login-overlay" class="hidden">
+    <div id="login-box">
+      <div class="login-brand">◈ SalesCRM</div>
+      <h2 class="login-title">Sign in</h2>
+      <form id="login-form" autocomplete="off">
+        <div class="form-group">
+          <label>Username</label>
+          <input id="login-username" type="text" placeholder="admin or sales" autocomplete="username" />
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input id="login-password" type="password" placeholder="••••••••" autocomplete="current-password" />
+        </div>
+        <p id="login-error" class="login-error"></p>
+        <button type="submit" id="login-btn" class="btn btn-primary full-width">Log In</button>
+      </form>
+      <div id="biometric-login-section" class="hidden">
+        <div class="or-divider"><span>or</span></div>
+        <button type="button" id="btn-biometric-login" class="btn btn-biometric full-width" onclick="loginWithBiometric()">
+          🔐 Use Biometric / Fingerprint
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PROFILE MODAL ────────────────────────────────────────── -->
+  <div id="profile-modal-overlay" class="hidden">
+    <div id="profile-modal">
+      <div class="modal-header">
+        <h2>Edit Profile</h2>
+        <button id="profile-modal-close" class="icon-btn">✕</button>
+      </div>
+      <form id="profile-form" autocomplete="off">
+        <div class="form-group" style="margin-bottom:12px">
+          <label>Display Name</label>
+          <input id="p-name" type="text" placeholder="Your name" />
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label>New PIN <span style="font-weight:400;color:var(--text-muted)">(leave blank to keep current)</span></label>
+          <input id="p-pin" type="password" placeholder="4–6 digits" maxlength="6" inputmode="numeric" />
+        </div>
+        <div class="form-group" style="margin-bottom:16px">
+          <label>Confirm PIN</label>
+          <input id="p-pin2" type="password" placeholder="Repeat PIN" maxlength="6" inputmode="numeric" />
+        </div>
+        <p id="profile-error" class="login-error"></p>
+        <div class="modal-footer">
+          <button type="button" id="btn-cancel-profile" class="btn btn-ghost">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="sidebar-overlay"></div>
+
+  <div id="app">
+
+    <!-- ── Sidebar ─────────────────────────────────────────── -->
+    <aside id="sidebar">
+      <div class="sidebar-brand">
+        <span class="brand-icon">◈</span>
+        <span class="brand-name">SalesCRM</span>
+      </div>
+
+      <nav class="sidebar-nav">
+        <a class="nav-item active" data-page="dashboard">
+          <span class="nav-icon">⬡</span> Dashboard
+        </a>
+        <a class="nav-item" data-page="leads">
+          <span class="nav-icon">◎</span> Leads
+        </a>
+        <a class="nav-item" data-page="pipeline">
+          <span class="nav-icon">◈</span> Pipeline
+        </a>
+        <a class="nav-item" data-page="followups">
+          <span class="nav-icon">◷</span> Follow-ups
+        </a>
+        <a class="nav-item" data-page="reports">
+          <span class="nav-icon">◫</span> Reports
+        </a>
+        <a class="nav-item admin-only" data-page="team" style="display:none">
+          <span class="nav-icon">👥</span> Team
+        </a>
+        <a class="nav-item" data-page="map">
+          <span class="nav-icon">◉</span> Map
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="sidebar-badge">
+          <span class="dot dot-green"></span> Bot Active
+        </div>
+        <div id="current-user" class="sidebar-user"></div>
+        <button id="btn-enable-biometric" class="btn-biometric-enable hidden" onclick="enableBiometric()">🔐 Enable Biometric Login</button>
+        <button class="btn-profile" onclick="openProfileModal()">✏️ Edit Profile</button>
+        <button class="btn-logout" onclick="logout()">Sign out</button>
+      </div>
+    </aside>
+
+    <!-- ── Main ───────────────────────────────────────────── -->
+    <div id="main">
+
+      <!-- Header -->
+      <header id="topbar">
+        <div class="topbar-left">
+          <button id="sidebar-toggle" class="icon-btn">☰</button>
+          <h1 id="page-title">Dashboard</h1>
+        </div>
+        <div class="topbar-right">
+          <span id="last-refreshed" class="refresh-label"></span>
+          <div class="search-wrap">
+            <span class="search-icon">⌕</span>
+            <input id="global-search" type="text" placeholder="Search leads…" />
+          </div>
+          <button id="btn-export" class="btn btn-ghost" title="Export CSV">⬇ CSV</button>
+          <button id="btn-add-lead" class="btn btn-primary">+ Add Lead</button>
+          <div class="theme-palette" id="theme-palette">
+            <button class="palette-dot" data-accent=""        title="Linear"   style="background:#5E6AD2;color:#5E6AD2"></button>
+            <button class="palette-dot" data-accent="midnight" title="Midnight" style="background:#4361EE;color:#4361EE"></button>
+            <button class="palette-dot" data-accent="emerald"  title="Emerald"  style="background:#059669;color:#059669"></button>
+            <button class="palette-dot" data-accent="zinc"     title="Zinc"     style="background:#71717A;color:#71717A"></button>
+          </div>
+          <button id="btn-theme" class="icon-btn" title="Toggle dark mode">🌙</button>
+          <button id="btn-refresh" class="icon-btn" title="Refresh">↺</button>
+        </div>
+      </header>
+
+      <!-- Content pages -->
+      <div id="content">
+
+        <!-- ── DASHBOARD ──────────────────────────────────── -->
+        <section id="page-dashboard" class="page active">
+          <div class="stat-grid" id="stat-cards"></div>
+
+          <div class="row-2col">
+            <div class="card">
+              <div class="card-header"><h3>Pipeline by Stage</h3></div>
+              <div class="chart-wrap"><canvas id="chart-stage"></canvas></div>
+            </div>
+            <div class="card">
+              <div class="card-header"><h3>Leads by Product</h3></div>
+              <div class="chart-wrap"><canvas id="chart-product"></canvas></div>
+            </div>
+          </div>
+
+          <div class="row-2col mt-16">
+            <div class="card">
+              <div class="card-header"><h3>Monthly Lead Trend</h3></div>
+              <div class="chart-wrap"><canvas id="chart-monthly"></canvas></div>
+            </div>
+            <div class="card">
+              <div class="card-header"><h3>Lead Type</h3></div>
+              <div class="chart-wrap"><canvas id="chart-leadtype"></canvas></div>
+            </div>
+          </div>
+
+          <div class="card mt-16">
+            <div class="card-header">
+              <h3>Recent Leads</h3>
+              <a class="link-sm" data-page="leads">View all →</a>
+            </div>
+            <div id="recent-table"></div>
+          </div>
+        </section>
+
+        <!-- ── LEADS ──────────────────────────────────────── -->
+        <section id="page-leads" class="page">
+          <div class="toolbar">
+            <div class="filter-group">
+              <select id="filter-stage"><option value="">All Stages</option></select>
+              <select id="filter-product"><option value="">All Products</option></select>
+            </div>
+            <div class="view-toggle">
+              <button class="toggle-btn active" data-view="table">☰ Table</button>
+              <button class="toggle-btn" data-view="kanban">⊞ Kanban</button>
+            </div>
+          </div>
+
+          <div id="leads-table-wrap" class="card"></div>
+          <div id="leads-kanban-wrap" class="kanban-board hidden"></div>
+        </section>
+
+        <!-- ── PIPELINE ───────────────────────────────────── -->
+        <section id="page-pipeline" class="page">
+          <div class="pipeline-summary" id="pipeline-summary"></div>
+          <div class="kanban-board" id="pipeline-kanban"></div>
+        </section>
+
+        <!-- ── FOLLOW-UPS ─────────────────────────────────── -->
+        <section id="page-followups" class="page">
+          <div class="followup-filters">
+            <button class="pill active" data-fu="overdue">Overdue</button>
+            <button class="pill" data-fu="today">Today</button>
+            <button class="pill" data-fu="week">This Week</button>
+            <button class="pill" data-fu="all">All</button>
+          </div>
+          <div class="card mt-16" id="followup-table"></div>
+        </section>
+
+        <!-- ── REPORTS ────────────────────────────────────── -->
+        <section id="page-reports" class="page">
+          <div class="row-2col">
+            <div class="card">
+              <div class="card-header"><h3>Conversion Funnel</h3></div>
+              <div class="chart-wrap tall"><canvas id="chart-funnel"></canvas></div>
+            </div>
+            <div class="card">
+              <div class="card-header"><h3>Product Mix</h3></div>
+              <div class="chart-wrap tall"><canvas id="chart-mix"></canvas></div>
+            </div>
+          </div>
+          <div class="row-2col mt-16">
+            <div class="card">
+              <div class="card-header"><h3>Revenue by Product</h3></div>
+              <div class="chart-wrap"><canvas id="chart-revenue"></canvas></div>
+            </div>
+            <div class="card">
+              <div class="card-header"><h3>Area Distribution</h3></div>
+              <div class="chart-wrap"><canvas id="chart-area"></canvas></div>
+            </div>
+          </div>
+          <div class="card mt-16">
+            <div class="card-header"><h3>Win / Loss Summary</h3></div>
+            <div id="win-loss-summary"></div>
+          </div>
+        </section>
+
+        <!-- ── MAP ───────────────────────────────────────────── -->
+        <section id="page-map" class="page map-page">
+          <div class="map-layout">
+
+            <!-- Route Planning Panel -->
+            <aside class="route-panel" id="route-panel">
+              <div class="route-panel-header">
+                <span class="route-panel-title">⚡ Route Planner</span>
+                <button class="btn-clear-route" id="btn-clear-route" onclick="clearRoute()" style="display:none">✕ Clear</button>
+              </div>
+
+              <div class="route-section">
+                <div class="route-label">Starting Point</div>
+                <button class="btn-gps" id="btn-use-gps" onclick="useGpsLocation()">📍 Use My GPS Location</button>
+                <div id="start-coord-chip" class="coord-chip hidden"></div>
+              </div>
+
+              <div class="route-section">
+                <div class="route-label">Factories to Visit</div>
+                <div id="factory-checklist" class="factory-checklist">
+                  <p class="route-hint">Loading factories…</p>
+                </div>
+              </div>
+
+              <button class="btn btn-primary full-width" id="btn-optimize" onclick="optimizeRoute()" disabled>
+                🗺 Plan My Route
+              </button>
+
+              <div id="route-result" class="route-result hidden">
+                <div class="route-stats-row">
+                  <div class="route-stat-box">
+                    <div class="route-stat-val" id="route-distance">—</div>
+                    <div class="route-stat-key">km total</div>
+                  </div>
+                  <div class="route-stat-box">
+                    <div class="route-stat-val" id="route-time">—</div>
+                    <div class="route-stat-key">min drive</div>
+                  </div>
+                </div>
+                <div class="stop-list" id="stop-list"></div>
+              </div>
+            </aside>
+
+            <!-- Map Container -->
+            <div class="map-wrap">
+              <div id="crm-map"></div>
+              <div id="pin-mode-banner" class="pin-mode-banner hidden">
+                <span>📍 Click anywhere on the map to place this factory's pin</span>
+                <button onclick="cancelPinMode()">✕ Cancel</button>
+              </div>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- ── TEAM ───────────────────────────────────────────── -->
+        <section id="page-team" class="page">
+          <div class="toolbar">
+            <h3 style="font-size:14px;font-weight:600;color:var(--text)">Sales Team</h3>
+            <p style="font-size:12px;color:var(--text-muted)">Salespeople register via /register in the Telegram bot</p>
+          </div>
+          <div class="card mt-16" id="team-table"></div>
+        </section>
+
+      </div><!-- /content -->
+    </div><!-- /main -->
+  </div><!-- /app -->
+
+  <!-- ── MODAL — Add / Edit Lead ──────────────────────────── -->
+  <div id="modal-overlay" class="hidden">
+    <div id="modal">
+      <div class="modal-header">
+        <h2 id="modal-title">Add Lead</h2>
+        <button id="modal-close" class="icon-btn">✕</button>
+      </div>
+      <form id="lead-form" autocomplete="off">
+        <input type="hidden" id="f-row" />
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Factory Number</label>
+            <input id="f-factory_number" type="text" placeholder="M277" />
+          </div>
+          <div class="form-group">
+            <label>Factory Name</label>
+            <input id="f-factory_name" type="text" placeholder="Ramesh Industries" />
+          </div>
+          <div class="form-group full-width" id="contacts-form-group">
+            <label style="display:flex;align-items:center;justify-content:space-between">
+              <span>Contacts</span>
+              <button type="button" class="btn btn-ghost" style="font-size:11px;padding:2px 8px" onclick="addContactRow()">+ Add Contact</button>
+            </label>
+            <div id="contacts-editor"></div>
+          </div>
+          <div class="form-group">
+            <label>Product</label>
+            <select id="f-product">
+              <option value="">Select…</option>
+              <option>Hotmelt</option>
+              <option>Rubber Adhesive</option>
+              <option>Solvent</option>
+              <option>Latex</option>
+              <option>Other</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Quantity</label>
+            <input id="f-quantity" type="text" placeholder="500 kg" />
+          </div>
+          <div class="form-group">
+            <label>Rate</label>
+            <input id="f-rate" type="text" placeholder="₹120/kg" />
+          </div>
+          <div class="form-group">
+            <label>Stage</label>
+            <select id="f-stage">
+              <option value="">Select…</option>
+              <option value="New Lead">New Lead</option>
+              <option value="Sample Required">Sample Required</option>
+              <option value="Sample Sent">Sample Sent</option>
+              <option value="Quotation">Quotation</option>
+              <option value="Negotiation">Negotiation</option>
+              <option value="Order Won">Order Won</option>
+              <option value="Repeat Customer">Repeat Customer</option>
+              <option value="Lost">Lost</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Follow Up Date</label>
+            <input id="f-follow_up" type="date" />
+          </div>
+          <div class="form-group">
+            <label>Area</label>
+            <input id="f-area" type="text" placeholder="Mumbai" />
+          </div>
+          <div class="form-group">
+            <label>Lead Type</label>
+            <select id="f-lead_type">
+              <option value="">Not Set</option>
+              <option value="Hot">🔥 Hot</option>
+              <option value="Warm">🟡 Warm</option>
+              <option value="Cold">🔵 Cold</option>
+            </select>
+          </div>
+          <div class="form-group full-width">
+            <label>Notes</label>
+            <textarea id="f-notes" rows="3" placeholder="Any additional notes…"></textarea>
+          </div>
+          <div class="form-group full-width admin-only" id="modal-access-section" style="display:none">
+            <label>Team Access <span style="font-weight:400;color:var(--text-muted);font-size:12px">— grant salespeople access to this lead</span></label>
+            <div id="modal-access-list" style="margin-top:8px"></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" id="btn-cancel-modal" class="btn btn-ghost">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="btn-save-lead">Save Lead</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ── Toast ─────────────────────────────────────────────── -->
+  <div id="toast"></div>
+
+  <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

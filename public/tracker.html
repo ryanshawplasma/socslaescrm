@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Live Tracker — SalesCRM</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #0f172a;
+      --card:    #1e293b;
+      --border:  #334155;
+      --text:    #f1f5f9;
+      --muted:   #94a3b8;
+      --primary: #3b82f6;
+      --success: #10b981;
+      --danger:  #ef4444;
+    }
+
+    body {
+      font-family: -apple-system, 'Inter', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 20px;
+      gap: 20px;
+    }
+
+    .brand {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -.5px;
+      color: var(--primary);
+    }
+
+    .card {
+      width: 100%;
+      max-width: 360px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .screen-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 12px 14px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 15px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color .15s;
+    }
+
+    input[type="text"]:focus { border-color: var(--primary); }
+
+    button {
+      width: 100%;
+      padding: 13px;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: opacity .15s;
+    }
+
+    button:active { opacity: .8; }
+
+    .btn-start { background: var(--primary); color: #fff; }
+    .btn-stop  { background: var(--danger);  color: #fff; }
+
+    /* Status indicator */
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex-shrink: 0;
+      transition: background .3s;
+    }
+
+    .status-dot.live    { background: var(--success); animation: blink 1.4s ease-in-out infinite; }
+    .status-dot.error   { background: var(--danger); }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: .3; }
+    }
+
+    .status-text {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .coord-block {
+      background: var(--bg);
+      border-radius: 10px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .coord-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+    }
+
+    .coord-key  { color: var(--muted); }
+    .coord-val  { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+    .hidden { display: none !important; }
+
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border);
+    }
+
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
+      text-align: center;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="brand">◈ SalesCRM</div>
+
+  <!-- ── Setup Screen ──────────────────────────────────── -->
+  <div id="screen-setup" class="card">
+    <p class="screen-title">Live Location Tracker</p>
+    <input id="agent-name" type="text" placeholder="Your name (e.g. Ramesh)" autocomplete="name" />
+    <button class="btn-start" onclick="startTracking()">Start Tracking</button>
+    <p class="hint">Your location will appear as a live blue dot on the team map.</p>
+  </div>
+
+  <!-- ── Tracking Screen ────────────────────────────────── -->
+  <div id="screen-tracking" class="card hidden">
+    <div class="status-row">
+      <div id="status-dot" class="status-dot"></div>
+      <span id="status-text" class="status-text">Connecting…</span>
+    </div>
+
+    <hr class="divider" />
+
+    <div class="coord-block">
+      <div class="coord-row">
+        <span class="coord-key">Latitude</span>
+        <span class="coord-val" id="val-lat">—</span>
+      </div>
+      <div class="coord-row">
+        <span class="coord-key">Longitude</span>
+        <span class="coord-val" id="val-lng">—</span>
+      </div>
+      <div class="coord-row">
+        <span class="coord-key">Accuracy</span>
+        <span class="coord-val" id="val-acc">—</span>
+      </div>
+      <div class="coord-row">
+        <span class="coord-key">Updates sent</span>
+        <span class="coord-val" id="val-count">0</span>
+      </div>
+    </div>
+
+    <button class="btn-stop" onclick="stopTracking()">Stop Tracking</button>
+    <p class="hint">Keep this page open while visiting factories. Close or tap Stop to end.</p>
+  </div>
+
+  <script>
+    const socket  = io();
+    let watchId   = null;
+    let updateCount = 0;
+
+    // Pre-fill name from CRM login if available
+    const savedName = localStorage.getItem('crm_user');
+    if (savedName) document.getElementById('agent-name').value = savedName;
+
+    function setStatus(type, text) {
+      const dot  = document.getElementById('status-dot');
+      const label = document.getElementById('status-text');
+      dot.className  = 'status-dot ' + type;
+      label.textContent = text;
+    }
+
+    function startTracking() {
+      const name = document.getElementById('agent-name').value.trim();
+      if (!name) { alert('Please enter your name first.'); return; }
+
+      document.getElementById('screen-setup').classList.add('hidden');
+      document.getElementById('screen-tracking').classList.remove('hidden');
+
+      const agentId = name.toLowerCase().replace(/\s+/g, '_');
+
+      if (!navigator.geolocation) {
+        setStatus('error', 'GPS not supported on this device');
+        return;
+      }
+
+      setStatus('', 'Waiting for GPS…');
+
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+
+          socket.emit('update-agent-location', { agentId, name, lat, lng, accuracy });
+
+          updateCount++;
+          document.getElementById('val-lat').textContent   = lat.toFixed(6);
+          document.getElementById('val-lng').textContent   = lng.toFixed(6);
+          document.getElementById('val-acc').textContent   = `±${Math.round(accuracy)} m`;
+          document.getElementById('val-count').textContent = updateCount;
+          setStatus('live', 'Transmitting Live');
+        },
+        (err) => {
+          const msgs = {
+            1: 'Location permission denied. Allow GPS in browser settings.',
+            2: 'GPS signal unavailable. Try moving outdoors.',
+            3: 'GPS timed out. Retrying…',
+          };
+          setStatus('error', msgs[err.code] || `GPS error: ${err.message}`);
+        },
+        { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
+      );
+    }
+
+    function stopTracking() {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      setStatus('', 'Stopped');
+      document.getElementById('screen-tracking').classList.add('hidden');
+      document.getElementById('screen-setup').classList.remove('hidden');
+      updateCount = 0;
+      document.getElementById('val-count').textContent = '0';
+    }
+
+    // Show connection state in status
+    socket.on('connect',    () => { if (watchId !== null) setStatus('live', 'Transmitting Live'); });
+    socket.on('disconnect', () => setStatus('error', 'Disconnected — reconnecting…'));
+  </script>
+</body>
+</html>

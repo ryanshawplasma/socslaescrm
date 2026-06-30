@@ -4,9 +4,13 @@
 const { Pool } = require('pg');
 const crypto   = require('crypto');
 
+// Strip ?sslmode=... from URL — let the ssl object below control it instead,
+// otherwise pg v8 treats sslmode=require as verify-full and rejects Aiven's CA.
+const _dbUrl = (process.env.DB_URL || '').replace(/([?&])sslmode=[^&]*(&?)/, (_, pre, post) => post ? pre : '');
+
 const pool = new Pool({
-  connectionString: process.env.DB_URL,
-  ssl: { rejectUnauthorized: false },   // Aiven uses their own CA; still encrypted
+  connectionString: _dbUrl,
+  ssl: { rejectUnauthorized: false },   // Aiven: encrypted but self-signed CA
   max: 5,
   idleTimeoutMillis: 30000,
 });

@@ -23,6 +23,8 @@ const io         = new Server(httpServer);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+app.get('/health', (_req, res) => res.status(200).send('OK'));
+
 // ============================================================
 //  SOCKET.IO — Live Agent Location Relay
 // ============================================================
@@ -1814,9 +1816,6 @@ async function startPolling() {
   }
 }
 
-// ── Health check (required by Hugging Face Spaces) ──────────
-app.get('/health', (_req, res) => res.status(200).send('OK'));
-
 // ============================================================
 //  START
 // ============================================================
@@ -1826,7 +1825,7 @@ async function startServer() {
 
   httpServer.listen(PORT, () => {
     console.log(`\n🚀 SalesCRM running at http://localhost:${PORT}`);
-    console.log(`   Database    : MySQL (Aiven)`);
+    console.log(`   Database    : PostgreSQL (Aiven)`);
     console.log(`   Admin login : ${ADMIN_USER} / ${ADMIN_PASS}`);
 
     if (usePolling()) {

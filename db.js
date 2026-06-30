@@ -1,15 +1,14 @@
 // ============================================================
-//  db.js — MySQL database layer (mysql2/promise)
+//  db.js — PostgreSQL database layer (pg / node-postgres)
 // ============================================================
-const mysql  = require('mysql2/promise');
-const crypto = require('crypto');
+const { Pool } = require('pg');
+const crypto   = require('crypto');
 
-const pool = mysql.createPool({
-  uri:              process.env.DB_URL,
-  ssl:              { rejectUnauthorized: true },
-  connectionLimit:  5,
-  waitForConnections: true,
-  timezone:         '+00:00',
+const pool = new Pool({
+  connectionString: process.env.DB_URL,
+  ssl: { rejectUnauthorized: false },   // Aiven uses their own CA; still encrypted
+  max: 5,
+  idleTimeoutMillis: 30000,
 });
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -27,104 +26,102 @@ function hashPin(pin) {
 
 // ── Schema init ──────────────────────────────────────────────
 async function initSchema() {
-  const conn = await pool.getConnection();
+  const client = await pool.connect();
   try {
-    await conn.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS leads (
-        id               INT AUTO_INCREMENT PRIMARY KEY,
-        factory_number   VARCHAR(255) DEFAULT '',
-        factory_name     VARCHAR(255) DEFAULT '',
-        person_in_charge VARCHAR(255) DEFAULT '',
-        contact          VARCHAR(255) DEFAULT '',
-        product          VARCHAR(255) DEFAULT '',
-        quantity         VARCHAR(255) DEFAULT '',
-        rate             VARCHAR(255) DEFAULT '',
-        stage            VARCHAR(255) DEFAULT '',
-        follow_up        VARCHAR(255) DEFAULT '',
-        notes            TEXT         DEFAULT '',
-        area             VARCHAR(255) DEFAULT '',
-        lead_type        VARCHAR(255) DEFAULT '',
-        created_by       VARCHAR(255) DEFAULT '',
-        last_updated     VARCHAR(255) DEFAULT '',
-        mapped_stage     VARCHAR(255) DEFAULT '',
-        stage_number     VARCHAR(50)  DEFAULT '',
-        assigned_to      VARCHAR(255) DEFAULT '',
-        lat              VARCHAR(50)  DEFAULT '',
-        lng              VARCHAR(50)  DEFAULT ''
+        id               SERIAL PRIMARY KEY,
+        factory_number   TEXT DEFAULT '',
+        factory_name     TEXT DEFAULT '',
+        person_in_charge TEXT DEFAULT '',
+        contact          TEXT DEFAULT '',
+        product          TEXT DEFAULT '',
+        quantity         TEXT DEFAULT '',
+        rate             TEXT DEFAULT '',
+        stage            TEXT DEFAULT '',
+        follow_up        TEXT DEFAULT '',
+        notes            TEXT DEFAULT '',
+        area             TEXT DEFAULT '',
+        lead_type        TEXT DEFAULT '',
+        created_by       TEXT DEFAULT '',
+        last_updated     TEXT DEFAULT '',
+        mapped_stage     TEXT DEFAULT '',
+        stage_number     TEXT DEFAULT '',
+        assigned_to      TEXT DEFAULT '',
+        lat              TEXT DEFAULT '',
+        lng              TEXT DEFAULT ''
       )
     `);
 
-    await conn.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS lead_items (
-        id       INT AUTO_INCREMENT PRIMARY KEY,
-        lead_id  INT NOT NULL,
-        product  VARCHAR(255) DEFAULT '',
-        quantity VARCHAR(255) DEFAULT '',
-        rate     VARCHAR(255) DEFAULT '',
-        INDEX idx_lead_items_lead_id (lead_id)
+        id       SERIAL PRIMARY KEY,
+        lead_id  INTEGER NOT NULL,
+        product  TEXT DEFAULT '',
+        quantity TEXT DEFAULT '',
+        rate     TEXT DEFAULT ''
       )
     `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_items_lead_id ON lead_items(lead_id)`);
 
-    await conn.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS lead_contacts (
-        id          INT AUTO_INCREMENT PRIMARY KEY,
-        lead_id     INT NOT NULL,
-        person_name VARCHAR(255) DEFAULT '',
-        contact     VARCHAR(255) DEFAULT '',
-        designation VARCHAR(255) DEFAULT '',
-        INDEX idx_lead_contacts_lead_id (lead_id)
+        id          SERIAL PRIMARY KEY,
+        lead_id     INTEGER NOT NULL,
+        person_name TEXT DEFAULT '',
+        contact     TEXT DEFAULT '',
+        designation TEXT DEFAULT ''
       )
     `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_contacts_lead_id ON lead_contacts(lead_id)`);
 
-    await conn.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS lead_photos (
-        id          INT AUTO_INCREMENT PRIMARY KEY,
-        lead_id     INT NOT NULL,
+        id          SERIAL PRIMARY KEY,
+        lead_id     INTEGER NOT NULL,
         file_path   TEXT NOT NULL,
         caption     TEXT DEFAULT '',
-        uploaded_by VARCHAR(255) DEFAULT '',
-        uploaded_at VARCHAR(255) DEFAULT '',
-        INDEX idx_lead_photos_lead_id (lead_id)
+        uploaded_by TEXT DEFAULT '',
+        uploaded_at TEXT DEFAULT ''
       )
     `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_photos_lead_id ON lead_photos(lead_id)`);
 
-    await conn.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS users (
-        id               INT AUTO_INCREMENT PRIMARY KEY,
-        display_name     VARCHAR(255) NOT NULL,
-        role             VARCHAR(50)  DEFAULT 'sales',
-        pin_hash         VARCHAR(255) NOT NULL,
-        telegram_user_id VARCHAR(255) DEFAULT '',
-        webauthn_cred    TEXT         DEFAULT '',
-        created_at       VARCHAR(255) DEFAULT '',
-        UNIQUE KEY uq_display_name (display_name),
-        UNIQUE KEY uq_telegram_user_id (telegram_user_id)
+        id               SERIAL PRIMARY KEY,
+        display_name     TEXT NOT NULL UNIQUE,
+        role             TEXT DEFAULT 'sales',
+        pin_hash         TEXT NOT NULL,
+        telegram_user_id TEXT DEFAULT '' UNIQUE,
+        webauthn_cred    TEXT DEFAULT '',
+        created_at       TEXT DEFAULT ''
       )
     `);
 
-    await conn.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS lead_access (
-        id                INT AUTO_INCREMENT PRIMARY KEY,
-        lead_id           INT NOT NULL,
-        user_display_name VARCHAR(255) NOT NULL,
-        granted_by        VARCHAR(255) DEFAULT '',
-        granted_at        VARCHAR(255) DEFAULT '',
-        UNIQUE KEY uq_lead_access (lead_id, user_display_name),
-        INDEX idx_lead_access_lead_id (lead_id)
+        id                SERIAL PRIMARY KEY,
+        lead_id           INTEGER NOT NULL,
+        user_display_name TEXT NOT NULL,
+        granted_by        TEXT DEFAULT '',
+        granted_at        TEXT DEFAULT '',
+        UNIQUE(lead_id, user_display_name)
       )
     `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_access_lead_id ON lead_access(lead_id)`);
 
-    console.log('✅ MySQL schema ready');
+    console.log('✅ PostgreSQL schema ready');
   } finally {
-    conn.release();
+    client.release();
   }
 }
 
 // ── READ: all leads with items + contacts ────────────────────
 async function getLeads() {
-  const [rows] = await pool.execute(`
+  const { rows } = await pool.query(`
     SELECT
-      id AS rowIndex,
+      id AS "rowIndex",
       factory_number, factory_name, person_in_charge, contact,
       product, quantity, rate, stage, follow_up, notes, area,
       lead_type, created_by, assigned_to, last_updated, mapped_stage, stage_number,
@@ -132,8 +129,8 @@ async function getLeads() {
     FROM leads ORDER BY id ASC
   `);
 
-  const [allItems]    = await pool.execute(`SELECT * FROM lead_items    ORDER BY lead_id, id ASC`);
-  const [allContacts] = await pool.execute(`SELECT * FROM lead_contacts ORDER BY lead_id, id ASC`);
+  const { rows: allItems }    = await pool.query(`SELECT * FROM lead_items    ORDER BY lead_id, id ASC`);
+  const { rows: allContacts } = await pool.query(`SELECT * FROM lead_contacts ORDER BY lead_id, id ASC`);
 
   const itemsByLead = {};
   for (const item of allItems) {
@@ -162,20 +159,20 @@ async function getLeads() {
 
 // ── READ: leads for a specific salesperson ────────────────────
 async function getLeadsForUser(displayName) {
-  const [rows] = await pool.execute(`
+  const { rows } = await pool.query(`
     SELECT
-      id AS rowIndex,
+      id AS "rowIndex",
       factory_number, factory_name, person_in_charge, contact,
       product, quantity, rate, stage, follow_up, notes, area,
       lead_type, created_by, assigned_to, last_updated, mapped_stage, stage_number
     FROM leads
-    WHERE created_by = ?
-       OR id IN (SELECT lead_id FROM lead_access WHERE user_display_name = ?)
+    WHERE created_by = $1
+       OR id IN (SELECT lead_id FROM lead_access WHERE user_display_name = $2)
     ORDER BY id ASC
   `, [displayName, displayName]);
 
-  const [allItems]    = await pool.execute(`SELECT * FROM lead_items    ORDER BY lead_id, id ASC`);
-  const [allContacts] = await pool.execute(`SELECT * FROM lead_contacts ORDER BY lead_id, id ASC`);
+  const { rows: allItems }    = await pool.query(`SELECT * FROM lead_items    ORDER BY lead_id, id ASC`);
+  const { rows: allContacts } = await pool.query(`SELECT * FROM lead_contacts ORDER BY lead_id, id ASC`);
 
   const itemsByLead = {};
   for (const item of allItems) {
@@ -242,7 +239,7 @@ async function addLead(data, createdBy = '') {
   const pNum  = String(data.factory_number || '').trim().toLowerCase();
   const pName = String(data.factory_name   || '').trim().toLowerCase();
 
-  const [existing] = await pool.execute(`SELECT id, factory_number, factory_name FROM leads`);
+  const { rows: existing } = await pool.query(`SELECT id, factory_number, factory_name FROM leads`);
   for (const row of existing) {
     const rNum  = String(row.factory_number || '').trim().toLowerCase();
     const rName = String(row.factory_name   || '').trim().toLowerCase();
@@ -256,12 +253,13 @@ async function addLead(data, createdBy = '') {
   const items = Array.isArray(data.items) && data.items.length ? data.items : [];
   const flat  = items.length ? items[0] : data;
 
-  const [info] = await pool.execute(`
+  const { rows: [newRow] } = await pool.query(`
     INSERT INTO leads
       (factory_number, factory_name, person_in_charge, contact, product,
        quantity, rate, stage, follow_up, notes, area, lead_type, created_by,
        last_updated, mapped_stage, stage_number)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+    RETURNING id
   `, [
     data.factory_number   || '',
     data.factory_name     || '',
@@ -281,18 +279,18 @@ async function addLead(data, createdBy = '') {
     data.stage_number != null ? String(data.stage_number) : '',
   ]);
 
-  const leadId = info.insertId;
+  const leadId = newRow.id;
 
   if (items.length) {
     for (const item of items) {
-      await pool.execute(
-        `INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES (?, ?, ?, ?)`,
+      await pool.query(
+        `INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES ($1,$2,$3,$4)`,
         [leadId, item.product || '', item.quantity || '', item.rate || '']
       );
     }
   } else if (data.product) {
-    await pool.execute(
-      `INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES (?, ?, ?, ?)`,
+    await pool.query(
+      `INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES ($1,$2,$3,$4)`,
       [leadId, data.product || '', data.quantity || '', data.rate || '']
     );
   }
@@ -310,36 +308,37 @@ async function updateLead(rowIndex, data) {
     'lead_type', 'created_by',
   ];
 
-  const setClauses = ['last_updated = ?'];
+  const setClauses = ['last_updated = $1'];
   const params     = [now];
+  let   idx        = 2;
 
   for (const f of fields) {
     if (data[f] !== undefined && data[f] !== null && data[f] !== '') {
-      setClauses.push(`${f} = ?`);
+      setClauses.push(`${f} = $${idx}`);
       params.push(data[f]);
+      idx++;
     }
   }
 
-  if (data.stage) { setClauses.push('mapped_stage = ?'); params.push(data.stage); }
+  if (data.stage) { setClauses.push(`mapped_stage = $${idx}`); params.push(data.stage); idx++; }
   if (data.stage_number !== undefined && data.stage_number !== null && data.stage_number !== '') {
-    setClauses.push('stage_number = ?');
-    params.push(String(data.stage_number));
+    setClauses.push(`stage_number = $${idx}`); params.push(String(data.stage_number)); idx++;
   }
 
   params.push(rowIndex);
-  await pool.execute(`UPDATE leads SET ${setClauses.join(', ')} WHERE id = ?`, params);
+  await pool.query(`UPDATE leads SET ${setClauses.join(', ')} WHERE id = $${idx}`, params);
 
   if (Array.isArray(data.items) && data.items.length) {
-    await pool.execute(`DELETE FROM lead_items WHERE lead_id = ?`, [rowIndex]);
+    await pool.query(`DELETE FROM lead_items WHERE lead_id = $1`, [rowIndex]);
     for (const item of data.items) {
-      await pool.execute(
-        `INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES (?, ?, ?, ?)`,
+      await pool.query(
+        `INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES ($1,$2,$3,$4)`,
         [rowIndex, item.product || '', item.quantity || '', item.rate || '']
       );
     }
     const first = data.items[0];
-    await pool.execute(
-      `UPDATE leads SET product = ?, quantity = ?, rate = ? WHERE id = ?`,
+    await pool.query(
+      `UPDATE leads SET product = $1, quantity = $2, rate = $3 WHERE id = $4`,
       [first.product || '', first.quantity || '', first.rate || '', rowIndex]
     );
   }
@@ -348,14 +347,14 @@ async function updateLead(rowIndex, data) {
     const validContacts = data.contacts.filter(c => c.person_name || c.contact);
     if (validContacts.length) {
       const primary = validContacts[0];
-      await pool.execute(
-        `UPDATE leads SET person_in_charge = ?, contact = ? WHERE id = ?`,
+      await pool.query(
+        `UPDATE leads SET person_in_charge = $1, contact = $2 WHERE id = $3`,
         [primary.person_name || '', primary.contact || '', rowIndex]
       );
-      await pool.execute(`DELETE FROM lead_contacts WHERE lead_id = ?`, [rowIndex]);
+      await pool.query(`DELETE FROM lead_contacts WHERE lead_id = $1`, [rowIndex]);
       for (const c of validContacts.slice(1)) {
-        await pool.execute(
-          `INSERT INTO lead_contacts (lead_id, person_name, contact, designation) VALUES (?, ?, ?, ?)`,
+        await pool.query(
+          `INSERT INTO lead_contacts (lead_id, person_name, contact, designation) VALUES ($1,$2,$3,$4)`,
           [rowIndex, c.person_name || '', c.contact || '', c.designation || '']
         );
       }
@@ -367,33 +366,34 @@ async function updateLead(rowIndex, data) {
 
 // ── WRITE: delete a lead ──────────────────────────────────────
 async function deleteLead(rowIndex) {
-  await pool.execute(`DELETE FROM lead_items    WHERE lead_id = ?`, [rowIndex]);
-  await pool.execute(`DELETE FROM lead_contacts WHERE lead_id = ?`, [rowIndex]);
-  await pool.execute(`DELETE FROM lead_photos   WHERE lead_id = ?`, [rowIndex]);
-  await pool.execute(`DELETE FROM lead_access   WHERE lead_id = ?`, [rowIndex]);
-  await pool.execute(`DELETE FROM leads WHERE id = ?`, [rowIndex]);
+  await pool.query(`DELETE FROM lead_items    WHERE lead_id = $1`, [rowIndex]);
+  await pool.query(`DELETE FROM lead_contacts WHERE lead_id = $1`, [rowIndex]);
+  await pool.query(`DELETE FROM lead_photos   WHERE lead_id = $1`, [rowIndex]);
+  await pool.query(`DELETE FROM lead_access   WHERE lead_id = $1`, [rowIndex]);
+  await pool.query(`DELETE FROM leads WHERE id = $1`, [rowIndex]);
   return { ok: true };
 }
 
 // ── Photos ────────────────────────────────────────────────────
 async function addPhoto(leadId, filePath, caption = '', uploadedBy = '') {
-  await pool.execute(
-    `INSERT INTO lead_photos (lead_id, file_path, caption, uploaded_by, uploaded_at) VALUES (?, ?, ?, ?, ?)`,
+  await pool.query(
+    `INSERT INTO lead_photos (lead_id, file_path, caption, uploaded_by, uploaded_at) VALUES ($1,$2,$3,$4,$5)`,
     [leadId, filePath, caption, uploadedBy, nowIST()]
   );
   return { ok: true };
 }
 
 async function getPhotos(leadId) {
-  const [rows] = await pool.execute(`SELECT * FROM lead_photos WHERE lead_id = ? ORDER BY id ASC`, [leadId]);
+  const { rows } = await pool.query(`SELECT * FROM lead_photos WHERE lead_id = $1 ORDER BY id ASC`, [leadId]);
   return rows;
 }
 
 // ── Lead Access ───────────────────────────────────────────────
 async function grantLeadAccess(leadId, userDisplayName, grantedBy = '') {
   try {
-    await pool.execute(
-      `INSERT IGNORE INTO lead_access (lead_id, user_display_name, granted_by, granted_at) VALUES (?, ?, ?, ?)`,
+    await pool.query(
+      `INSERT INTO lead_access (lead_id, user_display_name, granted_by, granted_at)
+       VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
       [leadId, userDisplayName, grantedBy, nowIST()]
     );
     return { ok: true };
@@ -401,40 +401,41 @@ async function grantLeadAccess(leadId, userDisplayName, grantedBy = '') {
 }
 
 async function revokeLeadAccess(leadId, userDisplayName) {
-  await pool.execute(
-    `DELETE FROM lead_access WHERE lead_id = ? AND user_display_name = ?`,
+  await pool.query(
+    `DELETE FROM lead_access WHERE lead_id = $1 AND user_display_name = $2`,
     [leadId, userDisplayName]
   );
   return { ok: true };
 }
 
 async function getLeadAccess(leadId) {
-  const [rows] = await pool.execute(
-    `SELECT user_display_name, granted_by, granted_at FROM lead_access WHERE lead_id = ?`,
+  const { rows } = await pool.query(
+    `SELECT user_display_name, granted_by, granted_at FROM lead_access WHERE lead_id = $1`,
     [leadId]
   );
   return rows;
 }
 
 async function claimFollowUp(leadId, claimerName) {
-  const [rows] = await pool.execute(`SELECT assigned_to FROM leads WHERE id = ?`, [leadId]);
+  const { rows } = await pool.query(`SELECT assigned_to FROM leads WHERE id = $1`, [leadId]);
   if (!rows.length) return { ok: false, message: 'Lead not found' };
   const lead = rows[0];
   if (lead.assigned_to) return { ok: false, alreadyClaimed: true, claimedBy: lead.assigned_to };
-  const [info] = await pool.execute(
-    `UPDATE leads SET assigned_to = ?, last_updated = ? WHERE id = ? AND (assigned_to = '' OR assigned_to IS NULL)`,
+  const result = await pool.query(
+    `UPDATE leads SET assigned_to = $1, last_updated = $2
+     WHERE id = $3 AND (assigned_to = '' OR assigned_to IS NULL)`,
     [claimerName, nowIST(), leadId]
   );
-  if (info.affectedRows > 0) return { ok: true };
-  const [updated] = await pool.execute(`SELECT assigned_to FROM leads WHERE id = ?`, [leadId]);
+  if (result.rowCount > 0) return { ok: true };
+  const { rows: updated } = await pool.query(`SELECT assigned_to FROM leads WHERE id = $1`, [leadId]);
   return { ok: false, alreadyClaimed: true, claimedBy: (updated[0] && updated[0].assigned_to) || '' };
 }
 
 async function reassignFollowUp(leadId, newAssigneeName) {
-  const [rows] = await pool.execute(`SELECT assigned_to FROM leads WHERE id = ?`, [leadId]);
+  const { rows } = await pool.query(`SELECT assigned_to FROM leads WHERE id = $1`, [leadId]);
   if (!rows.length) return { ok: false, message: 'Lead not found' };
-  await pool.execute(
-    `UPDATE leads SET assigned_to = ?, last_updated = ? WHERE id = ?`,
+  await pool.query(
+    `UPDATE leads SET assigned_to = $1, last_updated = $2 WHERE id = $3`,
     [newAssigneeName, nowIST(), leadId]
   );
   return { ok: true, previous: rows[0].assigned_to };
@@ -442,40 +443,40 @@ async function reassignFollowUp(leadId, newAssigneeName) {
 
 // ── Users ─────────────────────────────────────────────────────
 async function createUser(displayName, pin, role = 'sales', telegramUserId = '') {
-  const [existing] = await pool.execute(`SELECT id FROM users WHERE display_name = ?`, [displayName]);
+  const { rows: existing } = await pool.query(`SELECT id FROM users WHERE display_name = $1`, [displayName]);
   if (existing.length) return { ok: false, message: 'Name already taken. Choose another name.' };
-  await pool.execute(
-    `INSERT INTO users (display_name, role, pin_hash, telegram_user_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+  await pool.query(
+    `INSERT INTO users (display_name, role, pin_hash, telegram_user_id, created_at) VALUES ($1,$2,$3,$4,$5)`,
     [displayName, role, hashPin(pin), telegramUserId || '', nowIST()]
   );
   return { ok: true };
 }
 
 async function getUserByName(displayName) {
-  const [rows] = await pool.execute(`SELECT * FROM users WHERE display_name = ?`, [displayName]);
+  const { rows } = await pool.query(`SELECT * FROM users WHERE display_name = $1`, [displayName]);
   return rows[0] || null;
 }
 
 async function getUserByTelegramId(telegramUserId) {
   if (!telegramUserId) return null;
-  const [rows] = await pool.execute(`SELECT * FROM users WHERE telegram_user_id = ?`, [String(telegramUserId)]);
+  const { rows } = await pool.query(`SELECT * FROM users WHERE telegram_user_id = $1`, [String(telegramUserId)]);
   return rows[0] || null;
 }
 
 async function updateUserPin(userId, newPin) {
-  await pool.execute(`UPDATE users SET pin_hash = ? WHERE id = ?`, [hashPin(newPin), userId]);
+  await pool.query(`UPDATE users SET pin_hash = $1 WHERE id = $2`, [hashPin(newPin), userId]);
   return { ok: true };
 }
 
 async function getAllUsers() {
-  const [rows] = await pool.execute(
+  const { rows } = await pool.query(
     `SELECT id, display_name, role, telegram_user_id, created_at FROM users ORDER BY id ASC`
   );
   return rows;
 }
 
 async function deleteUser(userId) {
-  await pool.execute(`DELETE FROM users WHERE id = ?`, [userId]);
+  await pool.query(`DELETE FROM users WHERE id = $1`, [userId]);
   return { ok: true };
 }
 
@@ -487,19 +488,19 @@ async function verifyUserPin(displayName, pin) {
 }
 
 async function updateUserName(userId, newName) {
-  const [existing] = await pool.execute(
-    `SELECT id FROM users WHERE display_name = ? AND id != ?`, [newName, userId]
+  const { rows: existing } = await pool.query(
+    `SELECT id FROM users WHERE display_name = $1 AND id != $2`, [newName, userId]
   );
   if (existing.length) return { ok: false, message: 'Name already taken. Choose another.' };
-  await pool.execute(`UPDATE users SET display_name = ? WHERE id = ?`, [newName, userId]);
+  await pool.query(`UPDATE users SET display_name = $1 WHERE id = $2`, [newName, userId]);
   return { ok: true };
 }
 
 // ── Factory coordinates ───────────────────────────────────────
 async function getLeadCoordinates(ids) {
   if (!ids || !ids.length) return [];
-  const placeholders = ids.map(() => '?').join(',');
-  const [rows] = await pool.execute(
+  const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
+  const { rows } = await pool.query(
     `SELECT id, factory_number, factory_name, person_in_charge, lat, lng
      FROM leads WHERE id IN (${placeholders})`,
     ids.map(Number)
@@ -508,24 +509,24 @@ async function getLeadCoordinates(ids) {
 }
 
 async function updateLeadCoords(rowIndex, lat, lng) {
-  await pool.execute(`UPDATE leads SET lat = ?, lng = ? WHERE id = ?`, [String(lat), String(lng), Number(rowIndex)]);
+  await pool.query(`UPDATE leads SET lat = $1, lng = $2 WHERE id = $3`, [String(lat), String(lng), Number(rowIndex)]);
   return { ok: true };
 }
 
 // ── WebAuthn ──────────────────────────────────────────────────
 async function saveWebAuthnCred(userId, credData) {
-  await pool.execute(`UPDATE users SET webauthn_cred = ? WHERE id = ?`, [JSON.stringify(credData), userId]);
+  await pool.query(`UPDATE users SET webauthn_cred = $1 WHERE id = $2`, [JSON.stringify(credData), userId]);
   return { ok: true };
 }
 
 async function getWebAuthnCred(userId) {
-  const [rows] = await pool.execute(`SELECT webauthn_cred FROM users WHERE id = ?`, [userId]);
+  const { rows } = await pool.query(`SELECT webauthn_cred FROM users WHERE id = $1`, [userId]);
   if (!rows.length || !rows[0].webauthn_cred) return null;
   try { return JSON.parse(rows[0].webauthn_cred); } catch { return null; }
 }
 
 async function getUserByWebAuthnCredId(credentialID) {
-  const [rows] = await pool.execute(
+  const { rows } = await pool.query(
     `SELECT * FROM users WHERE webauthn_cred != '' AND webauthn_cred IS NOT NULL`
   );
   for (const user of rows) {
@@ -538,19 +539,19 @@ async function getUserByWebAuthnCredId(credentialID) {
 }
 
 async function seedAdminUser(adminUser, adminPass) {
-  const [existing] = await pool.execute(`SELECT id FROM users WHERE role = 'admin'`);
+  const { rows: existing } = await pool.query(`SELECT id FROM users WHERE role = 'admin'`);
   if (!existing.length) {
-    await pool.execute(
-      `INSERT INTO users (display_name, role, pin_hash, telegram_user_id, created_at) VALUES (?, 'admin', ?, '', ?)`,
+    await pool.query(
+      `INSERT INTO users (display_name, role, pin_hash, telegram_user_id, created_at) VALUES ($1,'admin',$2,'',$3)`,
       [adminUser, hashPin(adminPass), nowIST()]
     );
-    console.log(`✅ Admin user "${adminUser}" created in users table`);
+    console.log(`✅ Admin user "${adminUser}" created`);
   }
 }
 
 async function getLeadContacts(leadId) {
-  const [rows] = await pool.execute(
-    `SELECT * FROM lead_contacts WHERE lead_id = ? ORDER BY id ASC`, [leadId]
+  const { rows } = await pool.query(
+    `SELECT * FROM lead_contacts WHERE lead_id = $1 ORDER BY id ASC`, [leadId]
   );
   return rows;
 }

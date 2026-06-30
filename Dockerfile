@@ -11,4 +11,4 @@ RUN mkdir -p uploads
 
 EXPOSE 7860
 
-CMD ["node", "--use-system-ca", "index.js"]
+CMD ["node", "index.js"]

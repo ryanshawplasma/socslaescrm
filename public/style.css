@@ -1023,6 +1023,7 @@ body {
   .mt-16           { margin-top: 12px; }
 
   /* Tables — horizontal scroll */
+  #leads-table-wrap { overflow: auto; -webkit-overflow-scrolling: touch; }
   .crm-table th,
   .crm-table td { padding: 9px 10px; font-size: 12px; white-space: nowrap; }
 

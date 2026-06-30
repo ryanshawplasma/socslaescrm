@@ -169,7 +169,7 @@ async function handleVoice(message) {
     if (!parsed) {
       await sendTelegram('sendMessage', {
         chat_id: chatId, parse_mode: 'HTML',
-        text: '⚠️ Could not process voice note. Please <b>type</b> the lead info instead.',
+        text: '⚠️ Voice note could not be processed (quota or token limit reached). Try a <b>shorter voice note</b> or <b>type</b> the info instead.',
       });
       return;
     }
@@ -206,7 +206,7 @@ async function callGeminiWithAudio(audioBase64) {
             { text: 'Transcribe and extract CRM lead data as JSON.' },
           ],
         }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 768, responseMimeType: 'application/json' },
+        generationConfig: { temperature: 0.1, maxOutputTokens: 1500, responseMimeType: 'application/json' },
       });
       let raw = res.data.candidates[0].content.parts[0].text.trim()
         .replace(/^```json\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/i,'').trim();
@@ -214,7 +214,14 @@ async function callGeminiWithAudio(audioBase64) {
       return JSON.parse(raw);
     } catch (err) {
       const code = err.response?.data?.error?.code;
-      if (code === 429 || code === 404) { console.warn(`⚠️ Gemini ${model} unavailable (${code}) for voice`); continue; }
+      const errMsg = err.response?.data?.error?.message || '';
+      if (code === 429 || code === 503 || errMsg.includes('RESOURCE_EXHAUSTED')) {
+        console.warn(`⚠️ Gemini ${model} quota/rate limit for voice`); continue;
+      }
+      if (code === 400 && errMsg.toLowerCase().includes('token')) {
+        console.warn(`⚠️ Gemini ${model} token limit hit for voice`); continue;
+      }
+      if (code === 404) { console.warn(`⚠️ Gemini ${model} unavailable (404) for voice`); continue; }
       console.error('Gemini voice error:', err.response?.data || err.message);
     }
   }
@@ -1377,20 +1384,68 @@ FACTORY NAME: The business/company name — often ends with words like "Industri
 PERSON IN CHARGE: The human contact at the factory — typically a first name or full name, often followed by honorifics like "ji", "bhai", "sahab", "sir". Appears AFTER factory name. NOT the factory name itself. Examples: "Rameshji", "Suresh bhai", "Amit sahab", "Rajesh".
 
 ITEMS: Extract as an array. Each item has product, quantity (with unit), and rate (number only, strip ₹ symbol).
-- Products: "hotmelt"/"htmlt"/"hotmolt" → "Hotmelt"; "rubber adhesive"/"rubad"/"rub ad" → "Rubber Adhesive"; "solvent"/"solv" → "Solvent"; "latex"/"ltx" → "Latex"
-- Multiple items separated by commas, slashes, "and", "plus", "&"
+- Products (all aliases recognised): "hotmelt"/"htmlt"/"hotmolt"/"hm" → "Hotmelt"; "rubber adhesive"/"rubad"/"rub ad"/"ra" → "Rubber Adhesive"; "solvent"/"solv"/"solv ad"/"sa" → "Solvent"; "latex"/"ltx" → "Latex"; "bc" → "BC"; "toluene"/"tol" → "Toluene"; "r6" → "R6"; "mek" → "MEK"; "pu adhesive"/"pu ad"/"puad"/"pu" → "PU Adhesive"; "silicon"/"silicone"/"sil" → "Silicon"
+- Multiple items in ONE message: each product follows the pattern — product name → quantity → rate. Items can be separated by commas, slashes, "&", "and", "plus", newlines, or just listed one after another with no separator.
+- Rate indicators: "@", "at", "rate", "₹", "rs", "pr", "per", "/kg", "/ltr" — extract the number after any of these
+- Quantity units: kg, ltr, litre, ton, pcs, drum, barrel, can, bag — preserve as spoken. If no unit given, leave it as just the number.
 - Format: [{"product":"Hotmelt","quantity":"500 kg","rate":"120"}]
-- If only one item, still use array format
+- If only one item, still use array format. If no product found, use empty array [].
+- MULTI-PRODUCT RULE: when you see multiple product names in one message, create a separate array entry for each — never merge them into one item.
 
-LEAD TYPE: "hot"/"urgent"/"priority"/"ready to buy"/"confirmed" → "Hot"; "warm"/"maybe"/"considering"/"thinking"/"interested" → "Warm"; "cold"/"not interested"/"dormant"/"inactive"/"later" → "Cold". If not mentioned → "".
+LEAD TYPE: "hot"/"urgent"/"priority"/"ready to buy"/"confirmed"/"pakka"/"fix" → "Hot"; "warm"/"maybe"/"soch raha"/"considering"/"thinking"/"interested"/"dekhte hain" → "Warm"; "cold"/"not interested"/"baad mein"/"dormant"/"inactive"/"later"/"nahi chahiye" → "Cold". If not mentioned → "".
 
-FOLLOW UP: Any date mention — "next week", "15 july", "monday", "15/07", convert to dd/MM/yyyy where possible. "next week" = 7 days from now. Leave empty if no date mentioned.
+FOLLOW UP: Any date mention — "next week", "15 july", "monday", "15/07", "kal", "parso", convert to dd/MM/yyyy. "next week"/"agla hafte" = 7 days from now, "kal" = tomorrow, "aaj" = today, "is hafte" = this week. Leave empty if no date mentioned.
 
-AREA: Extract any city, district, region, or location (e.g. "Mumbai", "Surat", "Bhiwandi", "Delhi NCR"). Title Case. Leave empty if none.
+AREA: Extract any city, district, region, or location (e.g. "Mumbai", "Surat", "Bhiwandi", "Delhi NCR", "Agra", "Kanpur"). Title Case. Leave empty if none.
 
-STAGE MAPPING: New Lead→1, Sample Required→2, Sample Sent→3, Quotation→4, Negotiation→5, Order Won→6, Repeat Customer→7, Lost→0. If no stage mentioned → stage:"", stage_number:null.
+STAGE MAPPING: New Lead→1, Sample Required→2, Sample Sent→3, Quotation→4, Negotiation→5, Order Won→6, Repeat Customer→7, Lost→0. If no stage mentioned → stage:"", stage_number:null. "sample do"/"sample bhejo" → Sample Required. "order aa gaya"/"order mila"/"deal done" → Order Won. "baar baar leta hai"/"regular" → Repeat Customer.
 
-NAME FORMATTING: Title Case. Name ending in "g" often means "ji" (Amitg → Amitji).
+NAME FORMATTING: Title Case. Name ending in "g" often means "ji" (Amitg → Amitji). Common name shorthand: "Rj" → "Rajesh", "Aj" → "Ajay" — expand only if obvious.
+
+NOTES: Put anything that doesn't fit other fields into notes — complaints, special requests, custom requirements, context ("wants credit", "price too high bola", "compare kar raha competitor se").
+
+LANGUAGE & SALESMAN STYLES: Messages come from different salespeople with very different styles — all must be handled:
+- Brief shorthand: "M12 500 hm 120 hot" — extract everything even from terse input
+- Hinglish natural: "M12 wale Rameshji ne bola 500 kg hotmelt chahiye, rate 120 pe dena, next week pakka"
+- Voice/casual: "haan toh M277 Ramesh footwear ke Rameshji ne bola unhe hotmelt chahiye 500 kg, 120 ka rate, aur wo hot lead hai"
+- Update only: "M12 follow up 15 july" — no product is fine
+- Multi-product: "F3 200 rub ad 95, 100 ltx 45, 50 ltr bc 60"
+- Hindi connectors to ignore: "ka", "ke", "ki", "se", "aur", "ko", "mein", "ne", "pe", "par", "wala", "wale", "toh", "bhi", "hai", "tha"
+
+DISAMBIGUATION RULES:
+- If a word has an honorific (ji/bhai/sahab/sir/g suffix) → it is PERSON IN CHARGE, not factory name
+- Factory name usually has a business-type word (Industries/Traders/Works/Pvt/Ltd/Plastics/Footwear/Enterprises/Manufacturing). If none present, prefer leaving factory_name blank over guessing.
+- Factory number always comes FIRST. Names come after it, before product/stage keywords.
+- "pu" alone always means PU Adhesive (not a name or other word)
+
+EXAMPLES (follow these exactly):
+
+Input: "M277 Ramesh Footwear Rameshji 500 kg hotmelt @ 120 hot follow up 15/07"
+Output: {"factory_number":"M277","factory_name":"Ramesh Footwear","person_in_charge":"Rameshji","contact":"","stage":"","stage_number":null,"follow_up":"15/07/2026","area":"","notes":"","lead_type":"Hot","items":[{"product":"Hotmelt","quantity":"500 kg","rate":"120"}]}
+
+Input: "F3 Om Traders Suresh bhai rub ad 200 ltr 95 warm negotiation mumbai"
+Output: {"factory_number":"F3","factory_name":"Om Traders","person_in_charge":"Suresh Bhai","contact":"","stage":"Negotiation","stage_number":5,"follow_up":"","area":"Mumbai","notes":"","lead_type":"Warm","items":[{"product":"Rubber Adhesive","quantity":"200 ltr","rate":"95"}]}
+
+Input: "AB12 Surat Plastics Amitg sample sent"
+Output: {"factory_number":"AB12","factory_name":"Surat Plastics","person_in_charge":"Amitji","contact":"","stage":"Sample Sent","stage_number":3,"follow_up":"","area":"","notes":"","lead_type":"","items":[]}
+
+Input: "D5 order won hotmelt 1 ton 110 latex 100 ltr 45"
+Output: {"factory_number":"D5","factory_name":"","person_in_charge":"","contact":"","stage":"Order Won","stage_number":6,"follow_up":"","area":"","notes":"","lead_type":"","items":[{"product":"Hotmelt","quantity":"1 ton","rate":"110"},{"product":"Latex","quantity":"100 ltr","rate":"45"}]}
+
+Input: "M12 500 hm 120 hot"
+Output: {"factory_number":"M12","factory_name":"","person_in_charge":"","contact":"","stage":"","stage_number":null,"follow_up":"","area":"","notes":"","lead_type":"Hot","items":[{"product":"Hotmelt","quantity":"500","rate":"120"}]}
+
+Input: "B7 Rajesh bhai ne bola 200 ltr pu chahiye rate 185 pe, soch raha hai, agla hafte batayega"
+Output: {"factory_number":"B7","factory_name":"","person_in_charge":"Rajesh Bhai","contact":"","stage":"","stage_number":null,"follow_up":"07/07/2026","area":"","notes":"","lead_type":"Warm","items":[{"product":"PU Adhesive","quantity":"200 ltr","rate":"185"}]}
+
+Input: "K22 Krishna Industries follow up kal"
+Output: {"factory_number":"K22","factory_name":"Krishna Industries","person_in_charge":"","contact":"","stage":"","stage_number":null,"follow_up":"01/07/2026","area":"","notes":"","lead_type":"","items":[]}
+
+Input: "P9 200 hm 120, 100 ltr ltx 45, 50 bc 80, 100 pu 185 hot order won"
+Output: {"factory_number":"P9","factory_name":"","person_in_charge":"","contact":"","stage":"Order Won","stage_number":6,"follow_up":"","area":"","notes":"","lead_type":"Hot","items":[{"product":"Hotmelt","quantity":"200","rate":"120"},{"product":"Latex","quantity":"100 ltr","rate":"45"},{"product":"BC","quantity":"50","rate":"80"},{"product":"PU Adhesive","quantity":"100","rate":"185"}]}
+
+Input: "T3 Suresh bhai ne bola toluene 500 ltr 95, mek 200 ltr 110 aur r6 100 ltr 75 chahiye, warm hai agla hafte confirm karega"
+Output: {"factory_number":"T3","factory_name":"","person_in_charge":"Suresh Bhai","contact":"","stage":"","stage_number":null,"follow_up":"07/07/2026","area":"","notes":"","lead_type":"Warm","items":[{"product":"Toluene","quantity":"500 ltr","rate":"95"},{"product":"MEK","quantity":"200 ltr","rate":"110"},{"product":"R6","quantity":"100 ltr","rate":"75"}]}
 
 Return ONLY this JSON (no extra fields):
 {
@@ -1529,14 +1584,30 @@ function parseLocalItems(tl) {
     'rubber adhesive': 'Rubber Adhesive',
     'rub ad': 'Rubber Adhesive',
     'rubad':  'Rubber Adhesive',
+    'ra':     'Rubber Adhesive',
     'hotmelt':'Hotmelt',
     'hotmolt':'Hotmelt',
     'htmlt':  'Hotmelt',
     'hmelt':  'Hotmelt',
+    'hm':     'Hotmelt',
     'solvent':'Solvent',
     'solv':   'Solvent',
+    'solv ad':'Solvent',
+    'sa':     'Solvent',
     'latex':  'Latex',
     'ltx':    'Latex',
+    'bc':     'BC',
+    'toluene':'Toluene',
+    'tol':    'Toluene',
+    'r6':     'R6',
+    'mek':    'MEK',
+    'pu adhesive': 'PU Adhesive',
+    'pu ad':  'PU Adhesive',
+    'puad':   'PU Adhesive',
+    'pu':     'PU Adhesive',
+    'silicon':'Silicon',
+    'silicone':'Silicon',
+    'sil':    'Silicon',
   };
 
   const items  = [];
@@ -1547,6 +1618,16 @@ function parseLocalItems(tl) {
   for (const [alias, name] of Object.entries(productMap)) {
     let pos = tl.indexOf(alias, 0);
     while (pos !== -1) {
+      // Short aliases (<=3 chars) must be at word boundaries to avoid false matches
+      // e.g. "ra" in "rate", "sa" in "sample", "pu" in "supply"
+      if (alias.length <= 3) {
+        const before = pos > 0 ? tl[pos - 1] : ' ';
+        const after  = tl[pos + alias.length] || ' ';
+        if (/[a-z0-9]/.test(before) || /[a-z0-9]/.test(after)) {
+          pos = tl.indexOf(alias, pos + 1);
+          continue;
+        }
+      }
       productOccurrences.push({ pos, alias, name });
       pos = tl.indexOf(alias, pos + 1);
     }
@@ -1789,8 +1870,8 @@ async function startPolling() {
   while (true) {
     try {
       const res = await axios.get(`${TELEGRAM_API}/getUpdates`, {
-        params: { offset, timeout: 30, allowed_updates: ['message', 'callback_query'] },
-        timeout: 35000,
+        params: { offset, timeout: 10, allowed_updates: ['message', 'callback_query'] },
+        timeout: 15000,
       });
       backoff = 3000;
       const updates = res.data.result || [];

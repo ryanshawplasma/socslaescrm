@@ -25,24 +25,55 @@
   <div id="login-overlay" class="hidden">
     <div id="login-box">
       <div class="login-brand">◈ SalesCRM</div>
-      <h2 class="login-title">Sign in</h2>
-      <form id="login-form" autocomplete="off">
-        <div class="form-group">
-          <label>Username</label>
-          <input id="login-username" type="text" placeholder="admin or sales" autocomplete="username" />
+
+      <!-- Sign In screen -->
+      <div id="login-screen">
+        <h2 class="login-title">Sign in</h2>
+        <form id="login-form" autocomplete="off">
+          <div class="form-group">
+            <label>Username</label>
+            <input id="login-username" type="text" placeholder="Your name" autocomplete="username" />
+          </div>
+          <div class="form-group">
+            <label>PIN / Password</label>
+            <input id="login-password" type="password" placeholder="••••••" autocomplete="current-password" />
+          </div>
+          <p id="login-error" class="login-error"></p>
+          <button type="submit" id="login-btn" class="btn btn-primary full-width">Log In</button>
+        </form>
+        <div id="biometric-login-section" class="hidden">
+          <div class="or-divider"><span>or</span></div>
+          <button type="button" id="btn-biometric-login" class="btn btn-biometric full-width" onclick="loginWithBiometric()">
+            🔐 Use Biometric / Fingerprint
+          </button>
         </div>
-        <div class="form-group">
-          <label>Password</label>
-          <input id="login-password" type="password" placeholder="••••••••" autocomplete="current-password" />
-        </div>
-        <p id="login-error" class="login-error"></p>
-        <button type="submit" id="login-btn" class="btn btn-primary full-width">Log In</button>
-      </form>
-      <div id="biometric-login-section" class="hidden">
-        <div class="or-divider"><span>or</span></div>
-        <button type="button" id="btn-biometric-login" class="btn btn-biometric full-width" onclick="loginWithBiometric()">
-          🔐 Use Biometric / Fingerprint
-        </button>
+        <p style="text-align:center;margin-top:14px;font-size:13px;color:var(--text-muted)">
+          New here? <a href="#" onclick="showRegisterScreen(event)" style="color:var(--primary);text-decoration:none;font-weight:500">Create Account</a>
+        </p>
+      </div>
+
+      <!-- Create Account screen -->
+      <div id="register-screen" style="display:none">
+        <h2 class="login-title">Create Account</h2>
+        <form id="register-form" autocomplete="off">
+          <div class="form-group">
+            <label>Your Name</label>
+            <input id="reg-name" type="text" placeholder="e.g. Raj Kumar" autocomplete="name" />
+          </div>
+          <div class="form-group">
+            <label>PIN <span style="font-weight:400;color:var(--text-muted)">(4–6 digits)</span></label>
+            <input id="reg-pin" type="password" placeholder="••••••" inputmode="numeric" maxlength="6" />
+          </div>
+          <div class="form-group">
+            <label>Confirm PIN</label>
+            <input id="reg-pin2" type="password" placeholder="••••••" inputmode="numeric" maxlength="6" />
+          </div>
+          <p id="register-error" class="login-error"></p>
+          <button type="submit" id="register-btn" class="btn btn-primary full-width">Create Account</button>
+        </form>
+        <p style="text-align:center;margin-top:14px;font-size:13px;color:var(--text-muted)">
+          Already have an account? <a href="#" onclick="showLoginScreen(event)" style="color:var(--primary);text-decoration:none;font-weight:500">Sign in</a>
+        </p>
       </div>
     </div>
   </div>
@@ -63,9 +94,13 @@
           <label>New PIN <span style="font-weight:400;color:var(--text-muted)">(leave blank to keep current)</span></label>
           <input id="p-pin" type="password" placeholder="4–6 digits" maxlength="6" inputmode="numeric" />
         </div>
-        <div class="form-group" style="margin-bottom:16px">
+        <div class="form-group" style="margin-bottom:12px">
           <label>Confirm PIN</label>
           <input id="p-pin2" type="password" placeholder="Repeat PIN" maxlength="6" inputmode="numeric" />
+        </div>
+        <div class="form-group" style="margin-bottom:16px">
+          <label>Default Area <span style="font-weight:400;color:var(--text-muted)">(pre-filled when adding leads)</span></label>
+          <input id="p-default-area" type="text" placeholder="e.g. Mumbai, Surat" />
         </div>
         <p id="profile-error" class="login-error"></p>
         <div class="modal-footer">
@@ -108,6 +143,9 @@
         </a>
         <a class="nav-item" data-page="map">
           <span class="nav-icon">◉</span> Map
+        </a>
+        <a class="nav-item" data-page="chat">
+          <span class="nav-icon">💬</span> Chat
         </a>
       </nav>
 
@@ -314,6 +352,23 @@
           <div class="card mt-16" id="team-table"></div>
         </section>
 
+        <!-- ── CHAT ───────────────────────────────────────────── -->
+        <section id="page-chat" class="page">
+          <div class="chat-container">
+            <div id="chat-messages" class="chat-messages">
+              <div class="chat-msg bot">
+                👋 <b>CRM Chat</b> — Type a lead message and I'll parse it for you.<br>
+                Example: <code>M277 Ramesh Industries Sureshji hotmelt 500@120 hot</code>
+              </div>
+            </div>
+            <div class="chat-input-row">
+              <textarea id="chat-input" rows="2"
+                placeholder="Type lead details... e.g. M277 Ramesh Industries hotmelt 500@120 hot"></textarea>
+              <button onclick="chatSend()" class="btn-primary chat-send-btn">Send</button>
+            </div>
+          </div>
+        </section>
+
       </div><!-- /content -->
     </div><!-- /main -->
   </div><!-- /app -->
@@ -351,6 +406,12 @@
               <option>Rubber Adhesive</option>
               <option>Solvent</option>
               <option>Latex</option>
+              <option>BC</option>
+              <option>Toluene</option>
+              <option>R6</option>
+              <option>MEK</option>
+              <option>PU Adhesive</option>
+              <option>Silicon</option>
               <option>Other</option>
             </select>
           </div>

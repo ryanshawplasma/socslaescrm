@@ -1022,6 +1022,18 @@ app.delete('/api/leads/:row', authMiddleware, adminOnly, async (req, res) => {
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.post('/api/parse', authMiddleware, async (req, res) => {
+  const { text } = req.body || {};
+  if (!text) return res.status(400).json({ error: 'text required' });
+  try {
+    const parsed = await callGemini(text).catch(() => localParse(text));
+    const { existingRow, action } = await findExistingLead(parsed);
+    res.json({ parsed, action, existingRow });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/stats', authMiddleware, async (req, res) => {
   try {
     const leads = req.user.role === 'admin' ? await db.getLeads() : await db.getLeadsForUser(req.user.username);
@@ -1155,6 +1167,35 @@ app.get('/api/users', authMiddleware, adminOnly, async (req, res) => {
 app.delete('/api/users/:id', authMiddleware, adminOnly, async (req, res) => {
   try { res.json(await db.deleteUser(parseInt(req.params.id, 10))); }
   catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Admin creates a new user directly from the dashboard
+app.post('/api/users', authMiddleware, adminOnly, async (req, res) => {
+  const { name, pin, role } = req.body || {};
+  if (!name || name.trim().length < 2) return res.status(400).json({ error: 'Name must be at least 2 characters' });
+  if (!pin || !/^\d{4,6}$/.test(String(pin))) return res.status(400).json({ error: 'PIN must be 4–6 digits' });
+  const safeRole = ['admin', 'sales'].includes(role) ? role : 'sales';
+  try {
+    const user = await db.createUser(name.trim(), String(pin), safeRole, '');
+    res.json({ success: true, user });
+  } catch (err) {
+    if (err.message?.includes('UNIQUE') || err.message?.includes('unique')) return res.status(409).json({ error: 'A user with this name already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Public self-registration (no auth required — anyone can create a sales account)
+app.post('/api/register', async (req, res) => {
+  const { name, pin } = req.body || {};
+  if (!name || name.trim().length < 2) return res.status(400).json({ error: 'Name must be at least 2 characters' });
+  if (!pin || !/^\d{4,6}$/.test(String(pin))) return res.status(400).json({ error: 'PIN must be 4–6 digits' });
+  try {
+    await db.createUser(name.trim(), String(pin), 'sales', '');
+    res.json({ success: true });
+  } catch (err) {
+    if (err.message?.includes('UNIQUE') || err.message?.includes('unique')) return res.status(409).json({ error: 'Name already taken, choose another' });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.patch('/api/users/me/pin', authMiddleware, async (req, res) => {

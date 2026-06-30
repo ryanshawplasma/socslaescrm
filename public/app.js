@@ -104,6 +104,57 @@ function logout() {
   showLoginPage();
 }
 
+function showRegisterScreen(e) {
+  if (e) e.preventDefault();
+  document.getElementById('login-screen').style.display    = 'none';
+  document.getElementById('register-screen').style.display = '';
+  document.getElementById('register-error').textContent    = '';
+}
+
+function showLoginScreen(e) {
+  if (e) e.preventDefault();
+  document.getElementById('register-screen').style.display = 'none';
+  document.getElementById('login-screen').style.display    = '';
+  document.getElementById('login-error').textContent       = '';
+}
+
+async function handleRegister(e) {
+  e.preventDefault();
+  const name  = document.getElementById('reg-name').value.trim();
+  const pin   = document.getElementById('reg-pin').value.trim();
+  const pin2  = document.getElementById('reg-pin2').value.trim();
+  const errEl = document.getElementById('register-error');
+  const btn   = document.getElementById('register-btn');
+  errEl.textContent = '';
+  if (name.length < 2)         { errEl.textContent = 'Name must be at least 2 characters'; return; }
+  if (!/^\d{4,6}$/.test(pin)) { errEl.textContent = 'PIN must be 4–6 digits'; return; }
+  if (pin !== pin2)            { errEl.textContent = 'PINs do not match'; return; }
+  btn.disabled    = true;
+  btn.textContent = 'Creating…';
+  try {
+    await fetch('/api/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, pin }),
+    }).then(async r => {
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Registration failed');
+    });
+    // Auto-fill login and switch back
+    document.getElementById('login-username').value = name;
+    document.getElementById('login-password').value = pin;
+    showLoginScreen();
+    document.getElementById('login-error').textContent = '';
+    toast('Account created! Logging you in…');
+    document.getElementById('login-form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  } catch (err) {
+    errEl.textContent = err.message;
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = 'Create Account';
+  }
+}
+
 async function handleLogin(e) {
   e.preventDefault();
   const username = document.getElementById('login-username').value.trim();
@@ -243,7 +294,7 @@ function toast(msg, type = 'success') {
 // ============================================================
 const PAGE_TITLES = {
   dashboard: 'Dashboard', leads: 'Leads',
-  pipeline: 'Pipeline', followups: 'Follow-ups', reports: 'Reports', team: 'Team', map: 'Map',
+  pipeline: 'Pipeline', followups: 'Follow-ups', reports: 'Reports', team: 'Team', map: 'Map', chat: 'Chat',
 };
 
 function navigate(page) {
@@ -265,6 +316,7 @@ function renderPage(page) {
   if (page === 'reports')    renderReports();
   if (page === 'team')       renderTeam();
   if (page === 'map')        renderMap();
+  if (page === 'chat')       chatFocusInput();
 }
 
 // ============================================================
@@ -1189,27 +1241,35 @@ async function renderTeam() {
   }
   try {
     const users = await apiFetch('/api/users');
+    const header = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <span style="font-size:15px;font-weight:600;color:var(--text)">Team Members (${users.length})</span>
+        <button class="btn btn-primary" style="font-size:13px;padding:6px 14px" onclick="openAddMemberModal()">+ Add Member</button>
+      </div>`;
     if (!users.length) {
-      document.getElementById('team-table').innerHTML = emptyState('No team members registered yet. Ask salespeople to use /register in the bot.');
+      document.getElementById('team-table').innerHTML = header + emptyState('No team members yet. Add one above or ask salespeople to use /register in the bot.');
       return;
     }
     const rows = users.map(u => `
       <tr>
-        <td>${escAttr(u.display_name)}</td>
+        <td style="font-weight:500">${escAttr(u.display_name)}</td>
         <td><span class="badge ${u.role === 'admin' ? 'badge-6' : 'badge-3'}">${u.role}</span></td>
-        <td>${u.telegram_user_id ? '✅ Linked' : '—'}</td>
-        <td>${u.created_at || '—'}</td>
+        <td style="color:${u.telegram_user_id ? 'var(--success)' : 'var(--text-muted)'}">
+          ${u.telegram_user_id ? '✓ Linked' : '— Not linked'}
+        </td>
+        <td style="color:var(--text-muted);font-size:12px">${u.created_at ? u.created_at.split(' ')[0] : '—'}</td>
         <td>
-          ${u.role !== 'admin' ? `<button class="action-btn del" onclick="removeTeamMember(${u.id}, '${escAttr(u.display_name)}')">Remove</button>` : ''}
+          ${u.role !== 'admin' ? `<button class="action-btn del" onclick="removeTeamMember(${u.id}, '${escAttr(u.display_name)}')">Remove</button>` : '<span style="color:var(--text-muted);font-size:12px">—</span>'}
         </td>
       </tr>`).join('');
-    document.getElementById('team-table').innerHTML = `
+    document.getElementById('team-table').innerHTML = header + `
       <table class="crm-table">
         <thead><tr>
-          <th>Name</th><th>Role</th><th>Telegram</th><th>Joined</th><th>Actions</th>
+          <th>Name</th><th>Role</th><th>Telegram Bot</th><th>Joined</th><th>Action</th>
         </tr></thead>
         <tbody>${rows}</tbody>
-      </table>`;
+      </table>
+      <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">Salespeople can also self-register via the <b>Create Account</b> link on the login page, or using <b>/register</b> in the Telegram bot.</p>`;
   } catch (err) {
     document.getElementById('team-table').innerHTML = emptyState('Failed to load team: ' + err.message);
   }
@@ -1226,6 +1286,73 @@ async function removeTeamMember(id, name) {
   }
 }
 
+function openAddMemberModal() {
+  let overlay = document.getElementById('add-member-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'add-member-overlay';
+    overlay.style.cssText = 'position:fixed;top:0;right:0;bottom:0;left:0;background:rgba(0,0,0,0.55);z-index:1000;display:flex;align-items:center;justify-content:center';
+    overlay.innerHTML = `
+      <div style="background:var(--card);border-radius:12px;padding:24px;width:340px;max-width:95vw;box-shadow:0 8px 32px rgba(0,0,0,0.4)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+          <h3 style="margin:0;font-size:16px;color:var(--text)">Add Team Member</h3>
+          <button onclick="document.getElementById('add-member-overlay').remove()" class="icon-btn">✕</button>
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label>Name</label>
+          <input id="am-name" type="text" placeholder="e.g. Raj Kumar" style="width:100%" />
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label>PIN <span style="font-weight:400;color:var(--text-muted)">(4–6 digits)</span></label>
+          <input id="am-pin" type="password" placeholder="••••••" inputmode="numeric" maxlength="6" style="width:100%" />
+        </div>
+        <div class="form-group" style="margin-bottom:16px">
+          <label>Role</label>
+          <select id="am-role" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--input-bg);color:var(--text)">
+            <option value="sales">Sales</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <p id="am-error" style="color:var(--danger);font-size:13px;margin:0 0 10px;min-height:18px"></p>
+        <div id="am-success" style="display:none;background:var(--success-bg,#0a2a1a);border:1px solid var(--success);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--success)"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn btn-ghost" onclick="document.getElementById('add-member-overlay').remove()">Cancel</button>
+          <button class="btn btn-primary" onclick="submitAddMember()">Create Login</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+  } else {
+    overlay.style.display = 'flex';
+    document.getElementById('am-name').value = '';
+    document.getElementById('am-pin').value  = '';
+    document.getElementById('am-role').value = 'sales';
+    document.getElementById('am-error').textContent = '';
+    document.getElementById('am-success').style.display = 'none';
+  }
+}
+
+async function submitAddMember() {
+  const name  = document.getElementById('am-name').value.trim();
+  const pin   = document.getElementById('am-pin').value.trim();
+  const role  = document.getElementById('am-role').value;
+  const errEl = document.getElementById('am-error');
+  const sucEl = document.getElementById('am-success');
+  errEl.textContent = '';
+  sucEl.style.display = 'none';
+  if (name.length < 2)          { errEl.textContent = 'Name must be at least 2 characters'; return; }
+  if (!/^\d{4,6}$/.test(pin))   { errEl.textContent = 'PIN must be 4–6 digits'; return; }
+  try {
+    await apiFetch('/api/users', { method: 'POST', body: JSON.stringify({ name, pin, role }) });
+    sucEl.innerHTML = `<b>${escAttr(name)}</b> created!<br>Login: <b>${escAttr(name)}</b> &nbsp;|&nbsp; PIN: <b>${escAttr(pin)}</b><br><span style="font-size:11px;opacity:0.8">Share these credentials with them</span>`;
+    sucEl.style.display = 'block';
+    document.getElementById('am-name').value = '';
+    document.getElementById('am-pin').value  = '';
+    renderTeam();
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+}
+
 // ============================================================
 //  Profile Modal
 // ============================================================
@@ -1233,6 +1360,7 @@ async function openProfileModal() {
   document.getElementById('p-pin').value  = '';
   document.getElementById('p-pin2').value = '';
   document.getElementById('profile-error').textContent = '';
+  document.getElementById('p-default-area').value = localStorage.getItem('crm_default_area') || '';
   try {
     const me = await apiFetch('/api/users/me');
     document.getElementById('p-name').value = me.display_name || '';
@@ -1256,6 +1384,8 @@ async function handleProfileSubmit(e) {
   if (!name) { errEl.textContent = 'Name cannot be empty'; return; }
   if (pin && pin !== pin2) { errEl.textContent = 'PINs do not match'; return; }
   if (pin && !/^\d{4,6}$/.test(pin)) { errEl.textContent = 'PIN must be 4–6 digits'; return; }
+  const defaultArea = document.getElementById('p-default-area').value.trim();
+  localStorage.setItem('crm_default_area', defaultArea);
   try {
     const result = await apiFetch('/api/users/me/profile', {
       method: 'PATCH',
@@ -1353,6 +1483,12 @@ function openAddModal() {
     const el = document.getElementById('f-' + f);
     if (el) el.value = '';
   });
+  // Pre-fill default area if set in profile
+  const defaultArea = localStorage.getItem('crm_default_area') || '';
+  if (defaultArea) {
+    const areaEl = document.getElementById('f-area');
+    if (areaEl) areaEl.value = defaultArea;
+  }
   renderContactsEditor([]);
   const accessSection = document.getElementById('modal-access-section');
   if (accessSection) accessSection.style.display = 'none';
@@ -1609,6 +1745,7 @@ function wireEvents() {
   });
 
   document.getElementById('login-form').addEventListener('submit', handleLogin);
+  document.getElementById('register-form').addEventListener('submit', handleRegister);
 
   // Profile modal
   document.getElementById('profile-form').addEventListener('submit', handleProfileSubmit);
@@ -1754,6 +1891,136 @@ async function loginWithBiometric() {
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+
+// ============================================================
+//  CHAT — In-app lead parser (replaces Telegram bot flow)
+// ============================================================
+function chatFocusInput() {
+  setTimeout(() => document.getElementById('chat-input')?.focus(), 50);
+}
+
+function chatAppendMessage(role, html) {
+  const box = document.getElementById('chat-messages');
+  if (!box) return;
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + role;
+  div.innerHTML = html;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+  return div;
+}
+
+function chatReplaceLastBot(html) {
+  const box = document.getElementById('chat-messages');
+  if (!box) return;
+  const bots = box.querySelectorAll('.chat-msg.bot');
+  const last = bots[bots.length - 1];
+  if (last) last.innerHTML = html;
+  box.scrollTop = box.scrollHeight;
+}
+
+function buildChatPreview({ parsed, action, existingRow }) {
+  const p = parsed;
+  const itemsHtml = (p.items || []).map(it =>
+    `<div class="chat-item-row">
+      <span class="chat-item-product">${it.product || '—'}</span>
+      <span>${it.quantity || '—'}</span>
+      ${it.rate ? `<span>@ ₹${it.rate}</span>` : ''}
+    </div>`
+  ).join('') || '<div style="color:var(--text-muted)">No items detected</div>';
+
+  const badgeColor = p.lead_type === 'Hot' ? '#ef4444' : p.lead_type === 'Warm' ? '#f59e0b' : '#3b82f6';
+  const actionLabel = action === 'UPDATE' ? '🔄 Update existing lead' : '➕ New lead';
+
+  return `
+    <div class="chat-preview-card">
+      <div class="chat-preview-header">
+        <span class="chat-preview-action">${actionLabel}</span>
+        ${p.lead_type ? `<span class="chat-preview-badge" style="background:${badgeColor}">${p.lead_type}</span>` : ''}
+      </div>
+      <table class="chat-preview-table">
+        <tr><td>Factory #</td><td><b>${p.factory_number || '—'}</b></td></tr>
+        <tr><td>Factory</td><td><b>${p.factory_name || '—'}</b></td></tr>
+        ${p.person_in_charge ? `<tr><td>Contact</td><td>${p.person_in_charge}</td></tr>` : ''}
+        ${p.area ? `<tr><td>Area</td><td>${p.area}</td></tr>` : ''}
+        ${p.stage ? `<tr><td>Stage</td><td>${p.stage}</td></tr>` : ''}
+        ${p.follow_up ? `<tr><td>Follow-up</td><td>${p.follow_up}</td></tr>` : ''}
+      </table>
+      <div class="chat-preview-items">${itemsHtml}</div>
+      <div class="chat-preview-actions">
+        <button class="btn-primary" onclick="chatConfirm(${JSON.stringify({ parsed: p, action, existingRow }).replace(/"/g, '&quot;')})">✅ Confirm</button>
+        <button class="btn-secondary" onclick="this.closest('.chat-preview-card').closest('.chat-msg').remove()">❌ Cancel</button>
+      </div>
+    </div>`;
+}
+
+async function chatSend() {
+  const input = document.getElementById('chat-input');
+  const text  = (input?.value || '').trim();
+  if (!text) return;
+  input.value = '';
+
+  chatAppendMessage('user', escHtml(text));
+  const loadingDiv = chatAppendMessage('bot', '⏳ Parsing…');
+
+  try {
+    const res  = await apiFetch('/api/parse', { method: 'POST', body: JSON.stringify({ text }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Parse failed');
+    chatReplaceLastBot(buildChatPreview(data));
+  } catch (err) {
+    chatReplaceLastBot('❌ ' + (err.message || 'Error parsing lead'));
+  }
+}
+
+async function chatConfirm({ parsed, action, existingRow }) {
+  const payload = {
+    factory_number:  parsed.factory_number  || '',
+    factory_name:    parsed.factory_name    || '',
+    person_in_charge: parsed.person_in_charge || '',
+    contact:         parsed.contact         || '',
+    product:         parsed.items?.[0]?.product  || parsed.product  || '',
+    quantity:        parsed.items?.[0]?.quantity || parsed.quantity || '',
+    rate:            parsed.items?.[0]?.rate     || parsed.rate     || '',
+    stage:           parsed.stage           || '',
+    stage_number:    parsed.stage_number    || 0,
+    follow_up:       parsed.follow_up       || '',
+    area:            parsed.area            || '',
+    notes:           parsed.notes           || '',
+    lead_type:       parsed.lead_type       || 'Cold',
+    items:           parsed.items           || [],
+    contacts:        [],
+  };
+
+  try {
+    let res;
+    if (action === 'UPDATE' && existingRow != null && existingRow !== -1) {
+      res = await apiFetch(`/api/leads/${existingRow}`, { method: 'PUT', body: JSON.stringify(payload) });
+    } else {
+      res = await apiFetch('/api/leads', { method: 'POST', body: JSON.stringify(payload) });
+    }
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Save failed');
+
+    chatAppendMessage('bot', `✅ Lead <b>${escHtml(payload.factory_name || payload.factory_number || 'saved')}</b> ${action === 'UPDATE' ? 'updated' : 'added'} successfully!`);
+    await loadLeads();
+    await loadStats();
+    renderPage(state.page);
+  } catch (err) {
+    chatAppendMessage('bot', '❌ Save failed: ' + escHtml(err.message));
+  }
+}
+
+// Enter key sends, Shift+Enter adds newline
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('chat-input')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chatSend(); }
+  });
+});
+
+function escHtml(str) {
+  return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 init();

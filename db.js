@@ -4,13 +4,15 @@
 const { Pool } = require('pg');
 const crypto   = require('crypto');
 
-// Strip ?sslmode=... from URL — let the ssl object below control it instead,
-// otherwise pg v8 treats sslmode=require as verify-full and rejects Aiven's CA.
-const _dbUrl = (process.env.DB_URL || '').replace(/([?&])sslmode=[^&]*(&?)/, (_, pre, post) => post ? pre : '');
+// pg v8.13+ changed SSL: sslmode=require now maps to verify-full unless uselibpqcompat is set.
+// Strip original sslmode, then add uselibpqcompat=true&sslmode=require so pg uses libpq
+// semantics where 'require' = encrypt only, no cert chain verification (needed for Aiven).
+let _dbUrl = (process.env.DB_URL || '').replace(/([?&])sslmode=[^&]*(&?)/g, (_, pre, post) => post ? pre : '');
+_dbUrl += (_dbUrl.includes('?') ? '&' : '?') + 'uselibpqcompat=true&sslmode=require';
 
 const pool = new Pool({
   connectionString: _dbUrl,
-  ssl: { rejectUnauthorized: false },   // Aiven: encrypted but self-signed CA
+  ssl: { rejectUnauthorized: false },
   max: 5,
   idleTimeoutMillis: 30000,
 });

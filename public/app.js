@@ -409,17 +409,84 @@ function showLoginScreen(e) {
   document.getElementById('login-error').textContent       = '';
 }
 
+let _usernameTimer = null;
+
+function getUsernameFormatError(v) {
+  if (v.length < 3)               return 'Too short — minimum 3 characters';
+  if (v.length > 20)              return 'Too long — maximum 20 characters';
+  if (/[._]{2}/.test(v))         return 'No consecutive . or _ characters';
+  if (/^[._]|[._]$/.test(v))    return 'Cannot start or end with . or _';
+  if (!/[a-z]/.test(v))          return 'Must contain at least one letter';
+  return null;
+}
+
+function onUsernameInput(input) {
+  const pos = input.selectionStart;
+  input.value = input.value.toLowerCase().replace(/[^a-z0-9._]/g, '');
+  try { input.setSelectionRange(pos, pos); } catch {}
+
+  const val      = input.value;
+  const statusEl = document.getElementById('reg-username-status');
+  const hintEl   = document.getElementById('reg-username-hint');
+  clearTimeout(_usernameTimer);
+
+  if (!val) {
+    statusEl.textContent = '';
+    statusEl.className   = 'username-status';
+    hintEl.textContent   = '3–20 chars · letters, numbers, _ and . only';
+    hintEl.style.color   = '';
+    return;
+  }
+
+  const fmt = getUsernameFormatError(val);
+  if (fmt) {
+    statusEl.textContent = '✗';
+    statusEl.className   = 'username-status un-err';
+    hintEl.textContent   = fmt;
+    hintEl.style.color   = 'var(--danger, #e74c3c)';
+    return;
+  }
+
+  statusEl.textContent = '···';
+  statusEl.className   = 'username-status un-checking';
+  hintEl.textContent   = 'Checking…';
+  hintEl.style.color   = 'var(--text-muted)';
+
+  _usernameTimer = setTimeout(async () => {
+    try {
+      const r = await fetch('/api/check-username?name=' + encodeURIComponent(val));
+      const d = await r.json();
+      if (d.available) {
+        statusEl.textContent = '✓';
+        statusEl.className   = 'username-status un-ok';
+        hintEl.textContent   = val + ' is available';
+        hintEl.style.color   = '#27ae60';
+      } else {
+        statusEl.textContent = '✗';
+        statusEl.className   = 'username-status un-err';
+        hintEl.textContent   = 'Username taken — try another';
+        hintEl.style.color   = 'var(--danger, #e74c3c)';
+      }
+    } catch {
+      statusEl.textContent = '';
+      hintEl.textContent   = '3–20 chars · letters, numbers, _ and . only';
+      hintEl.style.color   = '';
+    }
+  }, 500);
+}
+
 async function handleRegister(e) {
   e.preventDefault();
-  const name  = document.getElementById('reg-name').value.trim();
+  const name  = document.getElementById('reg-name').value.toLowerCase().trim();
   const pin   = document.getElementById('reg-pin').value.trim();
   const pin2  = document.getElementById('reg-pin2').value.trim();
   const errEl = document.getElementById('register-error');
   const btn   = document.getElementById('register-btn');
   errEl.textContent = '';
-  if (name.length < 2)         { errEl.textContent = 'Name must be at least 2 characters'; return; }
-  if (!/^\d{4,6}$/.test(pin)) { errEl.textContent = 'PIN must be 4–6 digits'; return; }
-  if (pin !== pin2)            { errEl.textContent = 'PINs do not match'; return; }
+  const fmtErr = getUsernameFormatError(name);
+  if (fmtErr)                    { errEl.textContent = fmtErr; return; }
+  if (!/^\d{4,6}$/.test(pin))   { errEl.textContent = 'PIN must be 4–6 digits'; return; }
+  if (pin !== pin2)              { errEl.textContent = 'PINs do not match'; return; }
   btn.disabled    = true;
   btn.textContent = 'Creating…';
   try {

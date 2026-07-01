@@ -1616,17 +1616,40 @@ app.patch('/api/users/:id/pin', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+function isValidUsername(name) {
+  if (!name || name.length < 3 || name.length > 20) return false;
+  if (!/^[a-z0-9._]+$/.test(name)) return false;
+  if (/^[._]|[._]$/.test(name)) return false;
+  if (/[._]{2}/.test(name)) return false;
+  if (!/[a-z]/.test(name)) return false;
+  return true;
+}
+
+// Check username availability (public, no auth)
+app.get('/api/check-username', async (req, res) => {
+  const name = (req.query.name || '').toLowerCase().trim();
+  if (!isValidUsername(name)) return res.json({ available: false, reason: 'invalid' });
+  try {
+    const users = await db.getAllUsers();
+    const taken = users.some(u => u.display_name.toLowerCase() === name);
+    res.json({ available: !taken });
+  } catch (err) {
+    res.status(500).json({ available: false });
+  }
+});
+
 // Public self-registration (no auth required — anyone can create a sales account)
 app.post('/api/register', async (req, res) => {
   const { name, pin } = req.body || {};
-  if (!name || name.trim().length < 2) return res.status(400).json({ error: 'Name must be at least 2 characters' });
+  const clean = (name || '').toLowerCase().trim();
+  if (!isValidUsername(clean)) return res.status(400).json({ error: 'Invalid username — use 3–20 lowercase letters, numbers, _ or . only' });
   if (!pin || !/^\d{4,6}$/.test(String(pin))) return res.status(400).json({ error: 'PIN must be 4–6 digits' });
   try {
-    const result = await db.createUser(name.trim(), String(pin), 'sales', '');
+    const result = await db.createUser(clean, String(pin), 'sales', '');
     if (!result.ok) return res.status(409).json({ error: result.message });
     res.json({ success: true });
   } catch (err) {
-    if (err.message?.includes('UNIQUE') || err.message?.includes('unique')) return res.status(409).json({ error: 'Name already taken, choose another' });
+    if (err.message?.includes('UNIQUE') || err.message?.includes('unique')) return res.status(409).json({ error: 'Username taken — choose another' });
     res.status(500).json({ error: err.message });
   }
 });

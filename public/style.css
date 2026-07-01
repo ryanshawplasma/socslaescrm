@@ -2213,3 +2213,27 @@ tr.row-cold:hover td { background: #dbeafe; }
   .ai-field-label { width: 70px; }
   .ai-preview-card { min-width: 0; }
 }
+
+/* ── Username field ─────────────────────────────────────────── */
+.username-input-wrap { position: relative; }
+.username-input-wrap input { padding-right: 36px; }
+.username-status {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 14px;
+  font-weight: 700;
+  pointer-events: none;
+  transition: color .2s;
+}
+.username-status.un-ok      { color: #27ae60; }
+.username-status.un-err     { color: #e74c3c; }
+.username-status.un-checking{ color: var(--text-muted); font-size: 11px; letter-spacing: 1px; }
+.username-hint {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 5px;
+  min-height: 16px;
+  transition: color .2s;
+}

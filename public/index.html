@@ -105,8 +105,13 @@
         <h2 class="login-title">Create Account</h2>
         <form id="register-form" autocomplete="off">
           <div class="form-group">
-            <label>Your Name</label>
-            <input id="reg-name" type="text" placeholder="e.g. Raj Kumar" autocomplete="name" />
+            <label>Username</label>
+            <div class="username-input-wrap">
+              <input id="reg-name" type="text" placeholder="e.g. raj_kumar" autocomplete="off"
+                maxlength="20" spellcheck="false" oninput="onUsernameInput(this)" />
+              <span id="reg-username-status" class="username-status"></span>
+            </div>
+            <div id="reg-username-hint" class="username-hint">3–20 chars · letters, numbers, _ and . only</div>
           </div>
           <div class="form-group">
             <label>PIN <span style="font-weight:400;color:var(--text-muted)">(4–6 digits)</span></label>

@@ -1274,17 +1274,31 @@ app.post('/api/leads/:id/claim', authMiddleware, async (req, res) => {
 const RP_NAME = 'SalesCRM';
 
 // Detect the correct origin + rpId from the incoming request.
-// Env vars override if set; otherwise uses the request's Origin header.
+// Env vars ORIGIN / RP_ID override everything if both are set.
+// Otherwise: try Origin header → Referer header → reconstruct from Host + x-forwarded-proto.
+// The Host+proto fallback is needed because mobile browsers often omit the Origin header
+// on same-origin POST requests, which breaks WebAuthn on Render/HF behind a proxy.
 function getWebAuthnConfig(req) {
   const envOrigin = process.env.ORIGIN;
   const envRpId   = process.env.RP_ID;
   if (envOrigin && envRpId) return { origin: envOrigin, rpId: envRpId };
-  const reqOrigin = (req.headers.origin || req.headers.referer || '').replace(/\/$/, '');
+
+  let reqOrigin = (req.headers.origin || '').replace(/\/$/, '');
+  if (!reqOrigin && req.headers.referer) {
+    try { reqOrigin = new URL(req.headers.referer).origin; } catch {}
+  }
+  // Last resort: build from Host header (always present) + forwarded proto
+  if (!reqOrigin && req.headers.host) {
+    const proto = req.headers['x-forwarded-proto'] || (req.socket?.encrypted ? 'https' : 'http');
+    reqOrigin = `${proto}://${req.headers.host}`;
+  }
+
   const origin = envOrigin || reqOrigin || `http://localhost:${PORT}`;
   let rpId = envRpId;
   if (!rpId) {
     try { rpId = new URL(origin).hostname; } catch { rpId = 'localhost'; }
   }
+  console.log('[WebAuthn] origin=%s rpId=%s', origin, rpId);
   return { origin, rpId };
 }
 

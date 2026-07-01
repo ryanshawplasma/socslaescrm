@@ -352,6 +352,7 @@ function toast(msg, type = 'success') {
 const PAGE_TITLES = {
   dashboard: 'Dashboard', leads: 'Leads',
   pipeline: 'Pipeline', followups: 'Follow-ups', reports: 'Reports', team: 'Team', map: 'Map', chat: 'Chat',
+  workspace: 'Workspace',
 };
 
 function navigate(page) {
@@ -376,6 +377,7 @@ function renderPage(page) {
   if (page === 'team')       renderTeam();
   if (page === 'map')        renderMap();
   if (page === 'chat')       chatFocusInput();
+  if (page === 'workspace')  renderWorkspace();
 }
 
 // ============================================================
@@ -2241,6 +2243,450 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function escHtml(str) {
   return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ============================================================
+//  WORKSPACE
+// ============================================================
+
+const ws = {
+  activeTeam:   null,   // { id, name, handle, team_code, invite_code, role, ... }
+  myTeams:      [],
+};
+
+function wsTeamApiFetch(path, opts = {}) {
+  if (!ws.activeTeam) return Promise.reject(new Error('No active team'));
+  const headers = { 'Content-Type': 'application/json' };
+  const token = localStorage.getItem('crm_token');
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  headers['X-Team-ID'] = String(ws.activeTeam.id);
+  return fetch(path, { headers, ...opts, headers })
+    .then(async r => {
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || `${r.status}`);
+      return d;
+    });
+}
+
+async function renderWorkspace() {
+  // Load my teams
+  try {
+    ws.myTeams = await apiFetch('/api/my/teams');
+  } catch (_) { ws.myTeams = []; }
+
+  if (!ws.myTeams.length) {
+    // Not in any team yet — show hero + create/join UI
+    document.getElementById('ws-no-team').classList.remove('hidden');
+    document.getElementById('ws-team').classList.add('hidden');
+    document.getElementById('ws-panel-search').classList.add('hidden');
+    document.getElementById('ws-panel-create').classList.add('hidden');
+    document.getElementById('ws-panel-join').classList.add('hidden');
+    wsRenderCreate(); // pre-render create form
+    wsRenderSearch(); // pre-render search
+    return;
+  }
+
+  // Pick first active team (or last used)
+  const savedId = localStorage.getItem('ws_team_id');
+  ws.activeTeam = ws.myTeams.find(t => t.id === parseInt(savedId, 10)) || ws.myTeams[0];
+  localStorage.setItem('ws_team_id', ws.activeTeam.id);
+
+  document.getElementById('ws-no-team').classList.add('hidden');
+  document.getElementById('ws-team').classList.remove('hidden');
+  document.getElementById('ws-panel-search').classList.add('hidden');
+  document.getElementById('ws-panel-create').classList.add('hidden');
+  document.getElementById('ws-panel-join').classList.add('hidden');
+
+  wsFillBanner();
+  wsApplyRoleVisibility();
+  wsShowTab('overview');
+}
+
+function wsFillBanner() {
+  const t = ws.activeTeam;
+  document.getElementById('ws-team-avatar').textContent = (t.name || '?')[0].toUpperCase();
+  document.getElementById('ws-team-name').textContent   = t.name;
+  document.getElementById('ws-team-meta').textContent   =
+    `@${t.handle}  ·  ${t.team_code}  ·  Your role: ${t.role}`;
+}
+
+function wsApplyRoleVisibility() {
+  const isAdmin = ['owner', 'admin'].includes(ws.activeTeam?.role);
+  document.querySelectorAll('.ws-tab-admin').forEach(el => {
+    el.style.display = isAdmin ? '' : 'none';
+  });
+}
+
+function wsShowTab(tab) {
+  // Hide all panels
+  document.querySelectorAll('.ws-panel').forEach(p => p.classList.add('hidden'));
+  document.querySelectorAll('.ws-tab').forEach(t => t.classList.remove('active'));
+  // Highlight tab button
+  const btn = document.querySelector(`.ws-tab[data-tab="${tab}"]`);
+  if (btn) btn.classList.add('active');
+
+  const panelId = `ws-panel-${tab}`;
+  const panel   = document.getElementById(panelId);
+  if (panel) panel.classList.remove('hidden');
+
+  if (tab === 'overview')  wsRenderOverview();
+  if (tab === 'members')   wsRenderMembers();
+  if (tab === 'requests')  wsRenderRequests();
+  if (tab === 'settings')  wsRenderSettings();
+  if (tab === 'search')    wsRenderSearch();
+  if (tab === 'create')    wsRenderCreate();
+  if (tab === 'join')      wsRenderJoin();
+}
+
+// ── Overview ─────────────────────────────────────────────────
+
+function wsRenderOverview() {
+  const t    = ws.activeTeam;
+  const link = `${location.origin}?join=${t.invite_code}`;
+  document.getElementById('ws-panel-overview').innerHTML = `
+    <div class="ws-cards">
+      <div class="ws-info-card">
+        <h3>Team Info</h3>
+        <div class="ws-info-row"><span>Name</span><b>${escHtml(t.name)}</b></div>
+        <div class="ws-info-row"><span>Handle</span><b>@${escHtml(t.handle)}</b></div>
+        <div class="ws-info-row"><span>Team ID</span><b>${escHtml(t.team_code)}</b></div>
+        <div class="ws-info-row"><span>Your role</span><b class="ws-role-badge ws-role-${t.role}">${t.role}</b></div>
+      </div>
+      <div class="ws-info-card">
+        <h3>Invite Code</h3>
+        <div class="ws-invite-code" id="ws-inv-code">${escHtml(t.invite_code)}</div>
+        <button class="btn btn-ghost btn-sm" onclick="wsCopyInvite()">Copy Code</button>
+        <button class="btn btn-ghost btn-sm" onclick="wsCopyLink()">Copy Link</button>
+        ${['owner','admin'].includes(t.role) ? `<button class="btn btn-ghost btn-sm" onclick="wsRegenInvite()">Regenerate</button>` : ''}
+        <div class="ws-invite-link" id="ws-inv-link" style="font-size:11px;color:var(--text-muted);margin-top:8px;word-break:break-all">${escHtml(link)}</div>
+      </div>
+    </div>`;
+}
+
+function wsCopyInvite() {
+  navigator.clipboard?.writeText(ws.activeTeam.invite_code);
+  toast('Invite code copied!');
+}
+
+function wsCopyLink() {
+  const link = `${location.origin}?join=${ws.activeTeam.invite_code}`;
+  navigator.clipboard?.writeText(link);
+  toast('Invite link copied!');
+}
+
+async function wsRegenInvite() {
+  if (!confirm('Regenerate invite code? The old code will stop working.')) return;
+  try {
+    const { invite_code } = await wsTeamApiFetch(`/api/teams/${ws.activeTeam.id}/invite/regenerate`, { method: 'POST' });
+    ws.activeTeam.invite_code = invite_code;
+    ws.myTeams.find(t => t.id === ws.activeTeam.id).invite_code = invite_code;
+    wsRenderOverview();
+    toast('Invite code regenerated!');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// ── Members ───────────────────────────────────────────────────
+
+async function wsRenderMembers() {
+  const panel = document.getElementById('ws-panel-members');
+  panel.innerHTML = `<div style="padding:20px;color:var(--text-muted)">Loading members…</div>`;
+  try {
+    const members = await wsTeamApiFetch(`/api/teams/${ws.activeTeam.id}/members`);
+    const isAdmin = ['owner', 'admin'].includes(ws.activeTeam.role);
+    const rows = members.map(m => {
+      const roleOpts = ['owner','admin','manager','sales','viewer'];
+      const roleSelect = isAdmin && m.role !== 'owner'
+        ? `<select class="ws-role-select" onchange="wsChangeMemberRole(${m.user_id}, this.value)">
+             ${roleOpts.filter(r => r !== 'owner').map(r =>
+               `<option value="${r}" ${m.role === r ? 'selected' : ''}>${r}</option>`
+             ).join('')}
+           </select>`
+        : `<span class="ws-role-badge ws-role-${m.role}">${m.role}</span>`;
+
+      const actions = isAdmin && m.role !== 'owner'
+        ? `<button class="action-btn del" onclick="wsRemoveMember(${m.user_id}, '${escAttr(m.display_name)}')">Remove</button>`
+        : '—';
+
+      const statusBadge = m.status === 'active'
+        ? `<span style="color:var(--success)">● Active</span>`
+        : `<span style="color:var(--text-muted)">● ${m.status}</span>`;
+
+      return `<tr>
+        <td style="font-weight:500">${escHtml(m.display_name)}</td>
+        <td>${roleSelect}</td>
+        <td>${statusBadge}</td>
+        <td style="font-size:12px;color:var(--text-muted)">${m.joined_at ? m.joined_at.split(' ')[0] : '—'}</td>
+        <td>${actions}</td>
+      </tr>`;
+    }).join('');
+
+    panel.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <span style="font-size:15px;font-weight:600">${members.length} Member${members.length !== 1 ? 's' : ''}</span>
+        ${isAdmin ? `<button class="btn btn-primary btn-sm" onclick="wsShowTab('search')">+ Add Members</button>` : ''}
+      </div>
+      <div class="card" style="overflow:auto">
+        <table class="crm-table">
+          <thead><tr><th>Name</th><th>Role</th><th>Status</th><th>Joined</th><th>Action</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  } catch (err) { panel.innerHTML = `<div class="ws-error">${escHtml(err.message)}</div>`; }
+}
+
+async function wsChangeMemberRole(userId, role) {
+  try {
+    await wsTeamApiFetch(`/api/teams/${ws.activeTeam.id}/members/${userId}`, {
+      method: 'PATCH', body: JSON.stringify({ role }),
+    });
+    toast(`Role updated to ${role}`);
+  } catch (err) { toast(err.message, 'error'); wsRenderMembers(); }
+}
+
+async function wsRemoveMember(userId, name) {
+  if (!confirm(`Remove "${name}" from the team?`)) return;
+  try {
+    await wsTeamApiFetch(`/api/teams/${ws.activeTeam.id}/members/${userId}`, { method: 'DELETE' });
+    toast(`${name} removed`);
+    wsRenderMembers();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// ── Requests ──────────────────────────────────────────────────
+
+async function wsRenderRequests() {
+  const panel = document.getElementById('ws-panel-requests');
+  panel.innerHTML = `<div style="padding:20px;color:var(--text-muted)">Loading requests…</div>`;
+  try {
+    const requests = await wsTeamApiFetch(`/api/teams/${ws.activeTeam.id}/requests`);
+    const pending  = requests.filter(r => r.status === 'pending');
+    // Update badge
+    const badge = document.getElementById('ws-req-badge');
+    if (pending.length) { badge.textContent = pending.length; badge.classList.remove('hidden'); }
+    else                { badge.classList.add('hidden'); }
+
+    if (!requests.length) {
+      panel.innerHTML = `<div style="padding:30px;text-align:center;color:var(--text-muted)">No join requests yet.</div>`;
+      return;
+    }
+
+    const rows = requests.map(r => `
+      <tr>
+        <td style="font-weight:500">${escHtml(r.user_name)}</td>
+        <td style="color:var(--text-muted);font-size:12px">${r.message || '—'}</td>
+        <td><span class="ws-status-badge ws-status-${r.status}">${r.status}</span></td>
+        <td style="font-size:12px;color:var(--text-muted)">${(r.created_at || '').split(' ')[0]}</td>
+        <td>
+          ${r.status === 'pending' ? `
+            <button class="action-btn" onclick="wsReviewRequest(${r.id}, 'approved')">Approve</button>
+            <button class="action-btn del" onclick="wsReviewRequest(${r.id}, 'rejected')">Reject</button>
+          ` : '—'}
+        </td>
+      </tr>`).join('');
+
+    panel.innerHTML = `
+      <div style="margin-bottom:14px;font-size:15px;font-weight:600">${pending.length} Pending · ${requests.length} Total</div>
+      <div class="card" style="overflow:auto">
+        <table class="crm-table">
+          <thead><tr><th>Name</th><th>Message</th><th>Status</th><th>Requested</th><th>Action</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  } catch (err) { panel.innerHTML = `<div class="ws-error">${escHtml(err.message)}</div>`; }
+}
+
+async function wsReviewRequest(requestId, status) {
+  try {
+    await wsTeamApiFetch(`/api/teams/${ws.activeTeam.id}/requests/${requestId}`, {
+      method: 'PATCH', body: JSON.stringify({ status }),
+    });
+    toast(status === 'approved' ? 'Request approved!' : 'Request rejected');
+    wsRenderRequests();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// ── Search ────────────────────────────────────────────────────
+
+function wsRenderSearch() {
+  const panel = document.getElementById('ws-panel-search');
+  panel.innerHTML = `
+    <div class="ws-search-wrap">
+      <h3 style="margin-bottom:16px;font-size:16px;font-weight:600">Find a Team</h3>
+      <div style="display:flex;gap:8px;margin-bottom:20px">
+        <input id="ws-search-input" type="text" class="ws-input" placeholder="Team name, @handle, or TEAM-XXXXX"
+          onkeydown="if(event.key==='Enter')wsDoSearch()" style="flex:1" />
+        <button class="btn btn-primary" onclick="wsDoSearch()">Search</button>
+      </div>
+      <div id="ws-search-results"></div>
+
+      <div class="ws-divider">or join with an invite code</div>
+      <div style="display:flex;gap:8px;margin-top:16px">
+        <input id="ws-inv-input" type="text" class="ws-input" placeholder="Enter invite code" style="flex:1" />
+        <button class="btn btn-primary" onclick="wsJoinByCode()">Join</button>
+      </div>
+      <p id="ws-join-err" class="login-error"></p>
+    </div>`;
+
+  // If URL has ?join=code, auto-fill
+  const params = new URLSearchParams(location.search);
+  const autoCode = params.get('join');
+  if (autoCode) {
+    document.getElementById('ws-inv-input').value = autoCode;
+    history.replaceState({}, '', location.pathname);
+  }
+}
+
+async function wsDoSearch() {
+  const q = document.getElementById('ws-search-input').value.trim();
+  if (q.length < 2) return;
+  const resultsEl = document.getElementById('ws-search-results');
+  resultsEl.innerHTML = `<div style="color:var(--text-muted)">Searching…</div>`;
+  try {
+    const teams = await apiFetch(`/api/teams/search?q=${encodeURIComponent(q)}`);
+    if (!teams.length) { resultsEl.innerHTML = `<div style="color:var(--text-muted)">No teams found.</div>`; return; }
+    resultsEl.innerHTML = teams.map(t => `
+      <div class="ws-search-result">
+        <div class="ws-search-avatar">${(t.name||'?')[0].toUpperCase()}</div>
+        <div class="ws-search-info">
+          <div class="ws-search-name">${escHtml(t.name)}</div>
+          <div class="ws-search-meta">@${escHtml(t.handle)} · ${t.member_count} members · Owner: ${escHtml(t.owner_name)}</div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="wsRequestJoin(${t.id}, '${escAttr(t.name)}')">Request Join</button>
+      </div>`).join('');
+  } catch (err) { resultsEl.innerHTML = `<div class="ws-error">${escHtml(err.message)}</div>`; }
+}
+
+async function wsJoinByCode() {
+  const code  = (document.getElementById('ws-inv-input').value || '').trim();
+  const errEl = document.getElementById('ws-join-err');
+  errEl.textContent = '';
+  if (!code) { errEl.textContent = 'Enter an invite code'; return; }
+  try {
+    const { team } = await apiFetch('/api/teams/join', { method: 'POST', body: JSON.stringify({ invite_code: code }) });
+    toast(`Joined ${team.name}! Welcome to the team.`, 'success');
+    await renderWorkspace();
+  } catch (err) { errEl.textContent = err.message; }
+}
+
+async function wsRequestJoin(teamId, teamName) {
+  try {
+    const { auto_approved } = await apiFetch(`/api/teams/${teamId}/request`, { method: 'POST', body: JSON.stringify({ message: '' }) });
+    if (auto_approved) {
+      toast(`Joined ${teamName}! Welcome.`, 'success');
+      await renderWorkspace();
+    } else {
+      toast(`Join request sent to ${teamName}. Waiting for approval.`);
+    }
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// ── Create ────────────────────────────────────────────────────
+
+function wsRenderCreate() {
+  const panel = document.getElementById('ws-panel-create');
+  panel.innerHTML = `
+    <div class="ws-search-wrap">
+      <h3 style="margin-bottom:4px;font-size:16px;font-weight:600">Create a Team</h3>
+      <p style="color:var(--text-muted);font-size:13px;margin-bottom:20px">Your workspace where all leads and members are organized.</p>
+      <div class="form-group" style="margin-bottom:12px">
+        <label>Team Name</label>
+        <input id="ws-create-name" type="text" class="ws-input" placeholder="e.g. ABC Steels" />
+      </div>
+      <div class="form-group" style="margin-bottom:16px">
+        <label>Handle <span style="font-weight:400;color:var(--text-muted)">(unique, like @abcsteels)</span></label>
+        <div style="display:flex;gap:6px;align-items:center">
+          <span style="color:var(--text-muted)">@</span>
+          <input id="ws-create-handle" type="text" class="ws-input" placeholder="abcsteels" style="flex:1"
+            oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9_]/g,'')" />
+        </div>
+      </div>
+      <p id="ws-create-err" class="login-error"></p>
+      <button class="btn btn-primary" onclick="wsCreateTeam()">Create Team</button>
+    </div>`;
+}
+
+async function wsCreateTeam() {
+  const name   = (document.getElementById('ws-create-name').value   || '').trim();
+  const handle = (document.getElementById('ws-create-handle').value || '').trim();
+  const errEl  = document.getElementById('ws-create-err');
+  errEl.textContent = '';
+  if (name.length < 2)   { errEl.textContent = 'Team name must be at least 2 characters'; return; }
+  if (handle.length < 3) { errEl.textContent = 'Handle must be at least 3 characters'; return; }
+  try {
+    await apiFetch('/api/teams', { method: 'POST', body: JSON.stringify({ name, handle }) });
+    toast(`Team "${name}" created!`, 'success');
+    await renderWorkspace();
+  } catch (err) { errEl.textContent = err.message; }
+}
+
+// ── Settings ──────────────────────────────────────────────────
+
+function wsRenderSettings() {
+  const t = ws.activeTeam;
+  document.getElementById('ws-panel-settings').innerHTML = `
+    <div class="ws-search-wrap">
+      <h3 style="margin-bottom:16px;font-size:16px;font-weight:600">Team Settings</h3>
+      <div class="form-group" style="margin-bottom:12px">
+        <label>Team Name</label>
+        <input id="ws-set-name" type="text" class="ws-input" value="${escHtml(t.name)}" />
+      </div>
+      <div class="form-group" style="margin-bottom:12px">
+        <label>Handle</label>
+        <input id="ws-set-handle" type="text" class="ws-input" value="${escHtml(t.handle)}"
+          oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9_]/g,'')" />
+      </div>
+      <div class="form-group" style="margin-bottom:12px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="ws-set-public" ${t.public_search ? 'checked' : ''} />
+          Allow public search (others can find and request to join)
+        </label>
+      </div>
+      <div class="form-group" style="margin-bottom:20px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="ws-set-auto" ${t.auto_approve ? 'checked' : ''} />
+          Auto-approve join requests (no manual approval needed)
+        </label>
+      </div>
+      <p id="ws-set-err" class="login-error"></p>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary" onclick="wsSaveSettings()">Save Settings</button>
+      </div>
+    </div>`;
+}
+
+async function wsSaveSettings() {
+  const name         = (document.getElementById('ws-set-name').value   || '').trim();
+  const handle       = (document.getElementById('ws-set-handle').value || '').trim();
+  const publicSearch = document.getElementById('ws-set-public').checked;
+  const autoApprove  = document.getElementById('ws-set-auto').checked;
+  const errEl        = document.getElementById('ws-set-err');
+  errEl.textContent  = '';
+  if (name.length < 2)   { errEl.textContent = 'Name too short'; return; }
+  if (handle.length < 3) { errEl.textContent = 'Handle too short'; return; }
+  try {
+    await wsTeamApiFetch(`/api/teams/${ws.activeTeam.id}`, {
+      method: 'PATCH', body: JSON.stringify({ name, handle, publicSearch, autoApprove }),
+    });
+    ws.activeTeam.name         = name;
+    ws.activeTeam.handle       = handle;
+    ws.activeTeam.public_search = publicSearch;
+    ws.activeTeam.auto_approve  = autoApprove;
+    wsFillBanner();
+    toast('Settings saved!', 'success');
+  } catch (err) { errEl.textContent = err.message; }
+}
+
+// ── Leave team ────────────────────────────────────────────────
+
+async function wsLeaveTeam() {
+  if (!confirm(`Leave "${ws.activeTeam.name}"? You'll need an invite to rejoin.`)) return;
+  try {
+    await wsTeamApiFetch(`/api/teams/${ws.activeTeam.id}/leave`, { method: 'POST' });
+    ws.activeTeam = null;
+    localStorage.removeItem('ws_team_id');
+    toast('Left team');
+    await renderWorkspace();
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 init();

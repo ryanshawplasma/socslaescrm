@@ -1812,3 +1812,105 @@ tr.row-cold:hover td { background: #dbeafe; }
 .chat-preview-actions .btn-secondary:hover { background: var(--border); }
 [data-theme="dark"] .chat-input-row textarea { background: #21262d; }
 [data-theme="dark"] .chat-preview-actions .btn-secondary { background: #21262d; }
+
+/* ============================================================
+   WORKSPACE PAGE
+   ============================================================ */
+
+/* Hero (no-team state) */
+.ws-hero {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; padding: 60px 20px; text-align: center;
+}
+.ws-hero-icon  { font-size: 56px; margin-bottom: 16px; }
+.ws-hero-title { font-size: 24px; font-weight: 700; margin-bottom: 8px; }
+.ws-hero-sub   { color: var(--text-muted); max-width: 420px; margin-bottom: 28px; }
+.ws-hero-btns  { display: flex; gap: 12px; }
+
+/* Team banner */
+.ws-banner {
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 20px; margin-bottom: 16px;
+}
+.ws-banner-info    { display: flex; align-items: center; gap: 14px; }
+.ws-team-avatar    { width: 44px; height: 44px; border-radius: 10px; background: var(--primary); color: #fff; font-size: 22px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.ws-team-name      { font-size: 17px; font-weight: 700; }
+.ws-team-meta      { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.ws-banner-right   { display: flex; gap: 8px; }
+
+/* Tabs */
+.ws-tabs {
+  display: flex; gap: 4px; margin-bottom: 20px;
+  border-bottom: 1px solid var(--border); padding-bottom: 0;
+}
+.ws-tab {
+  padding: 8px 16px; border: none; background: none; color: var(--text-muted);
+  font-size: 13px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent;
+  margin-bottom: -1px; font-family: inherit; transition: color .15s, border-color .15s;
+}
+.ws-tab:hover         { color: var(--text); }
+.ws-tab.active        { color: var(--primary); border-bottom-color: var(--primary); }
+.ws-badge             { display: inline-flex; align-items: center; justify-content: center; background: var(--danger); color: #fff; font-size: 10px; border-radius: 10px; min-width: 16px; height: 16px; padding: 0 4px; margin-left: 4px; vertical-align: middle; }
+.ws-badge.hidden      { display: none; }
+
+/* Panels */
+.ws-panel { padding-top: 4px; }
+
+/* Info cards */
+.ws-cards    { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+.ws-info-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+.ws-info-card h3 { font-size: 13px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 14px; }
+.ws-info-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.ws-info-row:last-child { border-bottom: none; }
+.ws-info-row span { color: var(--text-muted); }
+
+/* Invite box */
+.ws-invite-code { font-size: 28px; font-weight: 700; letter-spacing: 2px; color: var(--primary); margin: 12px 0; }
+
+/* Role badges */
+.ws-role-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+.ws-role-owner   { background: #ffd70020; color: #b8860b; }
+.ws-role-admin   { background: var(--primary-muted); color: var(--primary); }
+.ws-role-manager { background: rgba(16,185,129,.12); color: var(--success); }
+.ws-role-sales   { background: rgba(245,158,11,.12); color: var(--warning); }
+.ws-role-viewer  { background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); }
+
+/* Status badges */
+.ws-status-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+.ws-status-pending  { background: rgba(245,158,11,.12); color: var(--warning); }
+.ws-status-approved { background: rgba(16,185,129,.12); color: var(--success); }
+.ws-status-rejected { background: rgba(239,68,68,.12);  color: var(--danger); }
+
+/* Search + create panels */
+.ws-search-wrap { max-width: 580px; }
+.ws-input { width: 100%; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text); font-size: 13px; font-family: inherit; }
+.ws-input:focus { outline: 2px solid var(--primary); border-color: transparent; }
+.ws-divider { text-align: center; position: relative; margin: 20px 0 0; color: var(--text-muted); font-size: 13px; }
+.ws-divider::before, .ws-divider::after { content: ''; position: absolute; top: 50%; width: calc(50% - 70px); height: 1px; background: var(--border); }
+.ws-divider::before { left: 0; } .ws-divider::after { right: 0; }
+
+/* Search results */
+.ws-search-result { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; background: var(--card-bg); }
+.ws-search-avatar { width: 40px; height: 40px; border-radius: 8px; background: var(--primary-muted); color: var(--primary); font-size: 18px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.ws-search-info   { flex: 1; min-width: 0; }
+.ws-search-name   { font-weight: 600; font-size: 14px; }
+.ws-search-meta   { font-size: 12px; color: var(--text-muted); }
+
+/* Role select in members table */
+.ws-role-select { padding: 3px 6px; border-radius: 5px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text); font-size: 12px; font-family: inherit; cursor: pointer; }
+
+/* Error */
+.ws-error { padding: 12px; background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3); border-radius: 8px; color: var(--danger); font-size: 13px; }
+
+/* Small button variant */
+.btn-sm { padding: 5px 12px !important; font-size: 12px !important; }
+
+/* Mobile adjustments */
+@media (max-width: 640px) {
+  .ws-cards     { grid-template-columns: 1fr; }
+  .ws-banner    { flex-direction: column; gap: 12px; align-items: flex-start; }
+  .ws-hero-btns { flex-direction: column; width: 100%; }
+  .ws-tabs      { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .ws-tab       { white-space: nowrap; }
+}

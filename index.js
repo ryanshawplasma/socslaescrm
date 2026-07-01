@@ -1292,6 +1292,204 @@ app.post('/api/leads/:id/claim', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
+//  TEAM WORKSPACE
+// ============================================================
+
+// Middleware: validate X-Team-ID header and active membership
+async function teamMemberMiddleware(req, res, next) {
+  const teamId = parseInt(req.headers['x-team-id'], 10);
+  if (!teamId) return res.status(400).json({ error: 'X-Team-ID header required' });
+  const user = await db.getUserByName(req.user.username);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const member = await db.getTeamMember(teamId, user.id);
+  if (!member || member.status !== 'active') return res.status(403).json({ error: 'Not an active member of this team' });
+  req.teamId   = teamId;
+  req.teamRole = member.role;
+  req.dbUser   = user;
+  next();
+}
+
+// Middleware: requires owner or admin in the team
+function teamAdminMiddleware(req, res, next) {
+  if (!['owner', 'admin'].includes(req.teamRole)) return res.status(403).json({ error: 'Team admin access required' });
+  next();
+}
+
+// GET /api/my/teams — teams the logged-in user belongs to
+app.get('/api/my/teams', authMiddleware, async (req, res) => {
+  try {
+    const user = await db.getUserByName(req.user.username);
+    if (!user) return res.json([]);
+    res.json(await db.getUserTeams(user.id));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/teams — create a new team
+app.post('/api/teams', authMiddleware, async (req, res) => {
+  const { name, handle } = req.body || {};
+  if (!name || name.trim().length < 2)   return res.status(400).json({ error: 'Team name must be at least 2 characters' });
+  if (!handle || !/^@?[a-z0-9_]{3,30}$/i.test(handle.replace(/^@/, '')))
+    return res.status(400).json({ error: 'Handle must be 3–30 letters/numbers/underscores' });
+  try {
+    const user = await db.getUserByName(req.user.username);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const existing = await db.getTeamByHandle(handle);
+    if (existing) return res.status(409).json({ error: 'Handle already taken, choose another' });
+    const team = await db.createTeam(name, handle, user.id);
+    res.json(team);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/teams/search?q=abc — search public teams
+app.get('/api/teams/search', authMiddleware, async (req, res) => {
+  const q = (req.query.q || '').trim();
+  if (q.length < 2) return res.json([]);
+  try { res.json(await db.searchTeams(q)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/teams/:id — team details (must be member OR searching)
+app.get('/api/teams/:id', authMiddleware, async (req, res) => {
+  try {
+    const team = await db.getTeamById(parseInt(req.params.id, 10));
+    if (!team) return res.status(404).json({ error: 'Team not found' });
+    res.json(team);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PATCH /api/teams/:id — update team settings (admin/owner)
+app.patch('/api/teams/:id', authMiddleware, teamMemberMiddleware, teamAdminMiddleware, async (req, res) => {
+  const { name, handle, publicSearch, autoApprove } = req.body || {};
+  try {
+    await db.updateTeam(req.teamId, { name, handle, publicSearch, autoApprove });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/teams/:id/invite/regenerate — regenerate invite code
+app.post('/api/teams/:id/invite/regenerate', authMiddleware, teamMemberMiddleware, teamAdminMiddleware, async (req, res) => {
+  try {
+    const code = await db.regenerateInviteCode(req.teamId);
+    res.json({ invite_code: code });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/teams/join — join via invite code
+app.post('/api/teams/join', authMiddleware, async (req, res) => {
+  const { invite_code } = req.body || {};
+  if (!invite_code) return res.status(400).json({ error: 'Invite code required' });
+  try {
+    const user = await db.getUserByName(req.user.username);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const team = await db.getTeamByInviteCode(invite_code.trim());
+    if (!team) return res.status(404).json({ error: 'Invalid invite code' });
+    const existing = await db.getTeamMember(team.id, user.id);
+    if (existing && existing.status === 'active') return res.status(409).json({ error: 'You are already a member of this team' });
+    await db.addTeamMember(team.id, user.id, 'sales', 'active');
+    res.json({ success: true, team: { id: team.id, name: team.name, handle: team.handle } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/teams/:id/request — request to join a public team
+app.post('/api/teams/:id/request', authMiddleware, async (req, res) => {
+  const teamId = parseInt(req.params.id, 10);
+  const { message } = req.body || {};
+  try {
+    const user = await db.getUserByName(req.user.username);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const team = await db.getTeamById(teamId);
+    if (!team) return res.status(404).json({ error: 'Team not found' });
+    const existing = await db.getTeamMember(teamId, user.id);
+    if (existing && existing.status === 'active') return res.status(409).json({ error: 'Already a member' });
+    if (team.auto_approve) {
+      await db.addTeamMember(teamId, user.id, 'sales', 'active');
+      return res.json({ success: true, auto_approved: true, team: { id: team.id, name: team.name } });
+    }
+    await db.createJoinRequest(teamId, user.id, message || '');
+    res.json({ success: true, auto_approved: false });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/teams/:id/requests — list join requests (admin)
+app.get('/api/teams/:id/requests', authMiddleware, teamMemberMiddleware, teamAdminMiddleware, async (req, res) => {
+  try { res.json(await db.getJoinRequests(req.teamId, req.query.status || null)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PATCH /api/teams/:id/requests/:rid — approve or reject
+app.patch('/api/teams/:id/requests/:rid', authMiddleware, teamMemberMiddleware, teamAdminMiddleware, async (req, res) => {
+  const { status } = req.body || {};
+  if (!['approved', 'rejected'].includes(status)) return res.status(400).json({ error: 'status must be approved or rejected' });
+  try {
+    const requests = await db.getJoinRequests(req.teamId);
+    const jr = requests.find(r => r.id === parseInt(req.params.rid, 10));
+    if (!jr) return res.status(404).json({ error: 'Request not found' });
+    await db.updateJoinRequest(jr.id, status, req.dbUser.id);
+    if (status === 'approved') await db.addTeamMember(req.teamId, jr.user_id, 'sales', 'active');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/teams/:id/members — list team members
+app.get('/api/teams/:id/members', authMiddleware, teamMemberMiddleware, async (req, res) => {
+  try { res.json(await db.getTeamMembers(req.teamId)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PATCH /api/teams/:id/members/:uid — change role or status
+app.patch('/api/teams/:id/members/:uid', authMiddleware, teamMemberMiddleware, teamAdminMiddleware, async (req, res) => {
+  const uid    = parseInt(req.params.uid, 10);
+  const { role, status } = req.body || {};
+  const validRoles   = ['admin', 'manager', 'sales', 'viewer'];
+  const validStatus  = ['active', 'suspended'];
+  if (role   && !validRoles.includes(role))   return res.status(400).json({ error: 'Invalid role' });
+  if (status && !validStatus.includes(status)) return res.status(400).json({ error: 'Invalid status' });
+  const target = await db.getTeamMember(req.teamId, uid);
+  if (!target) return res.status(404).json({ error: 'Member not found' });
+  if (target.role === 'owner') return res.status(403).json({ error: 'Cannot modify owner' });
+  try {
+    await db.updateTeamMember(req.teamId, uid, { role, status });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DELETE /api/teams/:id/members/:uid — remove member
+app.delete('/api/teams/:id/members/:uid', authMiddleware, teamMemberMiddleware, teamAdminMiddleware, async (req, res) => {
+  const uid = parseInt(req.params.uid, 10);
+  const target = await db.getTeamMember(req.teamId, uid);
+  if (!target) return res.status(404).json({ error: 'Member not found' });
+  if (target.role === 'owner') return res.status(403).json({ error: 'Cannot remove owner' });
+  try {
+    await db.removeTeamMember(req.teamId, uid);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/teams/:id/leave — leave team
+app.post('/api/teams/:id/leave', authMiddleware, teamMemberMiddleware, async (req, res) => {
+  if (req.teamRole === 'owner') return res.status(403).json({ error: 'Owner cannot leave. Transfer ownership first.' });
+  try {
+    await db.removeTeamMember(req.teamId, req.dbUser.id);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/teams/:id/leads — leads for this team
+app.get('/api/teams/:id/leads', authMiddleware, teamMemberMiddleware, async (req, res) => {
+  try { res.json(await db.getLeadsByTeam(req.teamId)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/teams/:id/leads — add lead to team
+app.post('/api/teams/:id/leads', authMiddleware, teamMemberMiddleware, async (req, res) => {
+  if (!['owner','admin','manager','sales'].includes(req.teamRole)) return res.status(403).json({ error: 'Viewers cannot create leads' });
+  try {
+    const lead = await db.addLead({ ...req.body, created_by: req.user.username, team_id: req.teamId });
+    res.json(lead);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ============================================================
 //  WEBAUTHN — Biometric login (auto-detects origin from request)
 // ============================================================
 const RP_NAME = 'SalesCRM';

@@ -129,6 +129,68 @@ async function initSchema() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_access_lead_id ON lead_access(lead_id)`);
 
+    // ── Team Workspace tables ──────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS teams (
+        id            SERIAL PRIMARY KEY,
+        name          TEXT NOT NULL,
+        handle        TEXT UNIQUE NOT NULL,
+        team_code     TEXT UNIQUE NOT NULL,
+        owner_id      INTEGER REFERENCES users(id),
+        invite_code   TEXT UNIQUE,
+        public_search BOOLEAN DEFAULT true,
+        auto_approve  BOOLEAN DEFAULT false,
+        created_at    TEXT
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_teams_handle   ON teams(LOWER(handle))`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_teams_code     ON teams(team_code)`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS team_members (
+        id        SERIAL PRIMARY KEY,
+        team_id   INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+        user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role      TEXT NOT NULL DEFAULT 'sales',
+        status    TEXT NOT NULL DEFAULT 'active',
+        joined_at TEXT,
+        UNIQUE(team_id, user_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_id)`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS team_invitations (
+        id         SERIAL PRIMARY KEY,
+        team_id    INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+        code       TEXT UNIQUE NOT NULL,
+        created_by INTEGER REFERENCES users(id),
+        expires_at TEXT,
+        max_uses   INTEGER,
+        use_count  INTEGER DEFAULT 0,
+        created_at TEXT
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS join_requests (
+        id          SERIAL PRIMARY KEY,
+        team_id     INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        status      TEXT DEFAULT 'pending',
+        message     TEXT DEFAULT '',
+        reviewed_by INTEGER REFERENCES users(id),
+        created_at  TEXT,
+        updated_at  TEXT,
+        UNIQUE(team_id, user_id)
+      )
+    `);
+
+    // Add team context columns to leads (safe – idempotent)
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS team_id    INTEGER REFERENCES teams(id)`).catch(() => {});
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'team'`).catch(() => {});
+
     console.log('✅ PostgreSQL schema ready');
   } finally {
     client.release();
@@ -275,8 +337,8 @@ async function addLead(data, createdBy = '') {
     INSERT INTO leads
       (factory_number, factory_name, person_in_charge, contact, product,
        quantity, rate, stage, follow_up, notes, area, lead_type, created_by,
-       last_updated, mapped_stage, stage_number)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+       last_updated, mapped_stage, stage_number, team_id)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
     RETURNING id
   `, [
     data.factory_number   || '',
@@ -295,6 +357,7 @@ async function addLead(data, createdBy = '') {
     now,
     data.stage            || '',
     data.stage_number != null ? String(data.stage_number) : '',
+    data.team_id          || null,
   ]);
 
   const leadId = newRow.id;
@@ -574,13 +637,222 @@ async function getLeadContacts(leadId) {
   return rows;
 }
 
+// ============================================================
+//  TEAM WORKSPACE
+// ============================================================
+
+function generateTeamCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let c = 'TEAM-';
+  for (let i = 0; i < 6; i++) c += chars[Math.floor(Math.random() * chars.length)];
+  return c;
+}
+
+function generateInviteCode(len = 10) {
+  const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+  let c = '';
+  for (let i = 0; i < len; i++) c += chars[Math.floor(Math.random() * chars.length)];
+  return c;
+}
+
+async function createTeam(name, handle, ownerId) {
+  const teamCode = generateTeamCode();
+  const invCode  = generateInviteCode();
+  const { rows } = await pool.query(
+    `INSERT INTO teams (name, handle, team_code, owner_id, invite_code, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [name.trim(), handle.toLowerCase().replace(/^@/, ''), teamCode, ownerId, invCode, nowIST()]
+  );
+  const team = rows[0];
+  await pool.query(
+    `INSERT INTO team_members (team_id, user_id, role, status, joined_at) VALUES ($1,$2,'owner','active',$3)`,
+    [team.id, ownerId, nowIST()]
+  );
+  return team;
+}
+
+async function getTeamById(id) {
+  const { rows } = await pool.query(
+    `SELECT t.*, u.display_name AS owner_name,
+       (SELECT COUNT(*) FROM team_members WHERE team_id=t.id AND status='active')::int AS member_count
+     FROM teams t LEFT JOIN users u ON t.owner_id=u.id WHERE t.id=$1`, [id]
+  );
+  return rows[0] || null;
+}
+
+async function getTeamByHandle(handle) {
+  const { rows } = await pool.query(
+    `SELECT t.*, u.display_name AS owner_name,
+       (SELECT COUNT(*) FROM team_members WHERE team_id=t.id AND status='active')::int AS member_count
+     FROM teams t LEFT JOIN users u ON t.owner_id=u.id WHERE LOWER(t.handle)=LOWER($1)`,
+    [handle.replace(/^@/, '')]
+  );
+  return rows[0] || null;
+}
+
+async function getTeamByInviteCode(code) {
+  const { rows } = await pool.query(`SELECT * FROM teams WHERE invite_code=$1`, [code]);
+  return rows[0] || null;
+}
+
+async function searchTeams(query) {
+  const q = `%${query.toLowerCase()}%`;
+  const { rows } = await pool.query(
+    `SELECT t.id, t.name, t.handle, t.team_code, u.display_name AS owner_name,
+       (SELECT COUNT(*) FROM team_members WHERE team_id=t.id AND status='active')::int AS member_count
+     FROM teams t LEFT JOIN users u ON t.owner_id=u.id
+     WHERE t.public_search=true
+       AND (LOWER(t.name) LIKE $1 OR LOWER(t.handle) LIKE $1 OR LOWER(t.team_code) LIKE $1)
+     ORDER BY member_count DESC LIMIT 20`, [q]
+  );
+  return rows;
+}
+
+async function updateTeam(id, { name, handle, publicSearch, autoApprove }) {
+  const sets = []; const vals = []; let i = 1;
+  if (name         !== undefined) { sets.push(`name=$${i++}`);          vals.push(name); }
+  if (handle       !== undefined) { sets.push(`handle=$${i++}`);        vals.push(handle.replace(/^@/, '')); }
+  if (publicSearch !== undefined) { sets.push(`public_search=$${i++}`); vals.push(publicSearch); }
+  if (autoApprove  !== undefined) { sets.push(`auto_approve=$${i++}`);  vals.push(autoApprove); }
+  if (!sets.length) return;
+  vals.push(id);
+  await pool.query(`UPDATE teams SET ${sets.join(',')} WHERE id=$${i}`, vals);
+}
+
+async function regenerateInviteCode(teamId) {
+  const code = generateInviteCode();
+  await pool.query(`UPDATE teams SET invite_code=$1 WHERE id=$2`, [code, teamId]);
+  return code;
+}
+
+async function getTeamMembers(teamId) {
+  const { rows } = await pool.query(
+    `SELECT tm.id, tm.team_id, tm.role, tm.status, tm.joined_at,
+       u.id AS user_id, u.display_name, u.telegram_user_id
+     FROM team_members tm JOIN users u ON u.id=tm.user_id
+     WHERE tm.team_id=$1
+     ORDER BY CASE tm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1
+       WHEN 'manager' THEN 2 WHEN 'sales' THEN 3 ELSE 4 END, tm.joined_at ASC`,
+    [teamId]
+  );
+  return rows;
+}
+
+async function getTeamMember(teamId, userId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM team_members WHERE team_id=$1 AND user_id=$2`, [teamId, userId]
+  );
+  return rows[0] || null;
+}
+
+async function addTeamMember(teamId, userId, role = 'sales', status = 'active') {
+  const { rows } = await pool.query(
+    `INSERT INTO team_members (team_id, user_id, role, status, joined_at)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (team_id, user_id) DO UPDATE SET status=EXCLUDED.status, role=EXCLUDED.role, joined_at=EXCLUDED.joined_at
+     RETURNING *`,
+    [teamId, userId, role, status, nowIST()]
+  );
+  return rows[0];
+}
+
+async function updateTeamMember(teamId, userId, { role, status }) {
+  const sets = []; const vals = []; let i = 1;
+  if (role   !== undefined) { sets.push(`role=$${i++}`);   vals.push(role); }
+  if (status !== undefined) { sets.push(`status=$${i++}`); vals.push(status); }
+  if (!sets.length) return;
+  vals.push(teamId, userId);
+  await pool.query(`UPDATE team_members SET ${sets.join(',')} WHERE team_id=$${i} AND user_id=$${i+1}`, vals);
+}
+
+async function removeTeamMember(teamId, userId) {
+  await pool.query(`DELETE FROM team_members WHERE team_id=$1 AND user_id=$2`, [teamId, userId]);
+}
+
+async function getUserTeams(userId) {
+  const { rows } = await pool.query(
+    `SELECT t.id, t.name, t.handle, t.team_code, t.invite_code, t.auto_approve,
+       tm.role, tm.status, tm.joined_at
+     FROM teams t JOIN team_members tm ON tm.team_id=t.id
+     WHERE tm.user_id=$1 AND tm.status='active'
+     ORDER BY tm.joined_at ASC`,
+    [userId]
+  );
+  return rows;
+}
+
+async function createJoinRequest(teamId, userId, message = '') {
+  const { rows } = await pool.query(
+    `INSERT INTO join_requests (team_id, user_id, message, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$4)
+     ON CONFLICT (team_id, user_id) DO UPDATE SET status='pending', message=EXCLUDED.message, updated_at=EXCLUDED.created_at
+     RETURNING *`,
+    [teamId, userId, message, nowIST()]
+  );
+  return rows[0];
+}
+
+async function getJoinRequests(teamId, status = null) {
+  const cond  = status ? `AND jr.status=$2` : '';
+  const vals  = status ? [teamId, status]   : [teamId];
+  const { rows } = await pool.query(
+    `SELECT jr.*, u.display_name AS user_name
+     FROM join_requests jr JOIN users u ON u.id=jr.user_id
+     WHERE jr.team_id=$1 ${cond} ORDER BY jr.created_at DESC`, vals
+  );
+  return rows;
+}
+
+async function updateJoinRequest(id, status, reviewedBy) {
+  await pool.query(
+    `UPDATE join_requests SET status=$1, reviewed_by=$2, updated_at=$3 WHERE id=$4`,
+    [status, reviewedBy, nowIST(), id]
+  );
+}
+
+async function getJoinRequestByUserTeam(teamId, userId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM join_requests WHERE team_id=$1 AND user_id=$2`, [teamId, userId]
+  );
+  return rows[0] || null;
+}
+
+async function getLeadsByTeam(teamId) {
+  const { rows } = await pool.query(`
+    SELECT id AS "rowIndex", factory_number, factory_name, person_in_charge, contact,
+      product, quantity, rate, stage, follow_up, notes, area,
+      lead_type, created_by, assigned_to, last_updated, mapped_stage, stage_number,
+      lat, lng, team_id, visibility
+    FROM leads WHERE team_id=$1 ORDER BY id ASC`, [teamId]
+  );
+  if (!rows.length) return [];
+  const ids = rows.map(r => r.rowIndex);
+  const { rows: allItems }    = await pool.query(`SELECT * FROM lead_items    WHERE lead_id=ANY($1) ORDER BY lead_id,id ASC`, [ids]);
+  const { rows: allContacts } = await pool.query(`SELECT * FROM lead_contacts WHERE lead_id=ANY($1) ORDER BY lead_id,id ASC`, [ids]);
+  const itemMap = {}; const contactMap = {};
+  for (const it of allItems)    { (itemMap[it.lead_id]    = itemMap[it.lead_id]    || []).push({ product: it.product||'', quantity: it.quantity||'', rate: it.rate||'' }); }
+  for (const ct of allContacts) { (contactMap[ct.lead_id] = contactMap[ct.lead_id] || []).push({ id: ct.id, person_name: ct.person_name||'', contact: ct.contact||'', designation: ct.designation||'' }); }
+  return rows.map(r => {
+    const out = {};
+    for (const [k, v] of Object.entries(r)) out[k] = v == null ? '' : String(v);
+    out.items         = itemMap[r.rowIndex]    || [];
+    out.extraContacts = contactMap[r.rowIndex] || [];
+    return out;
+  });
+}
+
 module.exports = {
   initSchema,
-  getLeads, getLeadsForUser, getStats, addLead, updateLead, deleteLead,
+  getLeads, getLeadsForUser, getLeadsByTeam, getStats, addLead, updateLead, deleteLead,
   addPhoto, getPhotos, getLeadContacts,
   grantLeadAccess, revokeLeadAccess, getLeadAccess, claimFollowUp, reassignFollowUp,
   createUser, getUserByName, getUserByTelegramId, updateUserPin, updateUserName,
   getAllUsers, deleteUser, verifyUserPin, seedAdminUser,
   saveWebAuthnCred, getWebAuthnCred, getUserByWebAuthnCredId,
   getLeadCoordinates, updateLeadCoords,
+  // Team workspace
+  createTeam, getTeamById, getTeamByHandle, getTeamByInviteCode, searchTeams,
+  updateTeam, regenerateInviteCode,
+  getTeamMembers, getTeamMember, addTeamMember, updateTeamMember, removeTeamMember, getUserTeams,
+  createJoinRequest, getJoinRequests, updateJoinRequest, getJoinRequestByUserTeam,
 };

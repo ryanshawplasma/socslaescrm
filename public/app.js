@@ -146,7 +146,18 @@ async function handleRegister(e) {
       body: JSON.stringify({ name, pin }),
     });
     const regData = await regRes.json();
-    if (!regRes.ok) throw new Error(regData.error || 'Registration failed');
+    if (!regRes.ok) {
+      if (regRes.status === 409) {
+        errEl.innerHTML = 'Name already taken. <a href="#" id="reg-login-link" style="color:var(--primary)">Log in instead →</a>';
+        document.getElementById('reg-login-link').onclick = function(ev) {
+          ev.preventDefault();
+          document.getElementById('login-username').value = name;
+          showLoginScreen();
+        };
+        return;
+      }
+      throw new Error(regData.error || 'Registration failed');
+    }
 
     // Auto-login directly — no synthetic event dispatch
     const loginRes  = await fetch('/api/login', {

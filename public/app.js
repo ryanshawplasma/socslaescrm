@@ -104,6 +104,14 @@ function logout() {
   showLoginPage();
 }
 
+function switchAccount() {
+  logout();
+  document.getElementById('login-username').value = '';
+  document.getElementById('login-password').value = '';
+  document.getElementById('login-error').textContent = '';
+  showLoginScreen();
+}
+
 function showRegisterScreen(e) {
   if (e) e.preventDefault();
   document.getElementById('login-screen').style.display    = 'none';
@@ -132,21 +140,30 @@ async function handleRegister(e) {
   btn.disabled    = true;
   btn.textContent = 'Creating…';
   try {
-    await fetch('/api/register', {
+    const regRes  = await fetch('/api/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, pin }),
-    }).then(async r => {
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || 'Registration failed');
     });
-    // Auto-fill login and switch back
-    document.getElementById('login-username').value = name;
-    document.getElementById('login-password').value = pin;
-    showLoginScreen();
-    document.getElementById('login-error').textContent = '';
-    toast('Account created! Logging you in…');
-    document.getElementById('login-form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    const regData = await regRes.json();
+    if (!regRes.ok) throw new Error(regData.error || 'Registration failed');
+
+    // Auto-login directly — no synthetic event dispatch
+    const loginRes  = await fetch('/api/login', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ username: name, password: pin }),
+    });
+    const loginData = await loginRes.json();
+    if (!loginRes.ok) throw new Error(loginData.error || 'Login failed after registration');
+
+    localStorage.setItem('crm_token', loginData.token);
+    localStorage.setItem('crm_role',  loginData.role);
+    localStorage.setItem('crm_user',  loginData.username);
+    state.role = loginData.role;
+    hideLoginPage();
+    toast('Welcome ' + name + '! Account created.', 'success');
+    await initApp();
   } catch (err) {
     errEl.textContent = err.message;
   } finally {

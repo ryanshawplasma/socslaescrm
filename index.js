@@ -1201,7 +1201,8 @@ app.post('/api/register', async (req, res) => {
   if (!name || name.trim().length < 2) return res.status(400).json({ error: 'Name must be at least 2 characters' });
   if (!pin || !/^\d{4,6}$/.test(String(pin))) return res.status(400).json({ error: 'PIN must be 4–6 digits' });
   try {
-    await db.createUser(name.trim(), String(pin), 'sales', '');
+    const result = await db.createUser(name.trim(), String(pin), 'sales', '');
+    if (!result.ok) return res.status(409).json({ error: result.message });
     res.json({ success: true });
   } catch (err) {
     if (err.message?.includes('UNIQUE') || err.message?.includes('unique')) return res.status(409).json({ error: 'Name already taken, choose another' });

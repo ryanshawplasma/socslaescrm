@@ -151,6 +151,9 @@
         <a class="nav-item admin-only" data-page="team" style="display:none">
           <span class="nav-icon">👥</span> Team
         </a>
+        <a class="nav-item" data-page="workspace">
+          <span class="nav-icon">🏢</span> Workspace
+        </a>
         <a class="nav-item" data-page="map">
           <span class="nav-icon">◉</span> Map
         </a>
@@ -399,6 +402,63 @@
               </div>
             </div>
           </div>
+        </section>
+
+        <!-- ── WORKSPACE PAGE ──────────────────────────────── -->
+        <section id="page-workspace" class="page">
+
+          <!-- No-team state: shown before user creates/joins a team -->
+          <div id="ws-no-team">
+            <div class="ws-hero">
+              <div class="ws-hero-icon">🏢</div>
+              <h2 class="ws-hero-title">Welcome to Workspace</h2>
+              <p class="ws-hero-sub">Create your own team workspace or join an existing one using an invite code.</p>
+              <div class="ws-hero-btns">
+                <button class="btn btn-primary" onclick="wsShowTab('create')">+ Create Team</button>
+                <button class="btn btn-ghost"   onclick="wsShowTab('search')">Find &amp; Join</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Workspace tabs (shown once in a team) -->
+          <div id="ws-team" class="hidden">
+
+            <!-- Team banner -->
+            <div class="ws-banner" id="ws-banner">
+              <div class="ws-banner-info">
+                <div class="ws-team-avatar" id="ws-team-avatar">?</div>
+                <div>
+                  <div class="ws-team-name" id="ws-team-name">—</div>
+                  <div class="ws-team-meta" id="ws-team-meta">—</div>
+                </div>
+              </div>
+              <div class="ws-banner-right">
+                <button class="btn btn-ghost btn-sm" onclick="wsLeaveTeam()">Leave</button>
+                <button class="btn btn-primary btn-sm" onclick="wsShowTab('settings')">⚙ Settings</button>
+              </div>
+            </div>
+
+            <!-- Tab bar -->
+            <div class="ws-tabs" id="ws-tabs">
+              <button class="ws-tab active" data-tab="overview"  onclick="wsShowTab('overview')">Overview</button>
+              <button class="ws-tab"        data-tab="members"   onclick="wsShowTab('members')">Members</button>
+              <button class="ws-tab ws-tab-admin" data-tab="requests" onclick="wsShowTab('requests')">Requests <span id="ws-req-badge" class="ws-badge hidden">0</span></button>
+              <button class="ws-tab"        data-tab="search"    onclick="wsShowTab('search')">Find Teams</button>
+              <button class="ws-tab ws-tab-admin" data-tab="settings" onclick="wsShowTab('settings')">Settings</button>
+            </div>
+
+            <!-- Tab panels -->
+            <div id="ws-panel-overview"  class="ws-panel"></div>
+            <div id="ws-panel-members"   class="ws-panel hidden"></div>
+            <div id="ws-panel-requests"  class="ws-panel hidden"></div>
+            <div id="ws-panel-settings"  class="ws-panel hidden"></div>
+          </div>
+
+          <!-- Create/Search/Join (shown in both states) -->
+          <div id="ws-panel-search"  class="ws-panel hidden"></div>
+          <div id="ws-panel-create"  class="ws-panel hidden"></div>
+          <div id="ws-panel-join"    class="ws-panel hidden"></div>
+
         </section>
 
       </div><!-- /content -->

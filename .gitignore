@@ -3,5 +3,10 @@ node_modules/
 credentials.json
 crm.db
 *.db
+*.db-shm
+*.db-wal
 uploads/
 *.log
+.claude/
+test-gas.js
+_archive/

@@ -99,11 +99,23 @@ async function initSchema() {
         display_name     TEXT NOT NULL UNIQUE,
         role             TEXT DEFAULT 'sales',
         pin_hash         TEXT NOT NULL,
-        telegram_user_id TEXT DEFAULT '' UNIQUE,
+        telegram_user_id TEXT DEFAULT NULL,
         webauthn_cred    TEXT DEFAULT '',
         created_at       TEXT DEFAULT ''
       )
     `);
+    // Migration: drop the UNIQUE constraint on telegram_user_id so multiple
+    // web-registered users (who have no Telegram ID) can coexist.
+    // PostgreSQL auto-names the constraint <table>_<col>_key.
+    await client.query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_telegram_user_id_key`).catch(() => {});
+    // Convert any empty-string telegram_user_id to NULL so the partial index works
+    await client.query(`UPDATE users SET telegram_user_id = NULL WHERE telegram_user_id = ''`).catch(() => {});
+    // Partial unique index: only enforce uniqueness for real (non-null) Telegram IDs
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_users_telegram_id
+      ON users(telegram_user_id)
+      WHERE telegram_user_id IS NOT NULL
+    `).catch(() => {});
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS lead_access (
@@ -449,11 +461,11 @@ async function reassignFollowUp(leadId, newAssigneeName) {
 
 // ── Users ─────────────────────────────────────────────────────
 async function createUser(displayName, pin, role = 'sales', telegramUserId = '') {
-  const { rows: existing } = await pool.query(`SELECT id FROM users WHERE display_name = $1`, [displayName]);
+  const { rows: existing } = await pool.query(`SELECT id FROM users WHERE display_name ILIKE $1`, [displayName]);
   if (existing.length) return { ok: false, message: 'Name already taken. Choose another name.' };
   await pool.query(
     `INSERT INTO users (display_name, role, pin_hash, telegram_user_id, created_at) VALUES ($1,$2,$3,$4,$5)`,
-    [displayName, role, hashPin(pin), telegramUserId || '', nowIST()]
+    [displayName, role, hashPin(pin), telegramUserId || null, nowIST()]
   );
   return { ok: true };
 }
@@ -548,7 +560,7 @@ async function seedAdminUser(adminUser, adminPass) {
   const { rows: existing } = await pool.query(`SELECT id FROM users WHERE role = 'admin'`);
   if (!existing.length) {
     await pool.query(
-      `INSERT INTO users (display_name, role, pin_hash, telegram_user_id, created_at) VALUES ($1,'admin',$2,'',$3)`,
+      `INSERT INTO users (display_name, role, pin_hash, telegram_user_id, created_at) VALUES ($1,'admin',$2,NULL,$3)`,
       [adminUser, hashPin(adminPass), nowIST()]
     );
     console.log(`✅ Admin user "${adminUser}" created`);

@@ -1044,8 +1044,7 @@ body {
   .row-2col        { gap: 12px; }
   .mt-16           { margin-top: 12px; }
 
-  /* Tables — horizontal scroll */
-  #leads-table-wrap { overflow: auto; -webkit-overflow-scrolling: touch; }
+  /* Tables — tighter cells on mobile */
   .crm-table th,
   .crm-table td { padding: 9px 10px; font-size: 12px; white-space: nowrap; }
 
@@ -1550,8 +1549,23 @@ tr.row-cold:hover td { background: #dbeafe; }
 }
 .btn-switch-account:hover { background: var(--bg); color: var(--text); }
 
-/* ── Leads table scroll fix ─────────────────────────────────── */
-#leads-table-wrap { overflow-x: auto; }
+/* ── Table horizontal scroll ────────────────────────────────── */
+#leads-table-wrap { overflow: visible; }   /* let inner .table-scroll handle it */
+.table-scroll {
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+  /* scroll shadow hints on left/right edges */
+  background:
+    linear-gradient(to right, var(--card-bg) 20px, transparent 20px),
+    linear-gradient(to left,  var(--card-bg) 20px, transparent 20px) 100% 0,
+    radial-gradient(farthest-side at 0   50%, rgba(0,0,0,.08), transparent),
+    radial-gradient(farthest-side at 100% 50%, rgba(0,0,0,.08), transparent) 100% 0;
+  background-repeat: no-repeat;
+  background-size: 40px 100%, 40px 100%, 12px 100%, 12px 100%;
+  background-attachment: local, local, scroll, scroll;
+}
 
 /* ── Profile modal ──────────────────────────────────────────── */
 #profile-modal-overlay {
@@ -2276,4 +2290,46 @@ tr.row-cold:hover td { background: #dbeafe; }
   margin-top: 5px;
   min-height: 16px;
   transition: color .2s;
+}
+
+/* ── Landscape phone (small height, wide width) ──────────────── */
+@media (orientation: landscape) and (max-height: 500px) {
+  :root { --topbar-h: 44px; --sidebar-w: 200px; }
+
+  /* Compact topbar */
+  #topbar { height: 44px; padding: 0 12px; }
+  #page-title { font-size: 13px; }
+
+  /* Sidebar scrollable and compact */
+  #sidebar { overflow-y: auto; }
+  .nav-link { padding: 8px 14px; font-size: 13px; }
+  .sidebar-logo { padding: 10px 14px 8px; }
+
+  /* Content — less padding, more room for tables */
+  #content { padding: 8px 12px; }
+
+  /* Stats in one row */
+  .stat-grid { grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 8px; }
+  .stat-card { padding: 8px 10px; }
+  .stat-value { font-size: 18px; }
+  .stat-label { font-size: 10px; }
+  .stat-sub   { display: none; }
+
+  /* Charts shorter */
+  .chart-wrap      { height: 130px; }
+  .chart-wrap.tall { height: 150px; }
+
+  /* Kanban cards shorter */
+  .kanban-cards { max-height: calc(100vh - 120px); }
+}
+
+/* Landscape — unlock sidebar on tablets (≥ 768px wide) in landscape */
+@media (orientation: landscape) and (min-width: 768px) and (max-height: 600px) {
+  #main { margin-left: 0; }
+  #sidebar {
+    position: fixed;
+    left: calc(-1 * var(--sidebar-w));
+    transition: left var(--transition);
+  }
+  #sidebar.open { left: 0; }
 }

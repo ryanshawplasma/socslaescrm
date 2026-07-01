@@ -1182,7 +1182,7 @@ function buildTable(leads, cols, actions = true) {
   }).join('');
 
   const actHead = actions ? '<th>Actions</th>' : '';
-  return `<table class="crm-table"><thead><tr>${heads}${actHead}</tr></thead><tbody>${rows}</tbody></table>`;
+  return `<div class="table-scroll"><table class="crm-table"><thead><tr>${heads}${actHead}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 function emptyState(msg = 'No data') {
@@ -1692,12 +1692,12 @@ async function renderTeam() {
         </td>
       </tr>`).join('');
     document.getElementById('team-table').innerHTML = header + `
-      <table class="crm-table">
+      <div class="table-scroll"><table class="crm-table">
         <thead><tr>
           <th>Name</th><th>Role</th><th>Telegram Bot</th><th>Joined</th><th>Action</th>
         </tr></thead>
         <tbody>${rows}</tbody>
-      </table>
+      </table></div>
       <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">Salespeople can also self-register via the <b>Create Account</b> link on the login page, or using <b>/register</b> in the Telegram bot.</p>
       <div id="ai-vocab-container"></div>`;
     renderVocabAdmin();
@@ -2866,11 +2866,11 @@ async function wsRenderMembers() {
         <span style="font-size:15px;font-weight:600">${members.length} Member${members.length !== 1 ? 's' : ''}</span>
         ${isAdmin ? `<button class="btn btn-primary btn-sm" onclick="wsShowTab('search')">+ Add Members</button>` : ''}
       </div>
-      <div class="card" style="overflow:auto">
-        <table class="crm-table">
+      <div class="card">
+        <div class="table-scroll"><table class="crm-table">
           <thead><tr><th>Name</th><th>Role</th><th>Status</th><th>Joined</th><th>Action</th></tr></thead>
           <tbody>${rows}</tbody>
-        </table>
+        </table></div>
       </div>`;
   } catch (err) { panel.innerHTML = `<div class="ws-error">${escHtml(err.message)}</div>`; }
 }
@@ -2927,11 +2927,11 @@ async function wsRenderRequests() {
 
     panel.innerHTML = `
       <div style="margin-bottom:14px;font-size:15px;font-weight:600">${pending.length} Pending · ${requests.length} Total</div>
-      <div class="card" style="overflow:auto">
-        <table class="crm-table">
+      <div class="card">
+        <div class="table-scroll"><table class="crm-table">
           <thead><tr><th>Name</th><th>Message</th><th>Status</th><th>Requested</th><th>Action</th></tr></thead>
           <tbody>${rows}</tbody>
-        </table>
+        </table></div>
       </div>`;
   } catch (err) { panel.innerHTML = `<div class="ws-error">${escHtml(err.message)}</div>`; }
 }

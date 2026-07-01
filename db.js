@@ -299,6 +299,33 @@ async function initSchema() {
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_sl_user ON security_logs(user_id, created_at DESC) WHERE user_id IS NOT NULL`).catch(() => {});
 
+    // ── AI Entry Mode tables ───────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ai_vocab (
+        id         SERIAL PRIMARY KEY,
+        team_id    INTEGER REFERENCES teams(id) ON DELETE CASCADE,
+        alias      TEXT NOT NULL,
+        canonical  TEXT NOT NULL,
+        created_by TEXT DEFAULT '',
+        created_at TEXT DEFAULT ''
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ai_vocab_team ON ai_vocab(team_id)`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ai_audit_log (
+        id          BIGSERIAL PRIMARY KEY,
+        lead_id     INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+        action      TEXT NOT NULL,
+        input_type  TEXT DEFAULT 'text',
+        raw_input   TEXT DEFAULT '',
+        parsed_json TEXT DEFAULT '{}',
+        saved_by    TEXT DEFAULT '',
+        team_id     INTEGER REFERENCES teams(id) ON DELETE SET NULL,
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+      )
+    `).catch(() => {});
+
     console.log('✅ PostgreSQL schema ready');
   } finally {
     client.release();
@@ -1198,6 +1225,39 @@ async function getLeadsByTeam(teamId) {
   });
 }
 
+// ── AI Vocabulary (aliases) ──────────────────────────────────
+async function getVocab(teamId) {
+  const { rows } = await pool.query(
+    `SELECT id, alias, canonical, team_id, created_by
+     FROM ai_vocab
+     WHERE team_id IS NULL OR team_id = $1
+     ORDER BY team_id NULLS FIRST`,
+    [teamId || null]
+  );
+  return rows;
+}
+
+async function addVocab(alias, canonical, teamId, createdBy) {
+  const { rows } = await pool.query(
+    `INSERT INTO ai_vocab (alias, canonical, team_id, created_by, created_at)
+     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [alias.trim().toLowerCase(), canonical.trim(), teamId || null, createdBy || '', nowIST()]
+  );
+  return rows[0];
+}
+
+async function deleteVocab(id) {
+  await pool.query(`DELETE FROM ai_vocab WHERE id=$1`, [id]);
+}
+
+async function logAiAction(leadId, action, inputType, rawInput, parsedJson, savedBy, teamId) {
+  await pool.query(
+    `INSERT INTO ai_audit_log (lead_id, action, input_type, raw_input, parsed_json, saved_by, team_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [leadId || null, action, inputType || 'text', rawInput || '', parsedJson || '{}', savedBy || '', teamId || null]
+  ).catch(() => {});
+}
+
 module.exports = {
   pool,
   initSchema,
@@ -1220,5 +1280,7 @@ module.exports = {
   trustDevice, getDeviceByFingerprint, getDeviceById, listUserDevices, removeDevice, renameDevice, touchDevice,
   setupDevicePin, verifyDevicePin, hasDevicePin,
   logSecurity, getUserSecurityLog,
+  // AI Entry Mode
+  getVocab, addVocab, deleteVocab, logAiAction,
   bcrypt,
 };

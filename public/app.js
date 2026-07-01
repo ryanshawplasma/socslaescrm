@@ -14,7 +14,12 @@ const state = {
   sortKey:     '',
   sortDir:     'asc',
   charts:      {},
+  aiMode: {
+    leads:     localStorage.getItem('crm_ai_mode_leads')     === 'true',
+    followups: localStorage.getItem('crm_ai_mode_followups') === 'true',
+  },
 };
+window._aiParsedData = {};
 
 const STAGE_COLORS = {
   'New Lead':        '#64748b',
@@ -1256,6 +1261,8 @@ function renderChart(id, type, labels, data, colors, opts = {}) {
 //  Leads page
 // ============================================================
 function renderLeads() {
+  renderAiToggle('leads');
+  renderAiPanel('leads');
   populateFilters();
   renderLeadsView();
 }
@@ -1381,6 +1388,8 @@ async function dropCard(event, newStage) {
 //  Follow-ups page
 // ============================================================
 function renderFollowups() {
+  renderAiToggle('followups');
+  renderAiPanel('followups');
   const now   = new Date();
   now.setHours(0, 0, 0, 0);
   const week  = new Date(now);
@@ -1596,7 +1605,9 @@ async function renderTeam() {
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">Salespeople can also self-register via the <b>Create Account</b> link on the login page, or using <b>/register</b> in the Telegram bot.</p>`;
+      <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">Salespeople can also self-register via the <b>Create Account</b> link on the login page, or using <b>/register</b> in the Telegram bot.</p>
+      <div id="ai-vocab-container"></div>`;
+    renderVocabAdmin();
   } catch (err) {
     document.getElementById('team-table').innerHTML = emptyState('Failed to load team: ' + err.message);
   }
@@ -2073,7 +2084,13 @@ function wireEvents() {
     if (state.page === 'leads') renderLeadsView();
   });
 
-  document.getElementById('btn-add-lead').addEventListener('click', openAddModal);
+  document.getElementById('btn-add-lead').addEventListener('click', () => {
+    if (state.aiMode[state.page]) {
+      document.getElementById(`ai-input-${state.page}`)?.focus();
+    } else {
+      openAddModal();
+    }
+  });
   document.getElementById('btn-refresh').addEventListener('click', refresh);
   document.getElementById('btn-export').addEventListener('click', exportCSV);
   document.getElementById('btn-theme').addEventListener('click', toggleTheme);
@@ -3108,3 +3125,429 @@ function renderPinStrength(inputId, barId) {
 }
 
 init();
+
+// ============================================================
+//  AI ENTRY MODE
+// ============================================================
+
+// ── Toggle ────────────────────────────────────────────────────
+function toggleAiMode(page) {
+  state.aiMode[page] = !state.aiMode[page];
+  localStorage.setItem(`crm_ai_mode_${page}`, String(state.aiMode[page]));
+  renderPage(page);
+}
+
+function renderAiToggle(page) {
+  const bar = document.getElementById(`ai-toggle-bar-${page}`);
+  if (!bar) return;
+  const on = state.aiMode[page];
+  bar.innerHTML = `
+    <div class="ai-toggle-wrap">
+      <span class="ai-toggle-icon">✦</span>
+      <span class="ai-toggle-label">AI Entry Mode</span>
+      <button class="ai-toggle-btn ${on ? 'active' : ''}" onclick="toggleAiMode('${page}')">
+        ${on ? 'ON' : 'OFF'}
+      </button>
+      ${on ? '<span class="ai-toggle-hint">Type naturally or tap 🎤 to add data via AI</span>' : ''}
+    </div>`;
+}
+
+// ── Panel render ──────────────────────────────────────────────
+function renderAiPanel(page) {
+  const panel = document.getElementById(`ai-panel-${page}`);
+  if (!panel) return;
+  const on = state.aiMode[page];
+  panel.style.display = on ? '' : 'none';
+  if (!on) {
+    panel.dataset.initialized = 'false';
+    return;
+  }
+  if (panel.dataset.initialized === 'true') return; // keep existing messages when re-rendering page
+  panel.dataset.initialized = 'true';
+  panel.innerHTML = `
+    <div class="ai-panel-chips">
+      <span class="chat-chip chip-hot" onclick="aiChipSend('${page}','Hot lead')">🔥 Hot</span>
+      <span class="chat-chip chip-warm" onclick="aiChipSend('${page}','Warm lead')">🟡 Warm</span>
+      <span class="chat-chip chip-cold" onclick="aiChipSend('${page}','Cold lead')">🔵 Cold</span>
+      <span class="chat-chip" onclick="aiChipSend('${page}','follow up')">📅 Follow-up</span>
+      <span class="chat-chip" onclick="aiChipSend('${page}','order won')">✅ Won</span>
+    </div>
+    <div id="ai-panel-${page}-messages" class="ai-panel-messages"></div>
+    <div class="ai-panel-input-row">
+      <textarea id="ai-input-${page}" rows="2"
+        placeholder="Type naturally… e.g. M99 Kapoor Shoes hotmelt 500 bags @120 hot follow up Friday"></textarea>
+      <button class="ai-mic-btn" id="ai-mic-btn-${page}" onclick="startVoiceCapture('${page}')" title="Voice input">🎤</button>
+      <button class="btn btn-primary" style="padding:0 14px;height:38px;border-radius:10px" onclick="aiPanelSend('${page}')">Send</button>
+    </div>`;
+  const ta = document.getElementById(`ai-input-${page}`);
+  ta?.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); aiPanelSend(page); }
+  });
+}
+
+function aiChipSend(page, text) {
+  const ta = document.getElementById(`ai-input-${page}`);
+  if (ta) ta.value = text;
+  aiPanelSend(page);
+}
+
+// ── Message helpers ───────────────────────────────────────────
+function aiMsgAppend(page, role, html) {
+  const box = document.getElementById(`ai-panel-${page}-messages`);
+  if (!box) return null;
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + role;
+  div.innerHTML = html;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+  return div;
+}
+
+function aiMsgReplaceLast(page, html) {
+  const box = document.getElementById(`ai-panel-${page}-messages`);
+  if (!box) return;
+  const bots = box.querySelectorAll('.chat-msg.bot');
+  const last = bots[bots.length - 1];
+  if (last) last.innerHTML = html;
+  else aiMsgAppend(page, 'bot', html);
+  box.scrollTop = box.scrollHeight;
+}
+
+// ── Panel send ────────────────────────────────────────────────
+async function aiPanelSend(page) {
+  const ta   = document.getElementById(`ai-input-${page}`);
+  const text = (ta?.value || '').trim();
+  if (!text) return;
+  ta.value = '';
+  const teamId = ws?.activeTeam?.id || null;
+  aiMsgAppend(page, 'user', escHtml(text));
+  aiMsgAppend(page, 'bot', '⏳ AI is thinking…');
+  try {
+    const data = await apiFetch('/api/parse', {
+      method: 'POST',
+      body: JSON.stringify({ text, teamId: teamId ? parseInt(teamId, 10) : undefined }),
+    });
+    aiMsgReplaceLast(page, buildAiPreview(data, page));
+  } catch (err) {
+    aiMsgReplaceLast(page, '❌ ' + escHtml(err.message || 'Parse failed'));
+  }
+}
+
+// ── Confidence ────────────────────────────────────────────────
+function computeConfidence(parsed) {
+  const conf = Object.assign({}, parsed._confidence || {});
+  if (parsed.factory_number && /^[A-Za-z]{1,3}\d+$/.test(parsed.factory_number))
+    conf.factory_number = Math.max(conf.factory_number || 0, 0.85);
+  if (parsed.contact && /^\d{10}$/.test((parsed.contact || '').replace(/\D/g, '')))
+    conf.contact = 0.99;
+  if (!parsed.items || !parsed.items.length) {
+    conf.items = 0;
+  }
+  return conf;
+}
+
+function confClass(val) {
+  if (val === undefined || val === null) return '';
+  if (val >= 0.8) return 'conf-green';
+  if (val >= 0.5) return 'conf-yellow';
+  return 'conf-red';
+}
+
+function confDotColor(val) {
+  if (val === undefined || val === null) return 'var(--border)';
+  if (val >= 0.8) return 'var(--success)';
+  if (val >= 0.5) return 'var(--warning)';
+  return 'var(--danger)';
+}
+
+// ── Editable preview card ─────────────────────────────────────
+function buildAiPreview({ parsed, action, existingRow }, page) {
+  const uuid = 'ai_' + Math.random().toString(36).slice(2, 10);
+  const p    = parsed || {};
+  const conf = computeConfidence(p);
+  window._aiParsedData[uuid] = { parsed: JSON.parse(JSON.stringify(p)), action, existingRow, page };
+
+  const actionLabel = action === 'UPDATE' ? '🔄 Update lead' : '➕ New lead';
+  const typeFor = t => p.lead_type === t ? `active-${t.toLowerCase()}` : '';
+
+  const fieldRow = (label, field, value, confVal) => `
+    <div class="ai-field-row">
+      <span class="ai-field-label">${label}</span>
+      <input class="ai-field-input ${confClass(confVal)}" value="${escAttr(value || '')}"
+        onchange="aiFieldChange('${uuid}','${field}',this.value)" />
+      <span class="ai-conf-dot" title="${confVal !== undefined ? Math.round((confVal||0)*100)+'% confident' : ''}"
+        style="background:${confDotColor(confVal)}"></span>
+    </div>`;
+
+  const stageOptions = ['New Lead','Prospecting','Demo Scheduled','Negotiation','Order Placed','Order Won','Repeat Customer','Lost']
+    .map(s => `<option ${p.stage === s ? 'selected' : ''}>${escHtml(s)}</option>`).join('');
+
+  const itemsHtml = (p.items || []).map((it, i) => `
+    <div class="ai-item-row" id="${uuid}-item-${i}">
+      <input placeholder="Product" value="${escAttr(it.product||'')}" onchange="aiItemChange('${uuid}',${i},'product',this.value)" />
+      <input placeholder="Qty" style="max-width:70px" value="${escAttr(it.quantity||'')}" onchange="aiItemChange('${uuid}',${i},'quantity',this.value)" />
+      <input placeholder="Rate" style="max-width:70px" value="${escAttr(it.rate||'')}" onchange="aiItemChange('${uuid}',${i},'rate',this.value)" />
+      <button class="ai-item-remove" onclick="aiRemoveItem('${uuid}',${i})">✕</button>
+    </div>`).join('');
+
+  const lowConfFields = Object.entries(conf).filter(([,v]) => v < 0.5).map(([k]) => k);
+  const suggestion = lowConfFields.length
+    ? `<div class="ai-suggestion">⚠ Low confidence on <b>${lowConfFields.join(', ')}</b> — please verify before saving.</div>`
+    : '';
+
+  return `
+    <div class="ai-preview-card" id="${uuid}">
+      <div class="ai-preview-header">
+        <span class="ai-action-badge">${actionLabel}</span>
+        <div class="ai-lead-type-pills">
+          <button class="ai-type-pill ${typeFor('Hot')}" onclick="aiSetLeadType('${uuid}','Hot')">🔥 Hot</button>
+          <button class="ai-type-pill ${typeFor('Warm')}" onclick="aiSetLeadType('${uuid}','Warm')">🟡 Warm</button>
+          <button class="ai-type-pill ${typeFor('Cold')}" onclick="aiSetLeadType('${uuid}','Cold')">🔵 Cold</button>
+        </div>
+      </div>
+      ${fieldRow('Factory #', 'factory_number', p.factory_number, conf.factory_number)}
+      ${fieldRow('Factory', 'factory_name', p.factory_name, conf.factory_name)}
+      ${fieldRow('Contact', 'person_in_charge', p.person_in_charge, conf.person_in_charge)}
+      ${fieldRow('Phone', 'contact', p.contact, conf.contact)}
+      ${fieldRow('Area', 'area', p.area, conf.area)}
+      ${fieldRow('Follow-up', 'follow_up', p.follow_up, conf.follow_up)}
+      <div class="ai-field-row">
+        <span class="ai-field-label">Stage</span>
+        <select class="ai-field-select" onchange="aiFieldChange('${uuid}','stage',this.value)">
+          ${stageOptions}
+        </select>
+        <span class="ai-conf-dot" style="background:${confDotColor(conf.stage)}"></span>
+      </div>
+      ${fieldRow('Notes', 'notes', p.notes, conf.notes)}
+      <div class="ai-items-section">
+        <div class="ai-items-label">Products</div>
+        <div id="${uuid}-items">${itemsHtml}</div>
+        <button class="ai-add-item" onclick="aiAddItem('${uuid}')">+ Add product</button>
+      </div>
+      ${suggestion}
+      <div class="ai-preview-actions">
+        <button class="btn btn-primary" style="font-size:13px;padding:5px 14px" onclick="aiConfirmFromCard('${uuid}')">✅ Save</button>
+        <button class="btn" style="font-size:13px;padding:5px 14px" onclick="aiClearCard('${uuid}')">✕ Cancel</button>
+      </div>
+    </div>`;
+}
+
+// ── Preview card field editing ────────────────────────────────
+function aiFieldChange(uuid, field, value) {
+  if (!window._aiParsedData?.[uuid]) return;
+  window._aiParsedData[uuid].parsed[field] = value;
+}
+
+function aiSetLeadType(uuid, type) {
+  if (!window._aiParsedData?.[uuid]) return;
+  window._aiParsedData[uuid].parsed.lead_type = type;
+  const card = document.getElementById(uuid);
+  if (!card) return;
+  card.querySelectorAll('.ai-type-pill').forEach(btn => {
+    btn.className = 'ai-type-pill';
+    if (btn.textContent.includes(type)) btn.classList.add(`active-${type.toLowerCase()}`);
+  });
+}
+
+function aiItemChange(uuid, idx, field, value) {
+  const d = window._aiParsedData?.[uuid];
+  if (!d) return;
+  if (!d.parsed.items) d.parsed.items = [];
+  if (!d.parsed.items[idx]) d.parsed.items[idx] = {};
+  d.parsed.items[idx][field] = value;
+}
+
+function aiRemoveItem(uuid, idx) {
+  const d = window._aiParsedData?.[uuid];
+  if (!d) return;
+  d.parsed.items.splice(idx, 1);
+  const el = document.getElementById(`${uuid}-item-${idx}`);
+  el?.remove();
+}
+
+function aiAddItem(uuid) {
+  const d = window._aiParsedData?.[uuid];
+  if (!d) return;
+  if (!d.parsed.items) d.parsed.items = [];
+  const idx = d.parsed.items.length;
+  d.parsed.items.push({ product: '', quantity: '', rate: '' });
+  const container = document.getElementById(`${uuid}-items`);
+  if (!container) return;
+  const row = document.createElement('div');
+  row.className = 'ai-item-row';
+  row.id = `${uuid}-item-${idx}`;
+  row.innerHTML = `
+    <input placeholder="Product" onchange="aiItemChange('${uuid}',${idx},'product',this.value)" />
+    <input placeholder="Qty" style="max-width:70px" onchange="aiItemChange('${uuid}',${idx},'quantity',this.value)" />
+    <input placeholder="Rate" style="max-width:70px" onchange="aiItemChange('${uuid}',${idx},'rate',this.value)" />
+    <button class="ai-item-remove" onclick="aiRemoveItem('${uuid}',${idx})">✕</button>`;
+  container.appendChild(row);
+  row.querySelector('input')?.focus();
+}
+
+function aiClearCard(uuid) {
+  document.getElementById(uuid)?.closest('.chat-msg')?.remove();
+  delete window._aiParsedData[uuid];
+}
+
+// ── Confirm & save ────────────────────────────────────────────
+async function aiConfirmFromCard(uuid) {
+  const d = window._aiParsedData?.[uuid];
+  if (!d) return;
+  const { parsed, action, existingRow, page } = d;
+
+  const payload = {
+    factory_number:   parsed.factory_number   || '',
+    factory_name:     parsed.factory_name     || '',
+    person_in_charge: parsed.person_in_charge || '',
+    contact:          parsed.contact          || '',
+    product:          parsed.items?.[0]?.product   || parsed.product   || '',
+    quantity:         parsed.items?.[0]?.quantity  || parsed.quantity  || '',
+    rate:             parsed.items?.[0]?.rate      || parsed.rate      || '',
+    stage:            parsed.stage            || 'New Lead',
+    stage_number:     parsed.stage_number     || 1,
+    follow_up:        parsed.follow_up        || '',
+    area:             parsed.area             || '',
+    notes:            parsed.notes            || '',
+    lead_type:        parsed.lead_type        || 'Cold',
+    items:            parsed.items            || [],
+    contacts:         [],
+  };
+
+  const saveBtn = document.querySelector(`#${uuid} .btn-primary`);
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; }
+
+  try {
+    let savedId;
+    if (action === 'UPDATE' && existingRow != null && existingRow !== -1) {
+      await apiFetch(`/api/leads/${existingRow}`, { method: 'PUT', body: JSON.stringify(payload) });
+      savedId = existingRow;
+    } else {
+      const result = await apiFetch('/api/leads', { method: 'POST', body: JSON.stringify(payload) });
+      savedId = result?.rowIndex;
+    }
+
+    logAiAudit(savedId, action, 'text', '', JSON.stringify(payload));
+
+    aiClearCard(uuid);
+    const summary = [];
+    if (action === 'ADD') summary.push(`✓ Lead Added — <b>${escHtml(payload.factory_name || payload.factory_number || 'new lead')}</b>`);
+    if (action === 'UPDATE') summary.push(`✓ Lead Updated — <b>${escHtml(payload.factory_name || payload.factory_number)}</b>`);
+    if (payload.follow_up) summary.push(`✓ Follow-up: ${escHtml(payload.follow_up)}`);
+    if (payload.stage) summary.push(`✓ Stage: ${escHtml(payload.stage)}`);
+    aiMsgAppend(page || 'leads', 'bot', `<div class="ai-summary">${summary.map(s => `<div class="ai-summary-item">${s}</div>`).join('')}</div>`);
+
+    await loadLeads();
+    await loadStats();
+    renderPage(state.page);
+  } catch (err) {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '✅ Save'; }
+    aiMsgAppend(page || 'leads', 'bot', '❌ Save failed: ' + escHtml(err.message));
+  }
+}
+
+function logAiAudit(leadId, action, inputType, rawInput, parsedJson) {
+  const teamId = ws?.activeTeam?.id || null;
+  apiFetch('/api/ai-audit', {
+    method: 'POST',
+    body: JSON.stringify({ leadId, action, inputType, rawInput, parsedJson, teamId }),
+  }).catch(() => {});
+}
+
+// ── Voice input ───────────────────────────────────────────────
+let _aiMediaRecorder = null;
+let _aiAudioChunks   = [];
+
+async function startVoiceCapture(page) {
+  const btn = document.getElementById(`ai-mic-btn-${page}`);
+  if (_aiMediaRecorder && _aiMediaRecorder.state === 'recording') {
+    _aiMediaRecorder.stop();
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime   = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
+                 : MediaRecorder.isTypeSupported('audio/ogg')  ? 'audio/ogg' : '';
+    _aiMediaRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    _aiAudioChunks   = [];
+    _aiMediaRecorder.ondataavailable = e => { if (e.data.size > 0) _aiAudioChunks.push(e.data); };
+    _aiMediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      if (btn) btn.classList.remove('recording');
+      aiMsgAppend(page, 'user', '🎤 [Voice message]');
+      aiMsgAppend(page, 'bot', '⏳ Transcribing…');
+      const usedMime = _aiMediaRecorder.mimeType || mime || 'audio/webm';
+      const blob   = new Blob(_aiAudioChunks, { type: usedMime });
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const b64 = reader.result.split(',')[1];
+        try {
+          const data = await apiFetch('/api/parse/voice', {
+            method: 'POST',
+            body: JSON.stringify({ audioBase64: b64, mimeType: usedMime }),
+          });
+          aiMsgReplaceLast(page, buildAiPreview(data, page));
+        } catch (err) {
+          aiMsgReplaceLast(page, '❌ ' + escHtml(err.message || 'Voice parse failed'));
+        }
+      };
+      reader.readAsDataURL(blob);
+    };
+    _aiMediaRecorder.start();
+    if (btn) btn.classList.add('recording');
+  } catch (err) {
+    toast('Microphone access denied. Please allow mic in browser settings.', 'error');
+  }
+}
+
+// ── Vocabulary admin ──────────────────────────────────────────
+async function renderVocabAdmin() {
+  const container = document.getElementById('ai-vocab-container');
+  if (!container || state.role !== 'admin') return;
+  try {
+    const rows = await apiFetch('/api/vocab');
+    const listHtml = rows.length
+      ? rows.map(r => `
+          <div class="ai-vocab-row">
+            <span>${escHtml(r.alias)}</span>
+            <span class="ai-vocab-arrow">→</span>
+            <span class="ai-vocab-canonical">${escHtml(r.canonical)}</span>
+            ${r.created_by ? `<span style="font-size:11px;color:var(--text-muted);margin-left:4px">by ${escHtml(r.created_by)}</span>` : ''}
+            <button class="ai-vocab-delete" onclick="deleteVocabAlias(${r.id})" title="Delete">✕</button>
+          </div>`).join('')
+      : '<div style="color:var(--text-muted);font-size:13px">No aliases yet.</div>';
+    container.innerHTML = `
+      <div class="ai-vocab-section">
+        <h4>✦ AI Vocabulary Aliases</h4>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">Teach the AI company-specific words. E.g. "party" → "customer", "bora" → "bag".</p>
+        <div class="ai-vocab-list" id="ai-vocab-list">${listHtml}</div>
+        <div class="ai-vocab-add">
+          <input id="vocab-alias" placeholder='Word (e.g. "party")' />
+          <input id="vocab-canonical" placeholder='Means (e.g. "customer")' />
+          <button class="btn btn-primary" style="font-size:13px;padding:6px 14px" onclick="addVocabAlias()">Add</button>
+        </div>
+      </div>`;
+  } catch (err) {
+    container.innerHTML = `<div style="color:var(--danger);font-size:13px;margin-top:12px">Failed to load vocabulary: ${escHtml(err.message)}</div>`;
+  }
+}
+
+async function addVocabAlias() {
+  const alias     = document.getElementById('vocab-alias')?.value.trim();
+  const canonical = document.getElementById('vocab-canonical')?.value.trim();
+  if (!alias || !canonical) { toast('Both fields required', 'error'); return; }
+  try {
+    await apiFetch('/api/vocab', { method: 'POST', body: JSON.stringify({ alias, canonical }) });
+    toast(`Alias "${alias}" → "${canonical}" added`);
+    renderVocabAdmin();
+  } catch (err) { toast('Failed: ' + err.message, 'error'); }
+}
+
+async function deleteVocabAlias(id) {
+  if (!confirm('Remove this vocabulary alias?')) return;
+  try {
+    await apiFetch(`/api/vocab/${id}`, { method: 'DELETE' });
+    toast('Alias removed');
+    renderVocabAdmin();
+  } catch (err) { toast('Failed: ' + err.message, 'error'); }
+}

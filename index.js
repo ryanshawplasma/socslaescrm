@@ -543,8 +543,8 @@ async function handleVoice(message) {
   }
 }
 
-async function callGeminiWithAudio(audioBase64) {
-  const voicePrompt = CRM_SYSTEM_PROMPT + '\n\nThe user sent a VOICE NOTE. First transcribe the audio, then extract CRM fields. Return ONLY the JSON.';
+async function callGeminiWithAudio(audioBase64, mimeType = 'audio/ogg') {
+  const voicePrompt = CRM_SYSTEM_PROMPT + '\n\nThe user sent a VOICE NOTE. First transcribe the audio, then extract CRM fields. Also include a "_confidence" key in your JSON: object mapping each field name to a float 0.0–1.0. Return ONLY the JSON.';
   for (const model of ['gemini-2.0-flash', 'gemini-2.0-flash-lite']) {
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
@@ -553,7 +553,7 @@ async function callGeminiWithAudio(audioBase64) {
         contents: [{
           role: 'user',
           parts: [
-            { inline_data: { mime_type: 'audio/ogg', data: audioBase64 } },
+            { inline_data: { mime_type: mimeType, data: audioBase64 } },
             { text: 'Transcribe and extract CRM lead data as JSON.' },
           ],
         }],
@@ -1385,15 +1385,63 @@ app.delete('/api/leads/:row', authMiddleware, adminOnly, async (req, res) => {
 });
 
 app.post('/api/parse', authMiddleware, async (req, res) => {
-  const { text } = req.body || {};
+  const { text, teamId } = req.body || {};
   if (!text) return res.status(400).json({ error: 'text required' });
   try {
-    const parsed = await callGemini(text).catch(() => localParse(text));
+    const vocab = teamId ? await db.getVocab(teamId) : [];
+    const parsed = await callGemini(text, vocab).catch(() => localParse(text));
     const { existingRow, action } = await findExistingLead(parsed);
     res.json({ parsed, action, existingRow });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+app.post('/api/parse/voice', authMiddleware, async (req, res) => {
+  const { audioBase64, mimeType = 'audio/webm' } = req.body || {};
+  if (!audioBase64) return res.status(400).json({ error: 'audioBase64 required' });
+  try {
+    const parsed = await callGeminiWithAudio(audioBase64, mimeType);
+    if (!parsed) return res.status(422).json({ error: 'Could not parse audio — try speaking more clearly or use text instead.' });
+    if (!Array.isArray(parsed.items) || !parsed.items.length) {
+      parsed.items = parsed.product ? [{ product: parsed.product, quantity: parsed.quantity || '', rate: parsed.rate || '' }] : [];
+    }
+    const { existingRow, action } = await findExistingLead(parsed);
+    res.json({ parsed, action, existingRow });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── AI Vocabulary endpoints ────────────────────────────────────
+app.get('/api/vocab', authMiddleware, async (req, res) => {
+  try {
+    const teamId = req.query.teamId ? parseInt(req.query.teamId, 10) : null;
+    res.json(await db.getVocab(teamId));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/vocab', authMiddleware, adminOnly, async (req, res) => {
+  const { alias, canonical, teamId } = req.body || {};
+  if (!alias || !canonical) return res.status(400).json({ error: 'alias and canonical required' });
+  try {
+    const row = await db.addVocab(alias, canonical, teamId || null, req.user.username);
+    res.json({ ok: true, id: row.id });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/vocab/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    await db.deleteVocab(parseInt(req.params.id, 10));
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── AI Audit log ───────────────────────────────────────────────
+app.post('/api/ai-audit', authMiddleware, async (req, res) => {
+  const { leadId, action, inputType, rawInput, parsedJson, teamId } = req.body || {};
+  db.logAiAction(leadId, action, inputType, rawInput, parsedJson, req.user.username, teamId).catch(() => {});
+  res.json({ ok: true });
 });
 
 app.get('/api/stats', authMiddleware, async (req, res) => {
@@ -2114,14 +2162,20 @@ Return ONLY this JSON (no extra fields):
   "items": [{"product": "", "quantity": "", "rate": ""}]
 }`;
 
-async function callGemini(userText) {
+async function callGemini(userText, vocab = []) {
+  let prompt = CRM_SYSTEM_PROMPT;
+  if (vocab.length) {
+    prompt += '\n\nCOMPANY VOCABULARY (treat as exact synonyms during extraction):\n' +
+      vocab.map(v => `"${v.alias}" → "${v.canonical}"`).join('; ');
+  }
+  prompt += '\n\nAlso include a "_confidence" key in your JSON output: an object mapping each extracted field name to a float 0.0–1.0 indicating extraction confidence. Use 0.9+ if the value appears literally in the input, 0.5–0.9 if inferred, below 0.5 if guessed or absent.';
   for (const model of ['gemini-2.0-flash', 'gemini-2.0-flash-lite']) {
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
       const res = await axios.post(url, {
-        system_instruction: { parts: [{ text: CRM_SYSTEM_PROMPT }] },
+        system_instruction: { parts: [{ text: prompt }] },
         contents: [{ role: 'user', parts: [{ text: userText }] }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 768, responseMimeType: 'application/json' },
+        generationConfig: { temperature: 0.1, maxOutputTokens: 900, responseMimeType: 'application/json' },
       });
       let raw = res.data.candidates[0].content.parts[0].text.trim()
         .replace(/^```json\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/i,'').trim();

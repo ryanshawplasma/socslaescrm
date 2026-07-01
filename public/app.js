@@ -2178,12 +2178,10 @@ async function chatSend() {
   document.getElementById('chat-autocomplete').className = 'chat-autocomplete';
 
   chatAppendMessage('user', escHtml(text));
-  const loadingDiv = chatAppendMessage('bot', '⏳ Parsing…');
+  chatAppendMessage('bot', '⏳ Parsing…');
 
   try {
-    const res  = await apiFetch('/api/parse', { method: 'POST', body: JSON.stringify({ text }) });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Parse failed');
+    const data = await apiFetch('/api/parse', { method: 'POST', body: JSON.stringify({ text }) });
     chatReplaceLastBot(buildChatPreview(data));
   } catch (err) {
     chatReplaceLastBot('❌ ' + (err.message || 'Error parsing lead'));
@@ -2210,14 +2208,11 @@ async function chatConfirm({ parsed, action, existingRow }) {
   };
 
   try {
-    let res;
     if (action === 'UPDATE' && existingRow != null && existingRow !== -1) {
-      res = await apiFetch(`/api/leads/${existingRow}`, { method: 'PUT', body: JSON.stringify(payload) });
+      await apiFetch(`/api/leads/${existingRow}`, { method: 'PUT', body: JSON.stringify(payload) });
     } else {
-      res = await apiFetch('/api/leads', { method: 'POST', body: JSON.stringify(payload) });
+      await apiFetch('/api/leads', { method: 'POST', body: JSON.stringify(payload) });
     }
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Save failed');
 
     chatAppendMessage('bot', `✅ Lead <b>${escHtml(payload.factory_name || payload.factory_number || 'saved')}</b> ${action === 'UPDATE' ? 'updated' : 'added'} successfully!`);
     await loadLeads();

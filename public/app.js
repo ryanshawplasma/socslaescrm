@@ -242,6 +242,7 @@ async function checkAndShowAuth() {
   // Resume guest/demo session if still valid
   const guestToken = localStorage.getItem('crm_access');
   if (localStorage.getItem('crm_role') === 'guest' && guestToken) {
+    localStorage.setItem('crm_token', guestToken); // ensure apiFetch can read it
     state.role = 'guest';
     hideLoginPage();
     showDemoBanner();
@@ -465,13 +466,14 @@ async function enterGuest() {
     const d = await r.json();
     if (!r.ok) throw new Error('Could not start demo');
     localStorage.setItem('crm_access',  d.accessToken);
+    localStorage.setItem('crm_token',   d.accessToken);  // apiFetch reads crm_token
     localStorage.setItem('crm_user',    'Guest');
     localStorage.setItem('crm_role',    'guest');
-    localStorage.removeItem('crm_refresh');
-    localStorage.removeItem('crm_session');
-    document.getElementById('login-overlay').classList.add('hidden');
+    localStorage.removeItem('crm_refresh_token');
+    localStorage.removeItem('crm_session_id');
+    hideLoginPage();
     showDemoBanner();
-    await init();
+    await initApp();
   } catch (err) {
     toast(err.message, 'error');
   }
@@ -483,7 +485,7 @@ function showDemoBanner() {
   b.id = 'demo-banner';
   b.innerHTML = `
     <span>You're in demo mode — data is not saved.</span>
-    <a href="#" onclick="(function(){localStorage.removeItem('crm_access');localStorage.removeItem('crm_role');location.reload();})()" style="color:#fff;font-weight:600;margin-left:10px;text-decoration:underline">Create Account →</a>
+    <a href="#" onclick="(function(){['crm_access','crm_token','crm_role','crm_user'].forEach(k=>localStorage.removeItem(k));location.reload();})()" style="color:#fff;font-weight:600;margin-left:10px;text-decoration:underline">Create Account →</a>
     <button onclick="this.parentElement.remove()" style="background:none;border:none;color:#fff;float:right;cursor:pointer;font-size:16px;line-height:1">✕</button>
   `;
   b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#e67e22;color:#fff;padding:10px 16px;font-size:13px;display:flex;align-items:center;gap:6px;';

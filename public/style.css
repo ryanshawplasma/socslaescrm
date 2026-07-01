@@ -1613,6 +1613,46 @@ tr.row-cold:hover td { background: #dbeafe; }
   .contact-row .c-desig { display: none; }
 }
 
+/* ── Items editor (multi-product) ───────────────────────────── */
+#items-editor { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.item-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr auto;
+  gap: 6px;
+  align-items: center;
+}
+.item-row select,
+.item-row input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--input-bg, var(--bg));
+  color: var(--text);
+  font-size: 13px;
+}
+.item-row select:focus,
+.item-row input:focus { outline: none; border-color: var(--primary); }
+.remove-item {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 14px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  line-height: 1;
+}
+.remove-item:hover { background: #fee2e2; color: var(--danger); }
+.item-row-spacer { width: 28px; }
+@media (max-width: 600px) {
+  .item-row { grid-template-columns: 2fr 1fr 1fr auto; }
+}
+
 /* ── Chat ───────────────────────────────────────────────── */
 #page-chat { display: none; flex-direction: column; padding: 0; height: 100%; }
 #page-chat.active { display: flex; }

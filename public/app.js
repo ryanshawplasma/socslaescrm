@@ -239,6 +239,16 @@ function switchAccount() {
 
 // ── PIN Unlock screen ─────────────────────────────────────────
 async function checkAndShowAuth() {
+  // Resume guest/demo session if still valid
+  const guestToken = localStorage.getItem('crm_access');
+  if (localStorage.getItem('crm_role') === 'guest' && guestToken) {
+    state.role = 'guest';
+    hideLoginPage();
+    showDemoBanner();
+    await initApp();
+    return;
+  }
+
   const rt          = localStorage.getItem('crm_refresh_token');
   const deviceId    = localStorage.getItem('crm_device_id');
   const devicePin   = localStorage.getItem('crm_device_has_pin') === 'true';
@@ -409,8 +419,6 @@ function showLoginScreen(e) {
   document.getElementById('login-error').textContent       = '';
 }
 
-let _usernameTimer = null;
-
 function getUsernameFormatError(v) {
   if (v.length < 3)               return 'Too short — minimum 3 characters';
   if (v.length > 20)              return 'Too long — maximum 20 characters';
@@ -428,7 +436,6 @@ function onUsernameInput(input) {
   const val      = input.value;
   const statusEl = document.getElementById('reg-username-status');
   const hintEl   = document.getElementById('reg-username-hint');
-  clearTimeout(_usernameTimer);
 
   if (!val) {
     statusEl.textContent = '';
@@ -444,35 +451,43 @@ function onUsernameInput(input) {
     statusEl.className   = 'username-status un-err';
     hintEl.textContent   = fmt;
     hintEl.style.color   = 'var(--danger, #e74c3c)';
-    return;
+  } else {
+    statusEl.textContent = '✓';
+    statusEl.className   = 'username-status un-ok';
+    hintEl.textContent   = 'Looks good';
+    hintEl.style.color   = '#27ae60';
   }
+}
 
-  statusEl.textContent = '···';
-  statusEl.className   = 'username-status un-checking';
-  hintEl.textContent   = 'Checking…';
-  hintEl.style.color   = 'var(--text-muted)';
+async function enterGuest() {
+  try {
+    const r = await fetch('/api/auth/guest', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error('Could not start demo');
+    localStorage.setItem('crm_access',  d.accessToken);
+    localStorage.setItem('crm_user',    'Guest');
+    localStorage.setItem('crm_role',    'guest');
+    localStorage.removeItem('crm_refresh');
+    localStorage.removeItem('crm_session');
+    document.getElementById('login-overlay').classList.add('hidden');
+    showDemoBanner();
+    await init();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
 
-  _usernameTimer = setTimeout(async () => {
-    try {
-      const r = await fetch('/api/check-username?name=' + encodeURIComponent(val));
-      const d = await r.json();
-      if (d.available) {
-        statusEl.textContent = '✓';
-        statusEl.className   = 'username-status un-ok';
-        hintEl.textContent   = val + ' is available';
-        hintEl.style.color   = '#27ae60';
-      } else {
-        statusEl.textContent = '✗';
-        statusEl.className   = 'username-status un-err';
-        hintEl.textContent   = 'Username taken — try another';
-        hintEl.style.color   = 'var(--danger, #e74c3c)';
-      }
-    } catch {
-      statusEl.textContent = '';
-      hintEl.textContent   = '3–20 chars · letters, numbers, _ and . only';
-      hintEl.style.color   = '';
-    }
-  }, 500);
+function showDemoBanner() {
+  if (document.getElementById('demo-banner')) return;
+  const b = document.createElement('div');
+  b.id = 'demo-banner';
+  b.innerHTML = `
+    <span>You're in demo mode — data is not saved.</span>
+    <a href="#" onclick="(function(){localStorage.removeItem('crm_access');localStorage.removeItem('crm_role');location.reload();})()" style="color:#fff;font-weight:600;margin-left:10px;text-decoration:underline">Create Account →</a>
+    <button onclick="this.parentElement.remove()" style="background:none;border:none;color:#fff;float:right;cursor:pointer;font-size:16px;line-height:1">✕</button>
+  `;
+  b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#e67e22;color:#fff;padding:10px 16px;font-size:13px;display:flex;align-items:center;gap:6px;';
+  document.body.prepend(b);
 }
 
 async function handleRegister(e) {
@@ -490,10 +505,11 @@ async function handleRegister(e) {
   btn.disabled    = true;
   btn.textContent = 'Creating…';
   try {
+    const mobile = (document.getElementById('reg-mobile')?.value || '').trim();
     const regRes  = await fetch('/api/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, pin }),
+      body: JSON.stringify({ name, pin, mobile }),
     });
     const regData = await regRes.json();
     if (!regRes.ok) {
@@ -598,6 +614,14 @@ async function apiFetch(path, opts = {}) {
     }
   }
 
+  if (res.status === 403) {
+    const body = await res.json().catch(() => ({}));
+    if (body.error === 'demo_only') {
+      toast('Create an account to save changes', 'warning');
+      throw new Error('demo_only');
+    }
+    throw new Error(body.error || 'Access denied');
+  }
   if (!res.ok) throw new Error(`${opts.method || 'GET'} ${path} → ${res.status}`);
   return res.json();
 }
@@ -1882,7 +1906,7 @@ async function revokeAccess(leadId, userName) {
 // ============================================================
 //  Modal — Add / Edit
 // ============================================================
-const FIELDS = ['factory_number','factory_name','product','quantity','rate','stage','follow_up','area','notes','lead_type'];
+const FIELDS = ['factory_number','factory_name','stage','follow_up','area','notes','lead_type'];
 
 // ── Contacts editor ──────────────────────────────────────────
 function renderContactsEditor(contacts) {
@@ -1931,6 +1955,62 @@ function collectContacts() {
   return contacts;
 }
 
+// ── Items editor (multi-product) ──────────────────────────────
+const PRODUCT_OPTIONS = ['Hotmelt','Rubber Adhesive','Solvent','Latex','BC','Toluene','R6','MEK','PU Adhesive','Silicon','Other'];
+
+function productSelect(selected = '') {
+  return `<select class="i-product">
+    <option value="">Select…</option>
+    ${PRODUCT_OPTIONS.map(p => `<option${p === selected ? ' selected' : ''}>${p}</option>`).join('')}
+  </select>`;
+}
+
+function renderItemsEditor(items) {
+  const editor = document.getElementById('items-editor');
+  if (!editor) return;
+  const rows = (items && items.length)
+    ? items.map(i => ({ product: i.product || '', quantity: i.quantity || '', rate: i.rate || '' }))
+    : [{ product: '', quantity: '', rate: '' }];
+  editor.innerHTML = rows.map((item, i) => `
+    <div class="item-row" data-idx="${i}">
+      ${productSelect(item.product)}
+      <input type="text" class="i-qty"  placeholder="Qty"  value="${escAttr(item.quantity)}" />
+      <input type="text" class="i-rate" placeholder="Rate" value="${escAttr(item.rate)}" />
+      ${i > 0 ? `<button type="button" class="remove-item" onclick="removeItemRow(this)">✕</button>` : '<span class="item-row-spacer"></span>'}
+    </div>`).join('');
+}
+
+function addItemRow() {
+  const editor = document.getElementById('items-editor');
+  if (!editor) return;
+  const idx = editor.querySelectorAll('.item-row').length;
+  const div = document.createElement('div');
+  div.className = 'item-row';
+  div.dataset.idx = idx;
+  div.innerHTML = `
+    ${productSelect()}
+    <input type="text" class="i-qty"  placeholder="Qty"  value="" />
+    <input type="text" class="i-rate" placeholder="Rate" value="" />
+    <button type="button" class="remove-item" onclick="removeItemRow(this)">✕</button>`;
+  editor.appendChild(div);
+}
+
+function removeItemRow(btn) {
+  btn.closest('.item-row').remove();
+}
+
+function collectItems() {
+  const rows = document.querySelectorAll('#items-editor .item-row');
+  const items = [];
+  rows.forEach(row => {
+    const product  = row.querySelector('.i-product')?.value.trim() || '';
+    const quantity = row.querySelector('.i-qty')?.value.trim()     || '';
+    const rate     = row.querySelector('.i-rate')?.value.trim()    || '';
+    if (product || quantity || rate) items.push({ product, quantity, rate });
+  });
+  return items;
+}
+
 function openAddModal() {
   document.getElementById('modal-title').textContent = 'Add Lead';
   document.getElementById('f-row').value = '';
@@ -1945,6 +2025,7 @@ function openAddModal() {
     if (areaEl) areaEl.value = defaultArea;
   }
   renderContactsEditor([]);
+  renderItemsEditor([]);
   const accessSection = document.getElementById('modal-access-section');
   if (accessSection) accessSection.style.display = 'none';
   document.getElementById('modal-overlay').classList.remove('hidden');
@@ -1962,6 +2043,10 @@ function openEditModal(rowIndex) {
     else { el.value = lead[f] || ''; }
   });
   renderContactsEditor(lead.contacts || []);
+  const itemsToEdit = (lead.items && lead.items.length)
+    ? lead.items
+    : (lead.product ? [{ product: lead.product, quantity: lead.quantity, rate: lead.rate }] : []);
+  renderItemsEditor(itemsToEdit);
   document.getElementById('modal-overlay').classList.remove('hidden');
 
   // Admin: load team access section
@@ -2011,6 +2096,12 @@ async function handleFormSubmit(e) {
   });
   data.stage_number = STAGE_NUMBERS[data.stage] ?? '';
   data.contacts = collectContacts();
+  data.items    = collectItems();
+  if (data.items.length) {
+    data.product  = data.items[0].product;
+    data.quantity = data.items[0].quantity;
+    data.rate     = data.items[0].rate;
+  }
 
   const btn = document.getElementById('btn-save-lead');
   btn.disabled    = true;

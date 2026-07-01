@@ -196,8 +196,9 @@ async function initSchema() {
     `);
 
     // Add team context columns to leads (safe – idempotent)
-    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS team_id    INTEGER REFERENCES teams(id)`).catch(() => {});
-    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'team'`).catch(() => {});
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS team_id     INTEGER REFERENCES teams(id)`).catch(() => {});
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS visibility  TEXT DEFAULT 'team'`).catch(() => {});
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS designation TEXT DEFAULT ''`).catch(() => {});
 
     // ── Auth system tables ─────────────────────────────────────
     // Extend users with email, mobile, lockout fields
@@ -337,7 +338,7 @@ async function getLeads() {
   const { rows } = await pool.query(`
     SELECT
       id AS "rowIndex",
-      factory_number, factory_name, person_in_charge, contact,
+      factory_number, factory_name, person_in_charge, contact, designation,
       product, quantity, rate, stage, follow_up, notes, area,
       lead_type, created_by, assigned_to, last_updated, mapped_stage, stage_number,
       lat, lng
@@ -365,7 +366,7 @@ async function getLeads() {
     out.items = itemsByLead[r.rowIndex] || [];
     const extras = extraContactsByLead[r.rowIndex] || [];
     out.contacts = [
-      { id: 'primary', person_name: out.person_in_charge || '', contact: out.contact || '', designation: '' },
+      { id: 'primary', person_name: out.person_in_charge || '', contact: out.contact || '', designation: out.designation || '' },
       ...extras,
     ];
     return out;
@@ -377,7 +378,7 @@ async function getLeadsForUser(displayName) {
   const { rows } = await pool.query(`
     SELECT
       id AS "rowIndex",
-      factory_number, factory_name, person_in_charge, contact,
+      factory_number, factory_name, person_in_charge, contact, designation,
       product, quantity, rate, stage, follow_up, notes, area,
       lead_type, created_by, assigned_to, last_updated, mapped_stage, stage_number
     FROM leads
@@ -407,7 +408,7 @@ async function getLeadsForUser(displayName) {
     out.items = itemsByLead[r.rowIndex] || [];
     const extras = extraContactsByLead[r.rowIndex] || [];
     out.contacts = [
-      { id: 'primary', person_name: out.person_in_charge || '', contact: out.contact || '', designation: '' },
+      { id: 'primary', person_name: out.person_in_charge || '', contact: out.contact || '', designation: out.designation || '' },
       ...extras,
     ];
     return out;
@@ -468,31 +469,39 @@ async function addLead(data, createdBy = '') {
   const items = Array.isArray(data.items) && data.items.length ? data.items : [];
   const flat  = items.length ? items[0] : data;
 
+  // Resolve primary contact: prefer top-level fields, fall back to contacts[0]
+  const primaryContact = (Array.isArray(data.contacts) && data.contacts.length)
+    ? data.contacts[0] : null;
+  const personInCharge = data.person_in_charge || (primaryContact && primaryContact.person_name) || '';
+  const contactNum     = data.contact          || (primaryContact && primaryContact.contact)     || '';
+  const designation    = data.designation      || (primaryContact && primaryContact.designation) || '';
+
   const { rows: [newRow] } = await pool.query(`
     INSERT INTO leads
-      (factory_number, factory_name, person_in_charge, contact, product,
+      (factory_number, factory_name, person_in_charge, contact, designation, product,
        quantity, rate, stage, follow_up, notes, area, lead_type, created_by,
        last_updated, mapped_stage, stage_number, team_id)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
     RETURNING id
   `, [
-    data.factory_number   || '',
-    data.factory_name     || '',
-    data.person_in_charge || '',
-    data.contact          || '',
-    flat.product          || '',
-    flat.quantity         || '',
-    flat.rate             || '',
-    data.stage            || '',
-    data.follow_up        || '',
-    data.notes            || '',
-    data.area             || '',
-    data.lead_type        || '',
+    data.factory_number || '',
+    data.factory_name   || '',
+    personInCharge,
+    contactNum,
+    designation,
+    flat.product        || '',
+    flat.quantity       || '',
+    flat.rate           || '',
+    data.stage          || '',
+    data.follow_up      || '',
+    data.notes          || '',
+    data.area           || '',
+    data.lead_type      || '',
     createdBy || data.created_by || '',
     now,
-    data.stage            || '',
+    data.stage          || '',
     data.stage_number != null ? String(data.stage_number) : '',
-    data.team_id          || null,
+    data.team_id        || null,
   ]);
 
   const leadId = newRow.id;
@@ -504,11 +513,23 @@ async function addLead(data, createdBy = '') {
         [leadId, item.product || '', item.quantity || '', item.rate || '']
       );
     }
-  } else if (data.product) {
+  } else if (data.product || flat.product) {
     await pool.query(
       `INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES ($1,$2,$3,$4)`,
-      [leadId, data.product || '', data.quantity || '', data.rate || '']
+      [leadId, flat.product || '', flat.quantity || '', flat.rate || '']
     );
+  }
+
+  // Extra contacts (index 1+)
+  if (Array.isArray(data.contacts) && data.contacts.length > 1) {
+    for (const c of data.contacts.slice(1)) {
+      if (c.person_name || c.contact) {
+        await pool.query(
+          `INSERT INTO lead_contacts (lead_id, person_name, contact, designation) VALUES ($1,$2,$3,$4)`,
+          [leadId, c.person_name || '', c.contact || '', c.designation || '']
+        );
+      }
+    }
   }
 
   return { ok: true, rowIndex: leadId };
@@ -564,8 +585,8 @@ async function updateLead(rowIndex, data) {
     if (validContacts.length) {
       const primary = validContacts[0];
       await pool.query(
-        `UPDATE leads SET person_in_charge = $1, contact = $2 WHERE id = $3`,
-        [primary.person_name || '', primary.contact || '', rowIndex]
+        `UPDATE leads SET person_in_charge = $1, contact = $2, designation = $3 WHERE id = $4`,
+        [primary.person_name || '', primary.contact || '', primary.designation || '', rowIndex]
       );
       await pool.query(`DELETE FROM lead_contacts WHERE lead_id = $1`, [rowIndex]);
       for (const c of validContacts.slice(1)) {
@@ -1203,7 +1224,7 @@ async function getJoinRequestByUserTeam(teamId, userId) {
 
 async function getLeadsByTeam(teamId) {
   const { rows } = await pool.query(`
-    SELECT id AS "rowIndex", factory_number, factory_name, person_in_charge, contact,
+    SELECT id AS "rowIndex", factory_number, factory_name, person_in_charge, contact, designation,
       product, quantity, rate, stage, follow_up, notes, area,
       lead_type, created_by, assigned_to, last_updated, mapped_stage, stage_number,
       lat, lng, team_id, visibility
@@ -1219,8 +1240,13 @@ async function getLeadsByTeam(teamId) {
   return rows.map(r => {
     const out = {};
     for (const [k, v] of Object.entries(r)) out[k] = v == null ? '' : String(v);
-    out.items         = itemMap[r.rowIndex]    || [];
-    out.extraContacts = contactMap[r.rowIndex] || [];
+    out.items    = itemMap[r.rowIndex] || [];
+    const extras = contactMap[r.rowIndex] || [];
+    out.contacts = [
+      { id: 'primary', person_name: out.person_in_charge || '', contact: out.contact || '', designation: out.designation || '' },
+      ...extras,
+    ];
+    out.extraContacts = extras;
     return out;
   });
 }

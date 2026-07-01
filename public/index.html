@@ -98,6 +98,8 @@
         <p style="text-align:center;margin-top:14px;font-size:13px;color:var(--text-muted)">
           New here? <a href="#" onclick="showRegisterScreen(event)" style="color:var(--primary);text-decoration:none;font-weight:500">Create Account</a>
         </p>
+        <div class="or-divider" style="margin:10px 0"><span>or</span></div>
+        <button type="button" onclick="enterGuest()" class="btn full-width" style="background:transparent;border:1px solid var(--border);color:var(--text-muted);font-size:13px">Try without logging in</button>
       </div>
 
       <!-- ── Create Account screen ───────────────────────── -->
@@ -112,6 +114,10 @@
               <span id="reg-username-status" class="username-status"></span>
             </div>
             <div id="reg-username-hint" class="username-hint">3–20 chars · letters, numbers, _ and . only</div>
+          </div>
+          <div class="form-group">
+            <label>Mobile <span style="font-weight:400;color:var(--text-muted)">(optional · use to log in if you forget username)</span></label>
+            <input id="reg-mobile" type="tel" placeholder="+91 98765 43210" autocomplete="tel" />
           </div>
           <div class="form-group">
             <label>PIN <span style="font-weight:400;color:var(--text-muted)">(4–6 digits)</span></label>
@@ -589,30 +595,12 @@
             </label>
             <div id="contacts-editor"></div>
           </div>
-          <div class="form-group">
-            <label>Product</label>
-            <select id="f-product">
-              <option value="">Select…</option>
-              <option>Hotmelt</option>
-              <option>Rubber Adhesive</option>
-              <option>Solvent</option>
-              <option>Latex</option>
-              <option>BC</option>
-              <option>Toluene</option>
-              <option>R6</option>
-              <option>MEK</option>
-              <option>PU Adhesive</option>
-              <option>Silicon</option>
-              <option>Other</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label>Quantity</label>
-            <input id="f-quantity" type="text" placeholder="500 kg" />
-          </div>
-          <div class="form-group">
-            <label>Rate</label>
-            <input id="f-rate" type="text" placeholder="₹120/kg" />
+          <div class="form-group full-width" id="items-form-group">
+            <label style="display:flex;align-items:center;justify-content:space-between">
+              <span>Products</span>
+              <button type="button" class="btn btn-ghost" style="font-size:11px;padding:2px 8px" onclick="addItemRow()">+ Add Product</button>
+            </label>
+            <div id="items-editor"></div>
           </div>
           <div class="form-group">
             <label>Stage</label>

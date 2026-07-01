@@ -142,6 +142,11 @@ function adminOnly(req, res, next) {
   next();
 }
 
+function noGuest(req, res, next) {
+  if (req.user?.role === 'guest') return res.status(403).json({ error: 'demo_only', message: 'Create an account to save data' });
+  next();
+}
+
 // Helper: get request IP
 function getIP(req) {
   return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || '';
@@ -251,6 +256,23 @@ app.post(['/api/auth/login', '/api/login'], loginLimiter, async (req, res) => {
     console.error('Login error:', err.message);
     res.status(500).json({ error: 'Login failed' });
   }
+});
+
+// Demo leads shown to guest users — no real data exposed
+const DEMO_LEADS = [
+  { id: 9001, name: 'Arun Sharma', phone: '+91 98100 00001', temperature: 'hot', stage: 'Follow Up', notes: 'Interested in premium plan', created_by: 'demo', created_at: new Date().toISOString(), items: [] },
+  { id: 9002, name: 'Priya Mehta', phone: '+91 98200 00002', temperature: 'warm', stage: 'Contacted', notes: 'Asked for brochure', created_by: 'demo', created_at: new Date().toISOString(), items: [] },
+  { id: 9003, name: 'Vikram Joshi', phone: '+91 98300 00003', temperature: 'cold', stage: 'New Lead', notes: 'Found via referral', created_by: 'demo', created_at: new Date().toISOString(), items: [] },
+];
+
+// POST /api/auth/guest — short-lived demo token, no account needed
+app.post('/api/auth/guest', (req, res) => {
+  const token = jwt.sign(
+    { sub: 'guest', username: 'Guest', role: 'guest', jti: uuidv4() },
+    JWT_SECRET,
+    { expiresIn: '4h' }
+  );
+  res.json({ accessToken: token, username: 'Guest', role: 'guest' });
 });
 
 // POST /api/auth/refresh — rotate refresh token, issue new access token
@@ -1355,13 +1377,14 @@ async function handleCallback(callbackQuery) {
 // ============================================================
 app.get('/api/leads', authMiddleware, async (req, res) => {
   try {
+    if (req.user.role === 'guest') return res.json(DEMO_LEADS);
     const leads = req.user.role === 'admin' ? await db.getLeads() : await db.getLeadsForUser(req.user.username);
     res.json(leads);
   }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/leads', authMiddleware, async (req, res) => {
+app.post('/api/leads', authMiddleware, noGuest, async (req, res) => {
   try {
     const result = await db.addLead(req.body, req.user?.username || '');
     if (result.conflict) return res.status(409).json(result);
@@ -1370,7 +1393,7 @@ app.post('/api/leads', authMiddleware, async (req, res) => {
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.put('/api/leads/:row', authMiddleware, async (req, res) => {
+app.put('/api/leads/:row', authMiddleware, noGuest, async (req, res) => {
   try {
     const result = await db.updateLead(parseInt(req.params.row, 10), req.body);
     if (req.body.stage === 'Order Won') notifyOrderWon(req.body, req.user.username).catch(() => {});
@@ -1640,13 +1663,19 @@ app.get('/api/check-username', async (req, res) => {
 
 // Public self-registration (no auth required — anyone can create a sales account)
 app.post('/api/register', async (req, res) => {
-  const { name, pin } = req.body || {};
+  const { name, pin, mobile } = req.body || {};
   const clean = (name || '').toLowerCase().trim();
   if (!isValidUsername(clean)) return res.status(400).json({ error: 'Invalid username — use 3–20 lowercase letters, numbers, _ or . only' });
   if (!pin || !/^\d{4,6}$/.test(String(pin))) return res.status(400).json({ error: 'PIN must be 4–6 digits' });
   try {
     const result = await db.createUser(clean, String(pin), 'sales', '');
     if (!result.ok) return res.status(409).json({ error: result.message });
+    if (mobile) {
+      const m = String(mobile).replace(/[\s\-\(\)]/g, '');
+      if (/^\+?\d{10,15}$/.test(m)) {
+        await pool.query(`UPDATE users SET mobile = $1 WHERE display_name = $2`, [m, clean]).catch(() => {});
+      }
+    }
     res.json({ success: true });
   } catch (err) {
     if (err.message?.includes('UNIQUE') || err.message?.includes('unique')) return res.status(409).json({ error: 'Username taken — choose another' });

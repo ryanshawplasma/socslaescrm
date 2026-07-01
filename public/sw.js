@@ -1,5 +1,5 @@
 // Service worker — makes the app installable and caches the shell
-const CACHE = 'salescrm-v2';
+const CACHE = 'salescrm-v3';
 const SHELL = ['/', '/app.js', '/style.css', '/manifest.json'];
 
 self.addEventListener('install', e => {

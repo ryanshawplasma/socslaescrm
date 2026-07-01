@@ -260,6 +260,9 @@
         <a class="nav-item" data-page="chat">
           <span class="nav-icon">💬</span> Chat
         </a>
+        <a class="nav-item admin-only" data-page="ai-debug" style="display:none">
+          <span class="nav-icon">🧠</span> AI Debug
+        </a>
       </nav>
 
       <div class="sidebar-footer">
@@ -474,7 +477,20 @@
         <!-- ── CHAT ───────────────────────────────────────────── -->
         <section id="page-chat" class="page">
           <div class="chat-container">
-            <div id="chat-messages" class="chat-messages">
+            <!-- AI Mode switcher -->
+            <div class="ai-mode-bar">
+              <button class="ai-mode-btn active" data-mode="understanding" onclick="setAiMode('understanding')">🧠 Understanding</button>
+              <button class="ai-mode-btn" data-mode="assistant" onclick="setAiMode('assistant')">💬 Assistant</button>
+              <button class="ai-mode-btn" data-mode="command" onclick="setAiMode('command')">⚡ Command</button>
+            </div>
+
+            <!-- Understanding Card area (shown in understanding mode) -->
+            <div id="ai-card-area" class="ai-card-area">
+              <div class="ai-empty">🧠 Type a lead above and AI will parse it here.</div>
+            </div>
+
+            <!-- Chat messages (shown in assistant/command mode) -->
+            <div id="chat-messages" class="chat-messages" style="display:none">
               <div class="chat-msg bot">
                 👋 <b>CRM Chat</b> — Type a lead and I'll parse it.<br>
                 E.g. <code>M277 Ramesh hotmelt 500@120 hot</code>
@@ -566,6 +582,19 @@
 
         </section>
 
+        <!-- ── AI DEBUG CONSOLE ──────────────────────────────── -->
+        <section id="page-ai-debug" class="page">
+          <div class="card">
+            <div class="card-header">
+              <h3>🧠 AI Debug Console</h3>
+              <span id="ai-debug-meta" class="text-muted" style="font-size:12px"></span>
+            </div>
+            <div id="ai-debug-content">
+              <div class="ai-empty">Loading sessions…</div>
+            </div>
+          </div>
+        </section>
+
       </div><!-- /content -->
     </div><!-- /main -->
   </div><!-- /app -->
@@ -640,6 +669,17 @@
           <div class="form-group full-width admin-only" id="modal-access-section" style="display:none">
             <label>Team Access <span style="font-weight:400;color:var(--text-muted);font-size:12px">— grant salespeople access to this lead</span></label>
             <div id="modal-access-list" style="margin-top:8px"></div>
+          </div>
+
+          <!-- Activity Timeline -->
+          <div class="form-group full-width" id="modal-timeline-section" style="display:none">
+            <label style="display:flex;align-items:center;gap:8px">
+              <span>Activity Timeline</span>
+              <span class="timeline-badge" id="timeline-count"></span>
+            </label>
+            <div id="lead-timeline-content" class="lead-timeline">
+              <div class="activity-empty">No activity yet.</div>
+            </div>
           </div>
         </div>
         <div class="modal-footer">

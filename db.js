@@ -327,6 +327,103 @@ async function initSchema() {
       )
     `).catch(() => {});
 
+    // ── New: Departments (sub-teams within workspace) ──────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS departments (
+        id           SERIAL PRIMARY KEY,
+        team_id      INTEGER REFERENCES teams(id) ON DELETE CASCADE,
+        name         TEXT NOT NULL,
+        description  TEXT DEFAULT '',
+        manager_id   INTEGER REFERENCES users(id),
+        created_at   TIMESTAMPTZ DEFAULT NOW(),
+        archived_at  TIMESTAMPTZ,
+        UNIQUE(team_id, name)
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_departments_team ON departments(team_id)`).catch(() => {});
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS department_members (
+        id            SERIAL PRIMARY KEY,
+        department_id INTEGER REFERENCES departments(id) ON DELETE CASCADE,
+        user_id       INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        joined_at     TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(department_id, user_id)
+      )
+    `).catch(() => {});
+
+    // ── New: Granular permissions ──────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS user_permissions (
+        id              SERIAL PRIMARY KEY,
+        user_id         INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        team_id         INTEGER REFERENCES teams(id) ON DELETE CASCADE,
+        permission_code TEXT NOT NULL,
+        granted_by      INTEGER REFERENCES users(id),
+        granted_at      TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(user_id, team_id, permission_code)
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_user_perms ON user_permissions(user_id, team_id)`).catch(() => {});
+
+    // ── New: Lead activity timeline ────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS lead_activities (
+        id            BIGSERIAL PRIMARY KEY,
+        lead_id       INTEGER REFERENCES leads(id) ON DELETE CASCADE,
+        team_id       INTEGER,
+        activity_type TEXT NOT NULL,
+        description   TEXT DEFAULT '',
+        metadata      JSONB DEFAULT '{}',
+        performed_by  TEXT NOT NULL,
+        created_at    TIMESTAMPTZ DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id, created_at DESC)`).catch(() => {});
+
+    // ── New: Field-level edit history ──────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS lead_history (
+        id          BIGSERIAL PRIMARY KEY,
+        lead_id     INTEGER REFERENCES leads(id) ON DELETE CASCADE,
+        changed_by  TEXT NOT NULL,
+        changed_at  TIMESTAMPTZ DEFAULT NOW(),
+        field_name  TEXT NOT NULL,
+        old_value   TEXT DEFAULT '',
+        new_value   TEXT DEFAULT '',
+        team_id     INTEGER
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_history_lead ON lead_history(lead_id, changed_at DESC)`).catch(() => {});
+
+    // ── New: Personal vocabulary (per-user AI aliases) ─────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS personal_vocab (
+        id         SERIAL PRIMARY KEY,
+        user_id    INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        alias      TEXT NOT NULL,
+        canonical  TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(user_id, alias)
+      )
+    `).catch(() => {});
+
+    // ── New: AI corrections (learning engine) ──────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ai_corrections (
+        id              SERIAL PRIMARY KEY,
+        session_id      TEXT DEFAULT '',
+        field_name      TEXT DEFAULT '',
+        original_value  TEXT DEFAULT '',
+        corrected_value TEXT DEFAULT '',
+        raw_input       TEXT DEFAULT '',
+        user_id         INTEGER REFERENCES users(id),
+        team_id         INTEGER,
+        created_at      TIMESTAMPTZ DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ai_corrections_team ON ai_corrections(team_id, created_at DESC)`).catch(() => {});
+
     console.log('✅ PostgreSQL schema ready');
   } finally {
     client.release();
@@ -1284,6 +1381,207 @@ async function logAiAction(leadId, action, inputType, rawInput, parsedJson, save
   ).catch(() => {});
 }
 
+// ── Lead security helpers ─────────────────────────────────────
+async function getLeadById(id) {
+  const { rows } = await pool.query(
+    `SELECT id, created_by, team_id FROM leads WHERE id=$1`, [id]
+  );
+  return rows[0] || null;
+}
+
+async function userHasLeadAccess(leadId, username) {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM lead_access WHERE lead_id=$1 AND user_display_name=$2`, [leadId, username]
+  );
+  return rows.length > 0;
+}
+
+// ── Lead activity timeline ────────────────────────────────────
+async function logLeadActivity(leadId, teamId, activityType, description, metadata, performedBy) {
+  await pool.query(
+    `INSERT INTO lead_activities (lead_id, team_id, activity_type, description, metadata, performed_by)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [leadId, teamId || null, activityType, description || '', JSON.stringify(metadata || {}), performedBy]
+  ).catch(() => {});
+}
+
+async function getLeadActivities(leadId) {
+  const { rows } = await pool.query(
+    `SELECT id, activity_type, description, metadata, performed_by, created_at
+     FROM lead_activities WHERE lead_id=$1 ORDER BY created_at DESC`,
+    [leadId]
+  );
+  return rows;
+}
+
+// ── Field-level edit history ──────────────────────────────────
+async function logLeadHistory(leadId, changedBy, fieldName, oldValue, newValue, teamId) {
+  await pool.query(
+    `INSERT INTO lead_history (lead_id, changed_by, field_name, old_value, new_value, team_id)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [leadId, changedBy, fieldName, String(oldValue ?? ''), String(newValue ?? ''), teamId || null]
+  ).catch(() => {});
+}
+
+async function getLeadHistory(leadId) {
+  const { rows } = await pool.query(
+    `SELECT id, changed_by, changed_at, field_name, old_value, new_value
+     FROM lead_history WHERE lead_id=$1 ORDER BY changed_at DESC`,
+    [leadId]
+  );
+  return rows;
+}
+
+// ── Departments ───────────────────────────────────────────────
+async function getDepartments(teamId) {
+  const { rows } = await pool.query(
+    `SELECT d.*, u.display_name AS manager_name,
+       (SELECT COUNT(*) FROM department_members WHERE department_id=d.id)::int AS member_count
+     FROM departments d LEFT JOIN users u ON u.id=d.manager_id
+     WHERE d.team_id=$1 AND d.archived_at IS NULL ORDER BY d.created_at ASC`,
+    [teamId]
+  );
+  return rows;
+}
+
+async function createDepartment(teamId, name, managerId) {
+  const { rows } = await pool.query(
+    `INSERT INTO departments (team_id, name, manager_id) VALUES ($1,$2,$3) RETURNING *`,
+    [teamId, name.trim(), managerId || null]
+  );
+  return rows[0];
+}
+
+async function updateDepartment(id, { name, description, managerId }) {
+  const sets = []; const vals = []; let i = 1;
+  if (name        !== undefined) { sets.push(`name=$${i++}`);        vals.push(name); }
+  if (description !== undefined) { sets.push(`description=$${i++}`); vals.push(description); }
+  if (managerId   !== undefined) { sets.push(`manager_id=$${i++}`);  vals.push(managerId); }
+  if (!sets.length) return;
+  vals.push(id);
+  await pool.query(`UPDATE departments SET ${sets.join(',')} WHERE id=$${i}`, vals);
+}
+
+async function archiveDepartment(id) {
+  await pool.query(`UPDATE departments SET archived_at=NOW() WHERE id=$1`, [id]);
+}
+
+async function getDepartmentMembers(deptId) {
+  const { rows } = await pool.query(
+    `SELECT dm.*, u.display_name, u.telegram_user_id
+     FROM department_members dm JOIN users u ON u.id=dm.user_id
+     WHERE dm.department_id=$1 ORDER BY dm.joined_at ASC`,
+    [deptId]
+  );
+  return rows;
+}
+
+async function addDepartmentMember(deptId, userId) {
+  await pool.query(
+    `INSERT INTO department_members (department_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+    [deptId, userId]
+  );
+}
+
+async function removeDepartmentMember(deptId, userId) {
+  await pool.query(
+    `DELETE FROM department_members WHERE department_id=$1 AND user_id=$2`, [deptId, userId]
+  );
+}
+
+// ── Granular permissions ──────────────────────────────────────
+async function getUserPermissions(userId, teamId) {
+  const { rows } = await pool.query(
+    `SELECT permission_code FROM user_permissions WHERE user_id=$1 AND team_id=$2`,
+    [userId, teamId]
+  );
+  return rows.map(r => r.permission_code);
+}
+
+async function grantPermission(userId, teamId, code, grantedBy) {
+  await pool.query(
+    `INSERT INTO user_permissions (user_id, team_id, permission_code, granted_by)
+     VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+    [userId, teamId, code, grantedBy || null]
+  );
+}
+
+async function revokePermission(userId, teamId, code) {
+  await pool.query(
+    `DELETE FROM user_permissions WHERE user_id=$1 AND team_id=$2 AND permission_code=$3`,
+    [userId, teamId, code]
+  );
+}
+
+// ── Personal vocabulary ───────────────────────────────────────
+async function getPersonalVocab(userId) {
+  const { rows } = await pool.query(
+    `SELECT id, alias, canonical, created_at FROM personal_vocab WHERE user_id=$1 ORDER BY id ASC`,
+    [userId]
+  );
+  return rows;
+}
+
+async function addPersonalVocab(userId, alias, canonical) {
+  const { rows } = await pool.query(
+    `INSERT INTO personal_vocab (user_id, alias, canonical)
+     VALUES ($1,$2,$3) ON CONFLICT (user_id, alias) DO UPDATE SET canonical=EXCLUDED.canonical RETURNING id`,
+    [userId, alias.trim().toLowerCase(), canonical.trim()]
+  );
+  return rows[0];
+}
+
+async function deletePersonalVocab(id, userId) {
+  await pool.query(`DELETE FROM personal_vocab WHERE id=$1 AND user_id=$2`, [id, userId]);
+}
+
+// ── AI corrections (learning engine) ─────────────────────────
+async function logCorrection(sessionId, fieldName, originalValue, correctedValue, rawInput, userId, teamId) {
+  await pool.query(
+    `INSERT INTO ai_corrections (session_id, field_name, original_value, corrected_value, raw_input, user_id, team_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [sessionId || '', fieldName || '', originalValue || '', correctedValue || '', rawInput || '', userId || null, teamId || null]
+  ).catch(() => {});
+}
+
+async function getAIDebugLog(teamId, limit = 50) {
+  const { rows } = await pool.query(
+    `SELECT id, lead_id, action, input_type, raw_input, saved_by, parsed_json, created_at
+     FROM ai_audit_log
+     WHERE team_id=$1 OR $1 IS NULL
+     ORDER BY created_at DESC LIMIT $2`,
+    [teamId || null, limit]
+  );
+  return rows;
+}
+
+// ── CRM search for AI context ─────────────────────────────────
+async function searchBusinesses(query, teamId) {
+  const q = `%${query.toLowerCase()}%`;
+  const { rows } = await pool.query(
+    `SELECT id, factory_number, factory_name, person_in_charge, stage, last_updated
+     FROM leads
+     WHERE (LOWER(factory_number) LIKE $1 OR LOWER(factory_name) LIKE $1)
+       AND (team_id=$2 OR $2 IS NULL)
+     ORDER BY last_updated DESC LIMIT 3`,
+    [q, teamId || null]
+  );
+  return rows;
+}
+
+async function searchContacts(query, teamId) {
+  const q = `%${query.toLowerCase()}%`;
+  const { rows } = await pool.query(
+    `SELECT id, factory_name, person_in_charge, contact, stage
+     FROM leads
+     WHERE LOWER(person_in_charge) LIKE $1
+       AND (team_id=$2 OR $2 IS NULL)
+     ORDER BY last_updated DESC LIMIT 3`,
+    [q, teamId || null]
+  );
+  return rows;
+}
+
 module.exports = {
   pool,
   initSchema,
@@ -1308,5 +1606,20 @@ module.exports = {
   logSecurity, getUserSecurityLog,
   // AI Entry Mode
   getVocab, addVocab, deleteVocab, logAiAction,
+  // Lead security
+  getLeadById, userHasLeadAccess,
+  // Activity timeline + history
+  logLeadActivity, getLeadActivities, logLeadHistory, getLeadHistory,
+  // Departments
+  getDepartments, createDepartment, updateDepartment, archiveDepartment,
+  getDepartmentMembers, addDepartmentMember, removeDepartmentMember,
+  // Granular permissions
+  getUserPermissions, grantPermission, revokePermission,
+  // Personal vocab
+  getPersonalVocab, addPersonalVocab, deletePersonalVocab,
+  // AI learning + debug
+  logCorrection, getAIDebugLog,
+  // CRM search
+  searchBusinesses, searchContacts,
   bcrypt,
 };

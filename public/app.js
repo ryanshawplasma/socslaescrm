@@ -3711,3 +3711,427 @@ async function deleteVocabAlias(id) {
     renderVocabAdmin();
   } catch (err) { toast('Failed: ' + err.message, 'error'); }
 }
+
+// ============================================================
+//  AI UNDERSTANDING ENGINE — Card UI
+// ============================================================
+
+// Current AI mode: 'understanding' | 'assistant' | 'command'
+let aiMode = 'understanding';
+let aiSession = null; // { sessionId, originalText, parsed, confidence }
+
+function setAiMode(mode) {
+  aiMode = mode;
+  document.querySelectorAll('.ai-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  const box = document.getElementById('chat-messages');
+  const cardArea = document.getElementById('ai-card-area');
+  if (!box || !cardArea) return;
+  if (mode === 'understanding') { box.style.display = 'none'; cardArea.style.display = ''; }
+  else                          { box.style.display = ''; cardArea.style.display = 'none'; }
+}
+
+function confBadgeClass(conf) {
+  if (conf === undefined || conf === null) return 'conf-badge low';
+  if (conf >= 0.85) return 'conf-badge high';
+  if (conf >= 0.70) return 'conf-badge mid';
+  return 'conf-badge low';
+}
+
+function confLabel(conf) {
+  if (conf === undefined || conf === null) return '?';
+  return Math.round(conf * 100) + '%';
+}
+
+function renderUnderstandingCard(data) {
+  const { parsed, confidence, substitutions, model, latency, needsClarification, clarification, sessionId } = data;
+  aiSession = { sessionId, originalText: aiSession?.originalText || '', parsed, confidence };
+
+  const cardArea = document.getElementById('ai-card-area');
+  if (!cardArea) return;
+
+  const FIELD_LABELS = {
+    factory_number: 'Factory #', factory_name: 'Business', person_in_charge: 'Contact',
+    contact: 'Phone', stage: 'Stage', follow_up: 'Follow-up', area: 'Area',
+    notes: 'Notes', lead_type: 'Lead Type',
+  };
+
+  const SHOW_FIELDS = ['factory_number', 'factory_name', 'person_in_charge', 'contact', 'lead_type', 'stage', 'follow_up', 'area', 'notes'];
+
+  const fieldsHtml = SHOW_FIELDS.map(f => {
+    const val  = parsed[f] || '';
+    const conf = confidence?.[f];
+    const cls  = confBadgeClass(conf);
+    if (!val && !conf) return '';
+    return `<tr>
+      <td class="ai-card-label">${FIELD_LABELS[f] || f}</td>
+      <td class="ai-card-value"><span class="ai-field-val" data-field="${f}" contenteditable="true"
+          onblur="aiFieldCorrected('${f}', this)">${escHtml(val || '—')}</span></td>
+      <td><span class="${cls}" title="Confidence">${confLabel(conf)}</span></td>
+    </tr>`;
+  }).filter(Boolean).join('');
+
+  const itemsHtml = (parsed.items || []).map((it, i) =>
+    `<tr>
+      <td class="ai-card-label">Product ${i + 1}</td>
+      <td class="ai-card-value">${escHtml(it.product || '—')} &nbsp;
+        <span style="color:var(--text-muted)">${escHtml(it.quantity || '')} ${it.rate ? '@ ₹' + escHtml(it.rate) : ''}</span></td>
+      <td><span class="conf-badge high">—</span></td>
+    </tr>`
+  ).join('');
+
+  const subsHtml = substitutions?.length
+    ? `<div class="ai-subs">Substituted: ${substitutions.map(s => `<b>${escHtml(s.from)}</b> → <b>${escHtml(s.to)}</b>`).join(', ')}</div>`
+    : '';
+
+  const metaHtml = `<div class="ai-meta">${model || 'Gemini'} · ${latency ? latency + 'ms' : '—'}</div>`;
+
+  let actionHtml;
+  if (needsClarification && clarification) {
+    actionHtml = renderClarificationPanel(clarification);
+  } else {
+    actionHtml = `
+      <div class="ai-card-footer">
+        <button class="btn btn-primary" onclick="aiConfirmSave()">✅ Save Lead</button>
+        <button class="btn btn-ghost" onclick="aiEditAll()">✏️ Edit All</button>
+        <button class="btn btn-ghost" onclick="aiClearCard()">✕ Clear</button>
+      </div>`;
+  }
+
+  cardArea.innerHTML = `
+    <div class="ai-card">
+      <div class="ai-card-header">
+        <span class="ai-card-title">🧠 AI Understood</span>
+        <button class="btn btn-ghost btn-xs" onclick="aiClearCard()">↩ Ask Again</button>
+      </div>
+      ${subsHtml}
+      <table class="ai-card-table">
+        ${fieldsHtml}
+        ${itemsHtml}
+      </table>
+      ${actionHtml}
+      ${metaHtml}
+    </div>`;
+}
+
+function renderClarificationPanel(clarification) {
+  const optsHtml = clarification.options?.length
+    ? `<div class="clarify-options">${clarification.options.map(o =>
+        `<button class="clarify-chip" onclick="aiAnswerClarification('${escAttr(o)}')">${escHtml(o)}</button>`
+      ).join('')}</div>`
+    : '';
+  return `
+    <div class="clarify-panel">
+      <div class="clarify-question">❓ ${escHtml(clarification.question)}</div>
+      <div class="clarify-why">${escHtml(clarification.whyAsked)}</div>
+      ${optsHtml}
+      <div class="clarify-input-row">
+        <input id="clarify-answer-input" type="text" placeholder="Type your answer…" class="clarify-input"
+          onkeydown="if(event.key==='Enter')aiAnswerClarification(this.value)" />
+        <button class="btn btn-primary btn-sm" onclick="aiAnswerClarification(document.getElementById('clarify-answer-input').value)">Submit</button>
+      </div>
+    </div>`;
+}
+
+async function aiFieldCorrected(field, el) {
+  const correctedValue = el.textContent.trim();
+  if (!aiSession || correctedValue === (aiSession.parsed[field] || '—')) return;
+  const originalValue = aiSession.parsed[field] || '';
+  aiSession.parsed[field] = correctedValue;
+  try {
+    await apiFetch('/api/ai/correct', { method: 'POST', body: JSON.stringify({
+      sessionId: aiSession.sessionId, field,
+      originalValue, correctedValue, rawInput: aiSession.originalText,
+    }) });
+  } catch (_) {}
+}
+
+async function aiAnswerClarification(answer) {
+  if (!answer || !answer.trim()) return;
+  const cardArea = document.getElementById('ai-card-area');
+  if (cardArea) cardArea.innerHTML = `<div class="ai-thinking">🧠 Thinking… <span class="ai-dots">…</span></div>`;
+  try {
+    const data = await apiFetch('/api/ai/clarify', {
+      method: 'POST',
+      body: JSON.stringify({
+        sessionId: aiSession?.sessionId,
+        field: aiSession?.clarification?.field,
+        answer: answer.trim(),
+        originalText: aiSession?.originalText || '',
+      }),
+    });
+    renderUnderstandingCard(data);
+  } catch (err) {
+    if (cardArea) cardArea.innerHTML = `<div class="ai-error">❌ ${escHtml(err.message)}</div>`;
+  }
+}
+
+async function aiConfirmSave() {
+  if (!aiSession?.parsed) return;
+  const parsed = aiSession.parsed;
+  const payload = {
+    factory_number:   parsed.factory_number  || '',
+    factory_name:     parsed.factory_name    || '',
+    person_in_charge: parsed.person_in_charge || '',
+    contact:          parsed.contact         || '',
+    stage:            parsed.stage           || '',
+    stage_number:     parsed.stage_number    || 0,
+    follow_up:        parsed.follow_up       || '',
+    area:             parsed.area            || '',
+    notes:            parsed.notes           || '',
+    lead_type:        parsed.lead_type       || 'Cold',
+    items:            parsed.items           || [],
+    contacts:         [],
+  };
+  if (payload.items.length) {
+    payload.product  = payload.items[0].product;
+    payload.quantity = payload.items[0].quantity;
+    payload.rate     = payload.items[0].rate;
+  }
+  try {
+    // Check for existing lead
+    const existingRow = aiSession.existingRow;
+    if (existingRow && existingRow !== -1) {
+      await apiFetch(`/api/leads/${existingRow}`, { method: 'PUT', body: JSON.stringify(payload) });
+      toast('Lead updated');
+    } else {
+      const result = await apiFetch('/api/leads', { method: 'POST', body: JSON.stringify(payload) });
+      if (result?.conflict) { toast(`Duplicate: ${result.message}`, 'error'); return; }
+      toast('Lead saved');
+    }
+    aiClearCard();
+    await loadLeads(); await loadStats(); renderPage(state.page);
+  } catch (err) { toast('Save failed: ' + err.message, 'error'); }
+}
+
+function aiEditAll() {
+  if (!aiSession?.parsed) return;
+  closeModal();
+  openEditModalFromParsed(aiSession.parsed);
+}
+
+function openEditModalFromParsed(parsed) {
+  document.getElementById('modal-title').textContent = 'Edit Lead';
+  document.getElementById('f-row').value = aiSession?.existingRow || '';
+  FIELDS.forEach(f => {
+    const el = document.getElementById('f-' + f);
+    if (!el) return;
+    if (f === 'follow_up') el.value = ddmmyyyyToISO(parsed[f] || '');
+    else el.value = parsed[f] || '';
+  });
+  renderItemsEditor(parsed.items || []);
+  renderContactsEditor([]);
+  document.getElementById('modal-overlay').classList.remove('hidden');
+}
+
+function aiClearCard() {
+  const cardArea = document.getElementById('ai-card-area');
+  if (cardArea) cardArea.innerHTML = `<div class="ai-empty">💬 Type a lead above and AI will parse it here.</div>`;
+  aiSession = null;
+  const input = document.getElementById('chat-input');
+  if (input) { input.value = ''; input.focus(); }
+}
+
+// Enhanced chatSend — routes based on current AI mode
+const _originalChatSend = chatSend;
+window._originalChatSend = _originalChatSend;
+
+async function chatSend() {
+  if (aiMode !== 'understanding') { return _originalChatSend(); }
+
+  const input = document.getElementById('chat-input');
+  const text  = (input?.value || '').trim();
+  if (!text) return;
+
+  const cardArea = document.getElementById('ai-card-area');
+  if (cardArea) cardArea.innerHTML = `<div class="ai-thinking">🧠 Parsing with AI…</div>`;
+  aiSession = { originalText: text };
+
+  try {
+    const data = await apiFetch('/api/ai/understand', {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    });
+    if (input) input.value = '';
+    if (data.error) {
+      if (cardArea) cardArea.innerHTML = `<div class="ai-error">⚠️ ${escHtml(data.error)}</div>`;
+      return;
+    }
+    aiSession.existingRow = data.existingRow;
+    renderUnderstandingCard(data);
+  } catch (err) {
+    if (cardArea) cardArea.innerHTML = `<div class="ai-error">❌ ${escHtml(err.message)}</div>`;
+  }
+}
+
+// ============================================================
+//  ACTIVITY TIMELINE
+// ============================================================
+
+async function loadLeadTimeline(leadId) {
+  const el = document.getElementById('lead-timeline-content');
+  if (!el) return;
+  el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:12px">Loading…</div>';
+  try {
+    const activities = await apiFetch(`/api/leads/${leadId}/activities`);
+    if (!activities.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:12px">No activity yet.</div>'; return; }
+    const ICONS = { created: '✨', edit: '✏️', stage_change: '📊', visit: '📍', call: '📞', note: '📝', won: '🏆', lost: '❌', sample: '🧪' };
+    el.innerHTML = activities.map(a => `
+      <div class="activity-item">
+        <span class="activity-icon">${ICONS[a.activity_type] || '◎'}</span>
+        <div class="activity-body">
+          <div class="activity-desc">${escHtml(a.description || a.activity_type)}</div>
+          <div class="activity-meta">${escHtml(a.performed_by)} · ${new Date(a.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</div>
+        </div>
+      </div>`).join('');
+  } catch (err) {
+    el.innerHTML = `<div style="color:var(--danger);font-size:12px;padding:12px">${escHtml(err.message)}</div>`;
+  }
+}
+
+// Monkey-patch openEditModal to show timeline tab
+const _origOpenEditModal = openEditModal;
+function openEditModal(rowIndex) {
+  _origOpenEditModal(rowIndex);
+  // If timeline section exists, populate it
+  const timelineContent = document.getElementById('lead-timeline-content');
+  if (timelineContent && rowIndex) {
+    loadLeadTimeline(rowIndex);
+  }
+}
+
+// ============================================================
+//  ADMIN AI DEBUG CONSOLE
+// ============================================================
+
+async function renderAiDebugPage() {
+  const page = document.getElementById('page-ai-debug');
+  if (!page) return;
+
+  page.innerHTML = `
+    <div style="padding:20px">
+      <h2 style="margin-bottom:16px">🧠 AI Debug Console</h2>
+      <div id="ai-debug-content">
+        <div style="color:var(--text-muted)">Loading sessions…</div>
+      </div>
+    </div>`;
+
+  try {
+    const log = await apiFetch('/api/ai/debug?limit=50');
+    const content = document.getElementById('ai-debug-content');
+    if (!log || !log.length) { content.innerHTML = '<div style="color:var(--text-muted)">No AI sessions yet.</div>'; return; }
+    content.innerHTML = `
+      <table class="debug-table">
+        <thead>
+          <tr>
+            <th>Time</th><th>User</th><th>Input Type</th><th>Model</th><th>Avg Conf</th><th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${log.map((row, i) => {
+            const parsed = (() => { try { return typeof row.parsed_json === 'string' ? JSON.parse(row.parsed_json) : row.parsed_json; } catch { return {}; } })();
+            const conf   = parsed?._confidence || {};
+            const vals   = Object.values(conf).filter(v => typeof v === 'number');
+            const avg    = vals.length ? (vals.reduce((a, b) => a + b, 0) / vals.length * 100).toFixed(0) : '—';
+            const confCls = avg === '—' ? '' : avg >= 85 ? 'conf-high' : avg >= 70 ? 'conf-mid' : 'conf-low';
+            const ts = row.created_at ? new Date(row.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
+            return `<tr onclick="toggleDebugRow(${i})" style="cursor:pointer">
+              <td style="font-size:11px;color:var(--text-muted)">${ts}</td>
+              <td>${escHtml(row.performed_by || row.username || '—')}</td>
+              <td>${escHtml(row.input_type || 'text')}</td>
+              <td style="font-size:11px">${escHtml(row.model || '—')}</td>
+              <td><span class="${confCls}" style="font-weight:600">${avg}%</span></td>
+              <td>${escHtml(row.action || '—')}</td>
+            </tr>
+            <tr id="debug-detail-${i}" class="debug-detail hidden">
+              <td colspan="6">
+                <div class="debug-detail-box">
+                  <div><b>Raw input:</b> ${escHtml(row.raw_input || '—')}</div>
+                  <div style="margin-top:8px"><b>Parsed JSON:</b></div>
+                  <pre class="debug-json">${escHtml(JSON.stringify(parsed, null, 2))}</pre>
+                </div>
+              </td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`;
+  } catch (err) {
+    const content = document.getElementById('ai-debug-content');
+    if (content) content.innerHTML = `<div style="color:var(--danger)">${escHtml(err.message)}</div>`;
+  }
+}
+
+function toggleDebugRow(i) {
+  const el = document.getElementById(`debug-detail-${i}`);
+  if (el) el.classList.toggle('hidden');
+}
+
+// Hook into page navigation to load debug console when shown
+const _origRenderPage = renderPage;
+function renderPage(page) {
+  _origRenderPage(page);
+  if (page === 'ai-debug') renderAiDebugPage();
+}
+
+// ============================================================
+//  DEPARTMENT UI (Workspace Members tab extension)
+// ============================================================
+
+async function renderDepartmentSection(teamId) {
+  let el = document.getElementById('ws-dept-section');
+  if (!el) {
+    const membersPanel = document.getElementById('ws-panel-members');
+    if (!membersPanel) return;
+    el = document.createElement('div');
+    el.id = 'ws-dept-section';
+    el.className = 'dept-section';
+    membersPanel.appendChild(el);
+  }
+  el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:8px">Loading departments…</div>';
+  try {
+    const depts = await apiFetch(`/api/teams/${teamId}/departments`);
+    const isAdmin = ['owner', 'admin'].includes(state.teamRole || '');
+    el.innerHTML = `
+      <div class="dept-header">
+        <h3 class="dept-title">Departments</h3>
+        ${isAdmin ? `<button class="btn btn-ghost btn-sm" onclick="showCreateDeptForm(${teamId})">+ New</button>` : ''}
+      </div>
+      <div id="dept-create-form" class="hidden" style="margin-bottom:12px">
+        <input id="dept-name-input" type="text" placeholder="Department name…" class="form-input" style="width:200px;margin-right:8px"/>
+        <button class="btn btn-primary btn-sm" onclick="createDept(${teamId})">Create</button>
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('dept-create-form').classList.add('hidden')">Cancel</button>
+      </div>
+      ${depts.length ? depts.map(d => `
+        <div class="dept-item">
+          <span class="dept-name">${escHtml(d.name)}</span>
+          <span class="dept-meta">${d.member_count || 0} members${d.manager_name ? ' · ' + escHtml(d.manager_name) : ''}</span>
+          ${isAdmin ? `<button class="btn btn-ghost btn-xs" onclick="archiveDept(${teamId},${d.id})">Archive</button>` : ''}
+        </div>`).join('')
+      : '<div style="color:var(--text-muted);font-size:13px;margin-top:8px">No departments yet.</div>'}`;
+  } catch (err) {
+    el.innerHTML = `<div style="color:var(--danger);font-size:12px">${escHtml(err.message)}</div>`;
+  }
+}
+
+function showCreateDeptForm(teamId) {
+  document.getElementById('dept-create-form')?.classList.remove('hidden');
+  document.getElementById('dept-name-input')?.focus();
+}
+
+async function createDept(teamId) {
+  const name = document.getElementById('dept-name-input')?.value.trim();
+  if (!name) return;
+  try {
+    await apiFetch(`/api/teams/${teamId}/departments`, { method: 'POST', body: JSON.stringify({ name }) });
+    toast(`Department "${name}" created`);
+    renderDepartmentSection(teamId);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function archiveDept(teamId, deptId) {
+  if (!confirm('Archive this department?')) return;
+  try {
+    await apiFetch(`/api/teams/${teamId}/departments/${deptId}`, { method: 'DELETE' });
+    toast('Department archived');
+    renderDepartmentSection(teamId);
+  } catch (err) { toast(err.message, 'error'); }
+}

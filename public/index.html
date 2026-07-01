@@ -26,31 +26,69 @@
     <div id="login-box">
       <div class="login-brand">◈ SalesCRM</div>
 
-      <!-- Sign In screen -->
+      <!-- ── PIN Unlock screen (trusted device) ───────────── -->
+      <div id="pin-unlock-screen" style="display:none">
+        <div class="pin-avatar-wrap">
+          <div class="pin-avatar" id="pin-unlock-avatar">?</div>
+          <div class="pin-username" id="pin-unlock-name">Welcome back</div>
+          <div class="pin-sub">Enter your unlock PIN</div>
+        </div>
+        <div class="pin-dots" id="pin-dots">
+          <div class="pin-dot"></div><div class="pin-dot"></div>
+          <div class="pin-dot"></div><div class="pin-dot"></div>
+          <div class="pin-dot"></div><div class="pin-dot"></div>
+        </div>
+        <!-- hidden real input for keyboard typing -->
+        <input id="pin-input" type="tel" inputmode="numeric" maxlength="6"
+          oninput="pinInputChanged(this.value)"
+          onkeydown="if(event.key==='Enter')submitPinUnlock()" />
+        <!-- visible numpad for touch -->
+        <div class="pin-numpad" onclick="(function(t){if(t.classList.contains('pin-key')){var i=document.getElementById('pin-input');if(t.dataset.k==='del'){i.value=i.value.slice(0,-1);}else if(i.value.length<6){i.value+=t.dataset.k;}pinInputChanged(i.value);}})(event.target)">
+          <div class="pin-key" data-k="1">1</div><div class="pin-key" data-k="2">2</div><div class="pin-key" data-k="3">3</div>
+          <div class="pin-key" data-k="4">4</div><div class="pin-key" data-k="5">5</div><div class="pin-key" data-k="6">6</div>
+          <div class="pin-key" data-k="7">7</div><div class="pin-key" data-k="8">8</div><div class="pin-key" data-k="9">9</div>
+          <div class="pin-key" data-k="del" style="font-size:13px">⌫</div>
+          <div class="pin-key" data-k="0">0</div>
+          <button id="pin-unlock-btn" class="pin-key" onclick="submitPinUnlock()" style="background:var(--primary);color:#fff;border-color:var(--primary)">→</button>
+        </div>
+        <p id="pin-error"></p>
+        <div class="pin-switch">
+          <a href="#" onclick="showLoginPage();return false">Use password instead</a>
+          &nbsp;·&nbsp;
+          <a href="#" onclick="switchAccount();return false">Switch account</a>
+        </div>
+      </div>
+
+      <!-- ── Sign In screen ───────────────────────────────── -->
       <div id="login-screen">
         <h2 class="login-title">Sign in</h2>
-
-        <!-- Registered user chips (loaded from server) -->
         <div id="login-user-chips" class="login-user-chips hidden"></div>
-
         <form id="login-form" autocomplete="off">
-          <div class="form-group">
-            <label>Username</label>
-            <input id="login-username" type="text" placeholder="Your name" autocomplete="username" />
+          <div class="form-group credential-type-wrap">
+            <label>Username / Email / Mobile</label>
+            <input id="login-username" type="text" placeholder="Enter username, email or mobile"
+              autocomplete="username"
+              oninput="updateCredentialLabel(this.value)" />
+            <span id="credential-type-label"></span>
           </div>
           <div class="form-group">
-            <label>PIN</label>
-            <input id="login-password" type="password" placeholder="••••••" autocomplete="current-password" inputmode="numeric" maxlength="6" />
+            <label>PIN / Password</label>
+            <input id="login-password" type="password" placeholder="••••••"
+              autocomplete="current-password" inputmode="numeric" maxlength="6" />
+          </div>
+          <div class="remember-row">
+            <label>
+              <input type="checkbox" id="remember-device" checked />
+              Remember this device
+            </label>
+            <a href="#" onclick="showForgotPin(event)" style="color:var(--text-muted);text-decoration:none;font-size:12px">Forgot PIN?</a>
+          </div>
+          <div id="forgot-pin-box" style="display:none;margin-bottom:10px;padding:10px 14px;background:var(--bg);border-radius:8px;border:1px solid var(--border);font-size:13px;color:var(--text-muted);line-height:1.6">
+            Ask your <b style="color:var(--text)">admin</b> to reset your PIN from <b style="color:var(--text)">Team → Reset PIN</b>.
           </div>
           <p id="login-error" class="login-error"></p>
-          <button type="submit" id="login-btn" class="btn btn-primary full-width">Log In</button>
+          <button type="submit" id="login-btn" class="btn btn-primary full-width">Sign In</button>
         </form>
-        <p style="text-align:center;margin-top:10px;font-size:13px">
-          <a href="#" onclick="showForgotPin(event)" style="color:var(--text-muted);text-decoration:none">Forgot PIN?</a>
-        </p>
-        <div id="forgot-pin-box" style="display:none;margin-top:10px;padding:12px;background:var(--bg);border-radius:8px;border:1px solid var(--border);font-size:13px;color:var(--text-muted);text-align:center;line-height:1.6">
-          Ask your <b style="color:var(--text)">admin</b> to reset your PIN from the<br><b style="color:var(--text)">Team → Reset PIN</b> option.
-        </div>
         <div id="biometric-login-section" class="hidden">
           <div class="or-divider"><span>or</span></div>
           <button type="button" id="btn-biometric-login" class="btn btn-biometric full-width" onclick="loginWithBiometric()">
@@ -62,7 +100,7 @@
         </p>
       </div>
 
-      <!-- Create Account screen -->
+      <!-- ── Create Account screen ───────────────────────── -->
       <div id="register-screen" style="display:none">
         <h2 class="login-title">Create Account</h2>
         <form id="register-form" autocomplete="off">
@@ -73,6 +111,7 @@
           <div class="form-group">
             <label>PIN <span style="font-weight:400;color:var(--text-muted)">(4–6 digits)</span></label>
             <input id="reg-pin" type="password" placeholder="••••••" inputmode="numeric" maxlength="6" />
+            <div id="reg-pin-strength"></div>
           </div>
           <div class="form-group">
             <label>Confirm PIN</label>
@@ -84,6 +123,56 @@
         <p style="text-align:center;margin-top:14px;font-size:13px;color:var(--text-muted)">
           Already have an account? <a href="#" onclick="showLoginScreen(event)" style="color:var(--primary);text-decoration:none;font-weight:500">Sign in</a>
         </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PIN Setup Modal ───────────────────────────────────────── -->
+  <div id="pin-setup-modal" class="hidden">
+    <div class="pin-setup-box">
+      <h3>🔐 Set Quick-Unlock PIN</h3>
+      <p>Set a 4–6 digit PIN for fast access on this device. Your account password is still used on new devices.</p>
+      <div class="form-group">
+        <label>PIN</label>
+        <input id="pin-setup-input" type="password" placeholder="4–6 digits" inputmode="numeric" maxlength="6" />
+        <div id="pin-setup-strength"></div>
+      </div>
+      <div class="form-group">
+        <label>Confirm PIN</label>
+        <input id="pin-setup-input2" type="password" placeholder="4–6 digits" inputmode="numeric" maxlength="6" />
+      </div>
+      <p id="pin-setup-error" class="login-error"></p>
+      <div class="modal-footer" style="padding:0;margin-top:14px">
+        <button type="button" class="btn btn-ghost" onclick="closePinSetupModal()">Skip</button>
+        <button type="button" class="btn btn-primary" onclick="submitPinSetup()">Set PIN</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Security Modal (sessions / devices / log) ─────────────── -->
+  <div id="security-modal" class="hidden">
+    <div class="security-box">
+      <div class="security-header">
+        <h2>🔒 Security</h2>
+        <button class="icon-btn" onclick="closeSecurityModal()">✕</button>
+      </div>
+      <div class="sec-tabs">
+        <button class="sec-tab active" data-tab="sessions"     onclick="showSecurityTab('sessions')">Sessions</button>
+        <button class="sec-tab"        data-tab="devices"      onclick="showSecurityTab('devices')">Devices</button>
+        <button class="sec-tab"        data-tab="security-log" onclick="showSecurityTab('security-log')">Activity</button>
+      </div>
+      <div class="sec-body" data-tab="sessions">
+        <div id="sessions-list"></div>
+      </div>
+      <div class="sec-body hidden" data-tab="devices">
+        <div id="devices-list"></div>
+      </div>
+      <div class="sec-body hidden" data-tab="security-log">
+        <div id="security-log-list"></div>
+      </div>
+      <div class="sec-footer">
+        <button class="btn btn-ghost" onclick="revokeAllSessions()" style="font-size:12px;color:var(--danger)">Log out all other devices</button>
+        <button class="btn btn-ghost" onclick="closeSecurityModal()">Close</button>
       </div>
     </div>
   </div>
@@ -169,6 +258,7 @@
         <div id="current-user" class="sidebar-user"></div>
         <button id="btn-enable-biometric" class="btn-biometric-enable hidden" onclick="enableBiometric()">🔐 Enable Biometric Login</button>
         <button class="btn-profile" onclick="openProfileModal()">✏️ Edit Profile</button>
+        <button class="btn-profile" onclick="openSecurityPanel()" style="margin-top:0">🔒 Security</button>
         <button class="btn-switch-account" onclick="switchAccount()">🔄 Switch Account</button>
         <button class="btn-logout" onclick="logout()">Sign out</button>
       </div>

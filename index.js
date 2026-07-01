@@ -1,14 +1,17 @@
 require('dotenv').config();
-const http    = require('http');
-const express = require('express');
+const http       = require('http');
+const express    = require('express');
 const { Server } = require('socket.io');
-const axios   = require('axios');
-const crypto  = require('crypto');
-const fs      = require('fs');
+const axios      = require('axios');
+const crypto     = require('crypto');
+const fs         = require('fs');
 const { v4: uuidv4 } = require('uuid');
-const path    = require('path');
-const cache   = require('./cache');
-const db      = require('./db');
+const path       = require('path');
+const jwt        = require('jsonwebtoken');
+const rateLimit  = require('express-rate-limit');
+const cache      = require('./cache');
+const db         = require('./db');
+const { pool }   = db;
 const {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -20,6 +23,7 @@ const app        = express();
 const httpServer = http.createServer(app);
 const io         = new Server(httpServer);
 
+app.set('trust proxy', 1); // trust Render/Cloudflare proxy for req.ip
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -60,40 +64,75 @@ const {
   JWT_SECRET = 'crm_default_secret_change_me',
 } = process.env;
 
+// ─── Rate limiters ─────────────────────────────────────────────
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,   // 15 minutes
+  limit: 15,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts. Try again in 15 minutes.' },
+});
+const resetLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  message: { error: 'Too many reset requests. Try again in 1 hour.' },
+});
+
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 
 // ============================================================
-//  AUTH — token sign / verify
+//  AUTH — JWT token sign / verify
 // ============================================================
-function signToken(username, role) {
-  const expiry  = Date.now() + 24 * 60 * 60 * 1000;
-  const payload = `${username}:${role}:${expiry}`;
-  const sig     = crypto.createHmac('sha256', JWT_SECRET).update(payload).digest('hex');
-  return Buffer.from(payload).toString('base64') + '.' + sig;
+const ACCESS_TTL  = '15m';
+const ACCESS_TTL_MS = 15 * 60 * 1000;
+
+function signAccessToken(userId, username, role, sessionId) {
+  return jwt.sign(
+    { sub: String(userId), username, role, sid: sessionId, jti: uuidv4() },
+    JWT_SECRET,
+    { expiresIn: ACCESS_TTL }
+  );
 }
 
-function verifyToken(token) {
-  if (!token) return null;
+// Legacy token verifier (HMAC base64.sig format) — supports existing sessions during migration
+function verifyLegacyToken(token) {
   const dot = token.lastIndexOf('.');
   if (dot < 0) return null;
-  const b64 = token.slice(0, dot);
-  const sig  = token.slice(dot + 1);
+  const b64     = token.slice(0, dot);
+  const sig     = token.slice(dot + 1);
   let payload;
   try { payload = Buffer.from(b64, 'base64').toString(); } catch { return null; }
   const expected = crypto.createHmac('sha256', JWT_SECRET).update(payload).digest('hex');
   if (sig !== expected) return null;
-  const parts = payload.split(':');
+  const parts  = payload.split(':');
   if (parts.length < 3) return null;
-  const expiry = parseInt(parts[2], 10);
-  if (Date.now() > expiry) return null;
+  if (Date.now() > parseInt(parts[2], 10)) return null;
   return { username: parts[0], role: parts[1] };
+}
+
+function verifyAccessToken(token) {
+  if (!token) return null;
+  // Try JWT first
+  try {
+    const p = jwt.verify(token, JWT_SECRET);
+    return { userId: p.sub, username: p.username, role: p.role, sessionId: p.sid };
+  } catch {}
+  // Fall back to legacy HMAC token (users who haven't re-logged-in yet)
+  const legacy = verifyLegacyToken(token);
+  if (legacy) return { userId: null, username: legacy.username, role: legacy.role, sessionId: null };
+  return null;
+}
+
+// Keep signToken for backward compat (used by Telegram bot flow)
+function signToken(username, role) {
+  return signAccessToken(0, username, role, null);
 }
 
 function authMiddleware(req, res, next) {
   const header = req.headers.authorization;
   if (!header || !header.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
-  const user = verifyToken(header.slice(7));
-  if (!user) return res.status(401).json({ error: 'Invalid or expired token' });
+  const user = verifyAccessToken(header.slice(7));
+  if (!user) return res.status(401).json({ error: 'token_expired' });
   req.user = user;
   next();
 }
@@ -103,27 +142,339 @@ function adminOnly(req, res, next) {
   next();
 }
 
-// ============================================================
-//  LOGIN
-// ============================================================
-app.post('/api/login', async (req, res) => {
-  const { username, password, pin } = req.body || {};
+// Helper: get request IP
+function getIP(req) {
+  return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || '';
+}
 
-  // Try env-based admin/sales login first
-  if (username === ADMIN_USER && password === ADMIN_PASS)
-    return res.json({ token: signToken(username, 'admin'), role: 'admin', username });
-  if (username === SALES_USER && password === SALES_PASS)
-    return res.json({ token: signToken(username, 'sales'), role: 'sales', username });
+// ============================================================
+//  AUTH ENDPOINTS
+// ============================================================
 
-  // Try PIN-based user login (salespeople registered via /register)
-  const pinToCheck = pin || password;
-  if (username && pinToCheck) {
-    const user = await db.verifyUserPin(username, pinToCheck);
-    if (user) return res.json({ token: signToken(user.display_name, user.role), role: user.role, username: user.display_name });
+// POST /api/auth/login  — main login (rate-limited)
+app.post(['/api/auth/login', '/api/login'], loginLimiter, async (req, res) => {
+  const { credential, username, password, pin, fingerprint, trustDevice, deviceMeta } = req.body || {};
+  const cred   = (credential || username || '').trim();
+  const secret = (password  || pin      || '').trim();
+  const ip     = getIP(req);
+  const ua     = req.headers['user-agent'] || '';
+
+  if (!cred || !secret) return res.status(400).json({ error: 'Credential and password/PIN are required' });
+
+  try {
+    // ── Env-based admin/sales login (legacy fallback) ────────
+    if ((cred === ADMIN_USER && secret === ADMIN_PASS) || (cred === SALES_USER && secret === SALES_PASS)) {
+      const role     = cred === ADMIN_USER ? 'admin' : 'sales';
+      const dbUser   = await db.getUserByCredential(cred);
+      const userId   = dbUser?.id || 0;
+      let   deviceId = null;
+      let   session  = null;
+      if (userId) {
+        session  = await db.createSession(userId, null, ip, ua);
+        deviceId = session.id; // use session as proxy device for env users
+      }
+      const sessionId = session?.id || uuidv4();
+      const token     = signAccessToken(userId, cred, role, sessionId);
+      const refresh   = session ? await db.issueRefreshToken(session.id) : null;
+      if (userId) await db.logSecurity(userId, 'login_success', { method: 'env' }, ip, ua, session?.id, null);
+      return res.json({ token, accessToken: token, refreshToken: refresh, role, username: cred,
+        userId, sessionId, deviceId, deviceTrusted: false, hasPIN: false, teams: [] });
+    }
+
+    // ── DB user lookup ───────────────────────────────────────
+    const user = await db.getUserByCredential(cred);
+    if (!user) {
+      await db.logSecurity(null, 'login_failed', { credential: cred, reason: 'user_not_found' }, ip, ua, null, null);
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Lockout check
+    if (user.locked_until && new Date(user.locked_until) > new Date()) {
+      const mins = Math.ceil((new Date(user.locked_until) - new Date()) / 60000);
+      return res.status(423).json({ error: `Account locked. Try again in ${mins} minute${mins !== 1 ? 's' : ''}.` });
+    }
+
+    // Verify PIN / password
+    const valid = await db.verifyUserPin(user.display_name, secret);
+    if (!valid) {
+      await db.incrementFailedAttempts(user.id);
+      await db.logSecurity(user.id, 'login_failed', { reason: 'wrong_pin' }, ip, ua, null, null);
+      const updated = await db.getUserByCredential(cred);
+      const attempts = updated?.failed_attempts || 0;
+      const attemptsLeft = Math.max(0, 5 - attempts);
+      return res.status(401).json({
+        error: attemptsLeft > 0
+          ? `Invalid credentials. ${attemptsLeft} attempt${attemptsLeft !== 1 ? 's' : ''} remaining.`
+          : 'Account locked for 15 minutes due to too many failed attempts.',
+      });
+    }
+
+    await db.resetFailedAttempts(user.id);
+
+    // ── Device trust ─────────────────────────────────────────
+    let device = null;
+    if (fingerprint) device = await db.getDeviceByFingerprint(user.id, fingerprint);
+    if (!device && trustDevice && fingerprint) {
+      device = await db.trustDevice(user.id, fingerprint, {
+        name:    deviceMeta?.name    || parseDeviceName(ua),
+        browser: deviceMeta?.browser || parseBrowser(ua),
+        os:      deviceMeta?.os      || parseOS(ua),
+        type:    deviceMeta?.type    || 'unknown',
+        ip,
+      });
+    }
+    if (device) await db.touchDevice(device.id);
+
+    // ── Create session + tokens ───────────────────────────────
+    const session     = await db.createSession(user.id, device?.id || null, ip, ua);
+    const accessToken = signAccessToken(user.id, user.display_name, user.role, session.id);
+    const refreshToken = await db.issueRefreshToken(session.id);
+    const hasPIN      = device ? await db.hasDevicePin(user.id, device.id) : false;
+    const teams       = await db.getUserTeams(user.id);
+
+    await db.logSecurity(user.id, 'login_success', { device: device?.device_name }, ip, ua, session.id, device?.id);
+
+    res.json({
+      token: accessToken,      // backward compat field
+      accessToken,
+      refreshToken,
+      role:          user.role,
+      username:      user.display_name,
+      userId:        user.id,
+      sessionId:     session.id,
+      deviceId:      device?.id || null,
+      deviceTrusted: !!device,
+      hasPIN,
+      teams,
+    });
+  } catch (err) {
+    console.error('Login error:', err.message);
+    res.status(500).json({ error: 'Login failed' });
   }
-
-  res.status(401).json({ error: 'Invalid username or password' });
 });
+
+// POST /api/auth/refresh — rotate refresh token, issue new access token
+app.post('/api/auth/refresh', async (req, res) => {
+  const { refreshToken } = req.body || {};
+  if (!refreshToken) return res.status(400).json({ error: 'refreshToken required' });
+  try {
+    const { sessionId, newRaw } = await db.rotateRefreshToken(refreshToken);
+    const session = await db.getSessionById(sessionId);
+    if (!session || session.revoked) return res.status(401).json({ error: 'Session revoked' });
+    const user = await db.getUserByName(session.user_id ?
+      (await pool.query('SELECT display_name FROM users WHERE id=$1', [session.user_id])).rows[0]?.display_name
+      : '') || {};
+    // Resolve username from session
+    const { rows: [u] } = await pool.query('SELECT * FROM users WHERE id=$1', [session.user_id]);
+    if (!u) return res.status(401).json({ error: 'User not found' });
+    const accessToken = signAccessToken(u.id, u.display_name, u.role, sessionId);
+    res.json({ accessToken, refreshToken: newRaw, username: u.display_name, role: u.role });
+  } catch (err) {
+    res.status(err.status || 401).json({ error: err.message });
+  }
+});
+
+// POST /api/auth/logout — revoke current session
+app.post('/api/auth/logout', authMiddleware, async (req, res) => {
+  const { sessionId } = req.user;
+  if (sessionId) {
+    await db.revokeSession(sessionId);
+    await db.logSecurity(req.user.userId ? parseInt(req.user.userId) : null,
+      'logout', {}, getIP(req), req.headers['user-agent'] || '', sessionId, null);
+  }
+  res.json({ success: true });
+});
+
+// POST /api/auth/logout-all — revoke all user sessions
+app.post('/api/auth/logout-all', authMiddleware, async (req, res) => {
+  const user = await db.getUserByName(req.user.username);
+  if (user) {
+    await db.revokeAllUserSessions(user.id, req.user.sessionId || null);
+    await db.logSecurity(user.id, 'logout_all', {}, getIP(req), req.headers['user-agent'] || '', req.user.sessionId, null);
+  }
+  res.json({ success: true });
+});
+
+// POST /api/auth/pin-setup — set a quick-unlock PIN for this device
+app.post('/api/auth/pin-setup', authMiddleware, async (req, res) => {
+  const { pin, deviceId } = req.body || {};
+  if (!pin || !/^\d{4,6}$/.test(String(pin))) return res.status(400).json({ error: 'PIN must be 4–6 digits' });
+  if (!deviceId) return res.status(400).json({ error: 'deviceId required' });
+  const user = await db.getUserByName(req.user.username);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const device = await db.getDeviceById(deviceId, user.id);
+  if (!device) return res.status(404).json({ error: 'Device not found or not trusted' });
+  await db.setupDevicePin(user.id, device.id, pin);
+  await db.logSecurity(user.id, 'pin_created', { device: device.device_name },
+    getIP(req), req.headers['user-agent'] || '', req.user.sessionId, device.id);
+  res.json({ success: true });
+});
+
+// POST /api/auth/pin-unlock — verify device PIN, return new access token
+app.post('/api/auth/pin-unlock', async (req, res) => {
+  const { refreshToken, pin, deviceId } = req.body || {};
+  if (!refreshToken || !pin || !deviceId) return res.status(400).json({ error: 'refreshToken, pin, and deviceId required' });
+  try {
+    // Validate refresh token to know which user this is
+    const { sessionId, newRaw } = await db.rotateRefreshToken(refreshToken);
+    const session = await db.getSessionById(sessionId);
+    if (!session || session.revoked) return res.status(401).json({ error: 'Session invalid' });
+    const { rows: [u] } = await pool.query('SELECT * FROM users WHERE id=$1', [session.user_id]);
+    if (!u) return res.status(401).json({ error: 'User not found' });
+    // Verify device PIN
+    const result = await db.verifyDevicePin(u.id, deviceId, pin);
+    if (!result.ok) {
+      if (result.reason === 'locked')
+        return res.status(423).json({ error: 'PIN locked. Use password to log in.' });
+      if (result.reason === 'no_pin')
+        return res.status(404).json({ error: 'No PIN set for this device' });
+      await db.logSecurity(u.id, 'pin_failed', { attemptsLeft: result.attemptsLeft },
+        getIP(req), req.headers['user-agent'] || '', sessionId, deviceId);
+      return res.status(401).json({ error: `Wrong PIN. ${result.attemptsLeft} attempt${result.attemptsLeft !== 1 ? 's' : ''} remaining.` });
+    }
+    const accessToken = signAccessToken(u.id, u.display_name, u.role, sessionId);
+    await db.logSecurity(u.id, 'pin_unlock', {}, getIP(req), req.headers['user-agent'] || '', sessionId, deviceId);
+    res.json({ accessToken, refreshToken: newRaw, username: u.display_name, role: u.role, userId: u.id });
+  } catch (err) {
+    res.status(err.status || 401).json({ error: err.message });
+  }
+});
+
+// POST /api/auth/pin-check — does this device have a PIN set? (needs refreshToken to identify user)
+app.post('/api/auth/pin-check', async (req, res) => {
+  const { refreshToken, deviceId } = req.body || {};
+  if (!refreshToken || !deviceId) return res.json({ hasPIN: false });
+  try {
+    // Peek at the session without consuming the token
+    const hash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+    const { rows: [rt] } = await pool.query(
+      `SELECT rt.session_id, s.user_id FROM refresh_tokens rt
+       JOIN sessions s ON s.id = rt.session_id
+       WHERE rt.token_hash=$1 AND NOT rt.used AND rt.expires_at > NOW() AND NOT s.revoked`, [hash]
+    );
+    if (!rt) return res.json({ hasPIN: false });
+    const hasPIN = await db.hasDevicePin(rt.user_id, deviceId);
+    const { rows: [u] } = await pool.query('SELECT display_name FROM users WHERE id=$1', [rt.user_id]);
+    res.json({ hasPIN, username: u?.display_name || '' });
+  } catch {
+    res.json({ hasPIN: false });
+  }
+});
+
+// DELETE /api/auth/pin — remove device PIN
+app.delete('/api/auth/pin', authMiddleware, async (req, res) => {
+  const { deviceId } = req.body || {};
+  if (!deviceId) return res.status(400).json({ error: 'deviceId required' });
+  const user = await db.getUserByName(req.user.username);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  await pool.query(`DELETE FROM device_pins WHERE user_id=$1 AND device_id=$2`, [user.id, deviceId]);
+  res.json({ success: true });
+});
+
+// GET /api/sessions — list all active sessions
+app.get('/api/sessions', authMiddleware, async (req, res) => {
+  const user = await db.getUserByName(req.user.username);
+  if (!user) return res.status(404).json({ error: 'Not found' });
+  const sessions = await db.listUserSessions(user.id);
+  res.json(sessions.map(s => ({ ...s, current: s.id === req.user.sessionId })));
+});
+
+// DELETE /api/sessions/:id — revoke one session
+app.delete('/api/sessions/:id', authMiddleware, async (req, res) => {
+  const user = await db.getUserByName(req.user.username);
+  if (!user) return res.status(404).json({ error: 'Not found' });
+  const session = await db.getSessionById(req.params.id);
+  if (!session || session.user_id !== user.id) return res.status(404).json({ error: 'Session not found' });
+  await db.revokeSession(req.params.id);
+  await db.logSecurity(user.id, 'session_revoked', { sessionId: req.params.id },
+    getIP(req), req.headers['user-agent'] || '', req.user.sessionId, null);
+  res.json({ success: true });
+});
+
+// DELETE /api/sessions — revoke all sessions except current
+app.delete('/api/sessions', authMiddleware, async (req, res) => {
+  const user = await db.getUserByName(req.user.username);
+  if (!user) return res.status(404).json({ error: 'Not found' });
+  await db.revokeAllUserSessions(user.id, req.user.sessionId);
+  await db.logSecurity(user.id, 'logout_all_others', {}, getIP(req), req.headers['user-agent'] || '', req.user.sessionId, null);
+  res.json({ success: true });
+});
+
+// GET /api/devices — list trusted devices
+app.get('/api/devices', authMiddleware, async (req, res) => {
+  const user = await db.getUserByName(req.user.username);
+  if (!user) return res.status(404).json({ error: 'Not found' });
+  res.json(await db.listUserDevices(user.id));
+});
+
+// PATCH /api/devices/:id — rename a device
+app.patch('/api/devices/:id', authMiddleware, async (req, res) => {
+  const { name } = req.body || {};
+  if (!name || name.trim().length < 1) return res.status(400).json({ error: 'Name required' });
+  const user = await db.getUserByName(req.user.username);
+  if (!user) return res.status(404).json({ error: 'Not found' });
+  await db.renameDevice(req.params.id, user.id, name.trim());
+  res.json({ success: true });
+});
+
+// DELETE /api/devices/:id — remove a trusted device (revokes its sessions + PIN)
+app.delete('/api/devices/:id', authMiddleware, async (req, res) => {
+  const user = await db.getUserByName(req.user.username);
+  if (!user) return res.status(404).json({ error: 'Not found' });
+  await db.removeDevice(req.params.id, user.id);
+  // Also revoke active sessions that used this device
+  await pool.query(`UPDATE sessions SET revoked=TRUE WHERE device_id=$1 AND user_id=$2`, [req.params.id, user.id]);
+  await db.logSecurity(user.id, 'device_removed', { deviceId: req.params.id },
+    getIP(req), req.headers['user-agent'] || '', req.user.sessionId, req.params.id);
+  res.json({ success: true });
+});
+
+// GET /api/security-log — user's own security event log
+app.get('/api/security-log', authMiddleware, async (req, res) => {
+  const user = await db.getUserByName(req.user.username);
+  if (!user) return res.status(404).json({ error: 'Not found' });
+  const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+  res.json(await db.getUserSecurityLog(user.id, limit));
+});
+
+// POST /api/auth/forgot-password — stub (log + inform admin)
+app.post('/api/auth/forgot-password', resetLimiter, async (req, res) => {
+  const { credential } = req.body || {};
+  if (!credential) return res.status(400).json({ error: 'Credential required' });
+  const user = await db.getUserByCredential(credential.trim());
+  if (user) {
+    await db.logSecurity(user.id, 'reset_requested', { credential },
+      getIP(req), req.headers['user-agent'] || '', null, null);
+  }
+  // Always return 200 — don't reveal if user exists
+  res.json({ message: 'If that account exists, your admin can reset your PIN from Team → Reset PIN.' });
+});
+
+// ── UA helpers for device naming ──────────────────────────────
+function parseBrowser(ua) {
+  if (!ua) return 'Unknown';
+  if (/Edg\//.test(ua))     return 'Edge';
+  if (/OPR\//.test(ua))     return 'Opera';
+  if (/Chrome\//.test(ua))  return 'Chrome';
+  if (/Firefox\//.test(ua)) return 'Firefox';
+  if (/Safari\//.test(ua))  return 'Safari';
+  return 'Browser';
+}
+function parseOS(ua) {
+  if (!ua) return 'Unknown';
+  if (/Windows NT 10/.test(ua))  return 'Windows 11/10';
+  if (/Windows/.test(ua))        return 'Windows';
+  if (/Android/.test(ua))        return 'Android';
+  if (/iPhone|iPad/.test(ua))    return 'iOS';
+  if (/Mac OS X/.test(ua))       return 'macOS';
+  if (/Linux/.test(ua))          return 'Linux';
+  return 'Unknown OS';
+}
+function parseDeviceName(ua) {
+  const browser = parseBrowser(ua);
+  const os      = parseOS(ua);
+  return `${browser} on ${os}`;
+}
 
 // ============================================================
 //  TELEGRAM WEBHOOK (no auth — Telegram calls this directly)

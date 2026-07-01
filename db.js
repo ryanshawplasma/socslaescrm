@@ -30,6 +30,14 @@ function hashPin(pin) {
   return crypto.createHash('sha256').update(String(pin)).digest('hex');
 }
 
+// ── Helpers ─────────────────────────────────────────────────
+const bcrypt = require('bcryptjs');
+const { v4: uuidv4 } = require('uuid');
+
+function sha256(str) {
+  return crypto.createHash('sha256').update(String(str)).digest('hex');
+}
+
 // ── Schema init ──────────────────────────────────────────────
 async function initSchema() {
   const client = await pool.connect();
@@ -190,6 +198,106 @@ async function initSchema() {
     // Add team context columns to leads (safe – idempotent)
     await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS team_id    INTEGER REFERENCES teams(id)`).catch(() => {});
     await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'team'`).catch(() => {});
+
+    // ── Auth system tables ─────────────────────────────────────
+    // Extend users with email, mobile, lockout fields
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_attempts SMALLINT DEFAULT 0`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ`).catch(() => {});
+
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_users_email
+      ON users(LOWER(email)) WHERE email IS NOT NULL AND email != ''
+    `).catch(() => {});
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_users_mobile
+      ON users(mobile) WHERE mobile IS NOT NULL AND mobile != ''
+    `).catch(() => {});
+
+    // Sessions: one row per active login (any device)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        id             TEXT PRIMARY KEY,
+        user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        device_id      TEXT,
+        ip_address     TEXT DEFAULT '',
+        user_agent     TEXT DEFAULT '',
+        created_at     TIMESTAMPTZ DEFAULT NOW(),
+        last_active_at TIMESTAMPTZ DEFAULT NOW(),
+        expires_at     TIMESTAMPTZ NOT NULL,
+        revoked        BOOLEAN DEFAULT FALSE
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id) WHERE NOT revoked`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_sessions_exp  ON sessions(expires_at)`).catch(() => {});
+
+    // Refresh tokens: rotated on every use, family-based reuse detection
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS refresh_tokens (
+        id          TEXT PRIMARY KEY,
+        session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        token_hash  TEXT NOT NULL UNIQUE,
+        family      TEXT NOT NULL,
+        used        BOOLEAN DEFAULT FALSE,
+        issued_at   TIMESTAMPTZ DEFAULT NOW(),
+        expires_at  TIMESTAMPTZ NOT NULL
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rt_family ON refresh_tokens(family)`).catch(() => {});
+
+    // Trusted devices: "remember me" devices
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS trusted_devices (
+        id               TEXT PRIMARY KEY,
+        user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        device_name      TEXT DEFAULT 'Unknown Device',
+        browser          TEXT DEFAULT '',
+        os               TEXT DEFAULT '',
+        device_type      TEXT DEFAULT 'unknown',
+        fingerprint_hash TEXT NOT NULL,
+        ip_address       TEXT DEFAULT '',
+        trusted_at       TIMESTAMPTZ DEFAULT NOW(),
+        last_active_at   TIMESTAMPTZ DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_td_user ON trusted_devices(user_id)`).catch(() => {});
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_td_fingerprint
+      ON trusted_devices(user_id, fingerprint_hash)
+    `).catch(() => {});
+
+    // Device PINs: quick unlock PIN per (user, device)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS device_pins (
+        id              TEXT PRIMARY KEY,
+        user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        device_id       TEXT NOT NULL REFERENCES trusted_devices(id) ON DELETE CASCADE,
+        pin_hash        TEXT NOT NULL,
+        failed_attempts SMALLINT DEFAULT 0,
+        locked_until    TIMESTAMPTZ,
+        created_at      TIMESTAMPTZ DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(user_id, device_id)
+      )
+    `).catch(() => {});
+
+    // Security audit log
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS security_logs (
+        id         BIGSERIAL PRIMARY KEY,
+        user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        event      TEXT NOT NULL,
+        detail     TEXT DEFAULT '{}',
+        ip_address TEXT DEFAULT '',
+        user_agent TEXT DEFAULT '',
+        session_id TEXT,
+        device_id  TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_sl_user ON security_logs(user_id, created_at DESC) WHERE user_id IS NOT NULL`).catch(() => {});
 
     console.log('✅ PostgreSQL schema ready');
   } finally {
@@ -526,9 +634,10 @@ async function reassignFollowUp(leadId, newAssigneeName) {
 async function createUser(displayName, pin, role = 'sales', telegramUserId = '') {
   const { rows: existing } = await pool.query(`SELECT id FROM users WHERE display_name ILIKE $1`, [displayName]);
   if (existing.length) return { ok: false, message: 'Name already taken. Choose another name.' };
+  const pinHash = await bcrypt.hash(String(pin), 10);
   await pool.query(
     `INSERT INTO users (display_name, role, pin_hash, telegram_user_id, created_at) VALUES ($1,$2,$3,$4,$5)`,
-    [displayName, role, hashPin(pin), telegramUserId || null, nowIST()]
+    [displayName, role, pinHash, telegramUserId || null, nowIST()]
   );
   return { ok: true };
 }
@@ -564,8 +673,19 @@ async function deleteUser(userId) {
 async function verifyUserPin(displayName, pin) {
   const user = await getUserByName(displayName);
   if (!user) return null;
-  if (user.pin_hash !== hashPin(pin)) return null;
-  return user;
+  const pinStr = String(pin);
+  // bcrypt hash (new): starts with $2b$ or $2a$
+  if (user.pin_hash && user.pin_hash.startsWith('$2')) {
+    const valid = await bcrypt.compare(pinStr, user.pin_hash);
+    return valid ? user : null;
+  }
+  // SHA-256 (legacy): migrate on successful login
+  if (user.pin_hash === hashPin(pinStr)) {
+    const newHash = await bcrypt.hash(pinStr, 10);
+    await pool.query(`UPDATE users SET pin_hash = $1 WHERE id = $2`, [newHash, user.id]);
+    return user;
+  }
+  return null;
 }
 
 async function updateUserName(userId, newName) {
@@ -622,12 +742,249 @@ async function getUserByWebAuthnCredId(credentialID) {
 async function seedAdminUser(adminUser, adminPass) {
   const { rows: existing } = await pool.query(`SELECT id FROM users WHERE role = 'admin'`);
   if (!existing.length) {
+    const pinHash = await bcrypt.hash(String(adminPass), 10);
     await pool.query(
       `INSERT INTO users (display_name, role, pin_hash, telegram_user_id, created_at) VALUES ($1,'admin',$2,NULL,$3)`,
-      [adminUser, hashPin(adminPass), nowIST()]
+      [adminUser, pinHash, nowIST()]
     );
     console.log(`✅ Admin user "${adminUser}" created`);
   }
+}
+
+// ── Auth: credential detection ────────────────────────────────
+async function getUserByCredential(credential) {
+  const c = credential.trim();
+  // Email detection
+  if (c.includes('@')) {
+    const { rows } = await pool.query(`SELECT * FROM users WHERE LOWER(email) = LOWER($1)`, [c]);
+    if (rows[0]) return rows[0];
+  }
+  // Mobile detection (digits + optional + prefix)
+  const mobile = c.replace(/[\s\-\(\)]/g, '');
+  if (/^\+?\d{10,15}$/.test(mobile)) {
+    const { rows } = await pool.query(`SELECT * FROM users WHERE mobile = $1`, [mobile]);
+    if (rows[0]) return rows[0];
+  }
+  // Username (case-insensitive, also catches email-as-username fallback)
+  const { rows } = await pool.query(`SELECT * FROM users WHERE LOWER(display_name) = LOWER($1)`, [c]);
+  return rows[0] || null;
+}
+
+async function incrementFailedAttempts(userId) {
+  await pool.query(`
+    UPDATE users
+    SET failed_attempts = COALESCE(failed_attempts, 0) + 1,
+        locked_until = CASE
+          WHEN COALESCE(failed_attempts, 0) + 1 >= 10 THEN NOW() + interval '1 hour'
+          WHEN COALESCE(failed_attempts, 0) + 1 >= 5  THEN NOW() + interval '15 minutes'
+          ELSE locked_until
+        END
+    WHERE id = $1`, [userId]);
+}
+
+async function resetFailedAttempts(userId) {
+  await pool.query(
+    `UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = NOW() WHERE id = $1`,
+    [userId]
+  );
+}
+
+// ── Auth: sessions ────────────────────────────────────────────
+async function createSession(userId, deviceId, ip, ua) {
+  const id = uuidv4();
+  const { rows } = await pool.query(`
+    INSERT INTO sessions (id, user_id, device_id, ip_address, user_agent, expires_at)
+    VALUES ($1,$2,$3,$4,$5, NOW() + interval '30 days') RETURNING *`,
+    [id, userId, deviceId || null, ip || '', (ua || '').slice(0, 500)]
+  );
+  return rows[0];
+}
+
+async function getSessionById(id) {
+  const { rows } = await pool.query(`SELECT * FROM sessions WHERE id = $1`, [id]);
+  return rows[0] || null;
+}
+
+async function revokeSession(id) {
+  await pool.query(`UPDATE sessions SET revoked = TRUE WHERE id = $1`, [id]);
+  await pool.query(`UPDATE refresh_tokens SET used = TRUE WHERE session_id = $1`, [id]);
+}
+
+async function revokeAllUserSessions(userId, exceptId) {
+  const cond = exceptId ? `AND id != $2` : '';
+  const vals = exceptId ? [userId, exceptId] : [userId];
+  await pool.query(`UPDATE sessions SET revoked = TRUE WHERE user_id = $1 AND NOT revoked ${cond}`, vals);
+}
+
+async function touchSession(id) {
+  await pool.query(`UPDATE sessions SET last_active_at = NOW() WHERE id = $1`, [id]);
+}
+
+async function listUserSessions(userId) {
+  const { rows } = await pool.query(`
+    SELECT s.id, s.device_id, s.ip_address, s.user_agent, s.created_at, s.last_active_at, s.expires_at,
+           td.device_name, td.browser, td.os, td.device_type
+    FROM sessions s LEFT JOIN trusted_devices td ON td.id = s.device_id
+    WHERE s.user_id = $1 AND NOT s.revoked AND s.expires_at > NOW()
+    ORDER BY s.last_active_at DESC`, [userId]
+  );
+  return rows;
+}
+
+// ── Auth: refresh tokens ──────────────────────────────────────
+async function issueRefreshToken(sessionId) {
+  const raw    = crypto.randomBytes(48).toString('base64url');
+  const hash   = sha256(raw);
+  const family = uuidv4();
+  await pool.query(`
+    INSERT INTO refresh_tokens (id, session_id, token_hash, family, expires_at)
+    VALUES ($1,$2,$3,$4, NOW() + interval '30 days')`,
+    [uuidv4(), sessionId, hash, family]
+  );
+  return raw;
+}
+
+async function rotateRefreshToken(rawToken) {
+  const hash = sha256(rawToken);
+  const { rows } = await pool.query(`SELECT * FROM refresh_tokens WHERE token_hash = $1`, [hash]);
+  const rt = rows[0];
+  if (!rt) throw Object.assign(new Error('Invalid refresh token'), { status: 401 });
+  if (rt.used) {
+    // Reuse attack: revoke entire token family + session
+    await pool.query(`UPDATE refresh_tokens SET used = TRUE WHERE family = $1`, [rt.family]);
+    await pool.query(`UPDATE sessions SET revoked = TRUE WHERE id = $1`, [rt.session_id]);
+    await logSecurity(null, 'token_reuse_attack', { family: rt.family }, '', '', rt.session_id, null);
+    throw Object.assign(new Error('Token reuse detected — session revoked for security'), { status: 401 });
+  }
+  if (new Date(rt.expires_at) < new Date())
+    throw Object.assign(new Error('Refresh token expired'), { status: 401 });
+  // Mark old as used
+  await pool.query(`UPDATE refresh_tokens SET used = TRUE WHERE id = $1`, [rt.id]);
+  // Issue new in same family
+  const newRaw  = crypto.randomBytes(48).toString('base64url');
+  const newHash = sha256(newRaw);
+  await pool.query(`
+    INSERT INTO refresh_tokens (id, session_id, token_hash, family, expires_at)
+    VALUES ($1,$2,$3,$4, NOW() + interval '30 days')`,
+    [uuidv4(), rt.session_id, newHash, rt.family]
+  );
+  await touchSession(rt.session_id);
+  return { sessionId: rt.session_id, newRaw };
+}
+
+// ── Auth: trusted devices ─────────────────────────────────────
+async function trustDevice(userId, fingerprint, meta) {
+  const { name = 'Unknown Device', browser = '', os = '', type = 'unknown', ip = '' } = meta || {};
+  const { rows } = await pool.query(`
+    INSERT INTO trusted_devices (id, user_id, fingerprint_hash, device_name, browser, os, device_type, ip_address)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+    ON CONFLICT (user_id, fingerprint_hash) DO UPDATE
+      SET device_name = EXCLUDED.device_name, last_active_at = NOW(), ip_address = EXCLUDED.ip_address
+    RETURNING *`,
+    [uuidv4(), userId, fingerprint, name, browser, os, type, ip]
+  );
+  return rows[0];
+}
+
+async function getDeviceByFingerprint(userId, fingerprint) {
+  const { rows } = await pool.query(
+    `SELECT * FROM trusted_devices WHERE user_id = $1 AND fingerprint_hash = $2`, [userId, fingerprint]
+  );
+  return rows[0] || null;
+}
+
+async function getDeviceById(deviceId, userId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM trusted_devices WHERE id = $1 AND user_id = $2`, [deviceId, userId]
+  );
+  return rows[0] || null;
+}
+
+async function listUserDevices(userId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM trusted_devices WHERE user_id = $1 ORDER BY last_active_at DESC`, [userId]
+  );
+  return rows;
+}
+
+async function removeDevice(deviceId, userId) {
+  await pool.query(`DELETE FROM device_pins WHERE device_id = $1 AND user_id = $2`, [deviceId, userId]);
+  await pool.query(`DELETE FROM trusted_devices WHERE id = $1 AND user_id = $2`, [deviceId, userId]);
+  return { ok: true };
+}
+
+async function renameDevice(deviceId, userId, name) {
+  await pool.query(`UPDATE trusted_devices SET device_name = $1 WHERE id = $2 AND user_id = $3`, [name, deviceId, userId]);
+  return { ok: true };
+}
+
+async function touchDevice(deviceId) {
+  await pool.query(`UPDATE trusted_devices SET last_active_at = NOW() WHERE id = $1`, [deviceId]);
+}
+
+// ── Auth: device PINs ─────────────────────────────────────────
+async function setupDevicePin(userId, deviceId, pin) {
+  const hash = await bcrypt.hash(String(pin), 10);
+  await pool.query(`
+    INSERT INTO device_pins (id, user_id, device_id, pin_hash)
+    VALUES ($1,$2,$3,$4)
+    ON CONFLICT (user_id, device_id) DO UPDATE
+      SET pin_hash = EXCLUDED.pin_hash, failed_attempts = 0, locked_until = NULL, updated_at = NOW()`,
+    [uuidv4(), userId, deviceId, hash]
+  );
+  return { ok: true };
+}
+
+async function verifyDevicePin(userId, deviceId, pin) {
+  const { rows } = await pool.query(
+    `SELECT * FROM device_pins WHERE user_id = $1 AND device_id = $2`, [userId, deviceId]
+  );
+  const dp = rows[0];
+  if (!dp) return { ok: false, reason: 'no_pin' };
+  if (dp.locked_until && new Date(dp.locked_until) > new Date())
+    return { ok: false, reason: 'locked', until: dp.locked_until };
+  const valid = await bcrypt.compare(String(pin), dp.pin_hash);
+  if (!valid) {
+    const newAttempts = (dp.failed_attempts || 0) + 1;
+    const lockedUntil = newAttempts >= 10
+      ? `NOW() + interval '1 hour'`
+      : newAttempts >= 5 ? `NOW() + interval '30 minutes'` : null;
+    if (lockedUntil) {
+      await pool.query(`UPDATE device_pins SET failed_attempts=$1, locked_until=${lockedUntil} WHERE id=$2`, [newAttempts, dp.id]);
+    } else {
+      await pool.query(`UPDATE device_pins SET failed_attempts=$1 WHERE id=$2`, [newAttempts, dp.id]);
+    }
+    return { ok: false, reason: 'wrong_pin', attemptsLeft: Math.max(0, 5 - newAttempts) };
+  }
+  await pool.query(`UPDATE device_pins SET failed_attempts=0, locked_until=NULL WHERE id=$1`, [dp.id]);
+  return { ok: true };
+}
+
+async function hasDevicePin(userId, deviceId) {
+  const { rows } = await pool.query(
+    `SELECT id FROM device_pins WHERE user_id = $1 AND device_id = $2`, [userId, deviceId]
+  );
+  return rows.length > 0;
+}
+
+// ── Security log ──────────────────────────────────────────────
+async function logSecurity(userId, event, detail, ip, ua, sessionId, deviceId) {
+  await pool.query(`
+    INSERT INTO security_logs (user_id, event, detail, ip_address, user_agent, session_id, device_id)
+    VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [userId || null, event, JSON.stringify(detail || {}),
+     (ip || '').slice(0, 100), (ua || '').slice(0, 500),
+     sessionId || null, deviceId || null]
+  ).catch(() => {}); // never let logging break the request
+}
+
+async function getUserSecurityLog(userId, limit = 50) {
+  const { rows } = await pool.query(`
+    SELECT id, event, detail, ip_address, user_agent, session_id, device_id, created_at
+    FROM security_logs WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+    [userId, limit]
+  );
+  return rows;
 }
 
 async function getLeadContacts(leadId) {
@@ -842,6 +1199,7 @@ async function getLeadsByTeam(teamId) {
 }
 
 module.exports = {
+  pool,
   initSchema,
   getLeads, getLeadsForUser, getLeadsByTeam, getStats, addLead, updateLead, deleteLead,
   addPhoto, getPhotos, getLeadContacts,
@@ -855,4 +1213,12 @@ module.exports = {
   updateTeam, regenerateInviteCode,
   getTeamMembers, getTeamMember, addTeamMember, updateTeamMember, removeTeamMember, getUserTeams,
   createJoinRequest, getJoinRequests, updateJoinRequest, getJoinRequestByUserTeam,
+  // Auth system
+  getUserByCredential, incrementFailedAttempts, resetFailedAttempts,
+  createSession, getSessionById, revokeSession, revokeAllUserSessions, listUserSessions,
+  issueRefreshToken, rotateRefreshToken,
+  trustDevice, getDeviceByFingerprint, getDeviceById, listUserDevices, removeDevice, renameDevice, touchDevice,
+  setupDevicePin, verifyDevicePin, hasDevicePin,
+  logSecurity, getUserSecurityLog,
+  bcrypt,
 };

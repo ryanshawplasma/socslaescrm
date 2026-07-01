@@ -58,12 +58,87 @@ Chart.register({
 });
 
 // ============================================================
-//  AUTH
+//  AUTH — token management
 // ============================================================
+
+function storeTokens(accessToken, refreshToken) {
+  localStorage.setItem('crm_token', accessToken);
+  if (refreshToken) localStorage.setItem('crm_refresh_token', refreshToken);
+  // Decode JWT expiry (payload is base64url-encoded JSON between the two dots)
+  try {
+    const payload = JSON.parse(atob(accessToken.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+    if (payload.exp) localStorage.setItem('crm_token_exp', String(payload.exp));
+  } catch (_) {}
+}
+
+function clearTokens() {
+  ['crm_token','crm_refresh_token','crm_token_exp'].forEach(k => localStorage.removeItem(k));
+}
+
+function tokenIsExpired() {
+  const exp = parseInt(localStorage.getItem('crm_token_exp') || '0', 10);
+  return exp ? Date.now() / 1000 > exp - 30 : false; // treat as expired 30s early
+}
+
+async function tryRefreshToken() {
+  const rt = localStorage.getItem('crm_refresh_token');
+  if (!rt) return false;
+  try {
+    const res  = await fetch('/api/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken: rt }),
+    });
+    if (!res.ok) { clearTokens(); return false; }
+    const data = await res.json();
+    storeTokens(data.accessToken, data.refreshToken);
+    if (data.username) localStorage.setItem('crm_user', data.username);
+    if (data.role)     { localStorage.setItem('crm_role', data.role); state.role = data.role; }
+    return true;
+  } catch { return false; }
+}
+
+// ── Device fingerprint ────────────────────────────────────────
+function getDeviceFingerprint() {
+  const parts = [navigator.userAgent, screen.width + 'x' + screen.height,
+    Intl.DateTimeFormat().resolvedOptions().timeZone, navigator.language];
+  const raw = parts.join('|');
+  // Simple hash via btoa (not cryptographic, but good enough for device ID)
+  let hash = 0;
+  for (let i = 0; i < raw.length; i++) hash = ((hash << 5) - hash + raw.charCodeAt(i)) | 0;
+  return 'fp_' + Math.abs(hash).toString(36) + '_' + btoa(navigator.userAgent.slice(0,20)).replace(/[^a-z0-9]/gi,'').slice(0,8);
+}
+
+function getDeviceMeta() {
+  const ua = navigator.userAgent;
+  let browser = 'Browser', os = 'Unknown';
+  if (/Edg\//.test(ua))     browser = 'Edge';
+  else if (/OPR\//.test(ua))  browser = 'Opera';
+  else if (/Chrome\//.test(ua)) browser = 'Chrome';
+  else if (/Firefox\//.test(ua)) browser = 'Firefox';
+  else if (/Safari\//.test(ua)) browser = 'Safari';
+  if (/Windows/.test(ua))     os = 'Windows';
+  else if (/Android/.test(ua)) os = 'Android';
+  else if (/iPhone|iPad/.test(ua)) os = 'iOS';
+  else if (/Mac/.test(ua))    os = 'macOS';
+  else if (/Linux/.test(ua))  os = 'Linux';
+  const type = /Mobi|Android|iPhone|iPad/.test(ua) ? 'mobile' : 'desktop';
+  return { name: `${browser} on ${os}`, browser, os, type };
+}
+
+// ── Credential detection label ─────────────────────────────────
+function detectCredentialType(val) {
+  if (!val) return '';
+  if (val.includes('@')) return 'Email';
+  if (/^\+?\d{7,}$/.test(val.replace(/[\s\-\(\)]/g,''))) return 'Mobile';
+  return 'Username';
+}
+
+// ── Login / Register screen switching ────────────────────────
 async function loadLoginUserChips() {
   try {
     const names = await fetch('/api/users/names').then(r => r.ok ? r.json() : []);
-    const wrap = document.getElementById('login-user-chips');
+    const wrap  = document.getElementById('login-user-chips');
     if (!names.length) { wrap.classList.add('hidden'); return; }
     wrap.innerHTML = names.map(n =>
       `<button type="button" class="user-chip" onclick="selectUserChip(${JSON.stringify(n)})">${escHtml(n)}</button>`
@@ -77,6 +152,12 @@ function selectUserChip(name) {
   document.getElementById('login-password').value = '';
   document.getElementById('login-password').focus();
   document.getElementById('login-error').textContent = '';
+  updateCredentialLabel(name);
+}
+
+function updateCredentialLabel(val) {
+  const lbl = document.getElementById('credential-type-label');
+  if (lbl) lbl.textContent = detectCredentialType(val);
 }
 
 function showForgotPin(e) {
@@ -86,12 +167,15 @@ function showForgotPin(e) {
 }
 
 function showLoginPage() {
+  // Hide PIN unlock, show login screen
+  document.getElementById('pin-unlock-screen').style.display = 'none';
+  document.getElementById('login-screen').style.display      = '';
+  document.getElementById('register-screen').style.display   = 'none';
   document.getElementById('login-overlay').classList.remove('hidden');
   document.getElementById('app').classList.add('hidden');
   loadLoginUserChips();
-  if (window.SimpleWebAuthnBrowser?.browserSupportsWebAuthn()) {
+  if (window.SimpleWebAuthnBrowser?.browserSupportsWebAuthn())
     document.getElementById('biometric-login-section').classList.remove('hidden');
-  }
 }
 
 function hideLoginPage() {
@@ -102,39 +186,208 @@ function hideLoginPage() {
 
 function applyRoleUI() {
   const isAdmin = state.role === 'admin';
-  document.querySelectorAll('.admin-only').forEach(el => {
-    el.style.display = isAdmin ? '' : 'none';
-  });
+  document.querySelectorAll('.admin-only').forEach(el => el.style.display = isAdmin ? '' : 'none');
   const userEl = document.getElementById('current-user');
   const name   = localStorage.getItem('crm_user') || '';
   if (userEl) userEl.textContent = `${name} (${state.role || '?'})`;
-  // Show "Enable Biometric" in sidebar if supported and not yet enabled
   if (window.SimpleWebAuthnBrowser?.browserSupportsWebAuthn()) {
     const bioBtn = document.getElementById('btn-enable-biometric');
     if (bioBtn) {
-      const alreadyEnabled = localStorage.getItem('biometric_enabled') === name;
-      bioBtn.classList.toggle('hidden', alreadyEnabled);
-      bioBtn.textContent = alreadyEnabled ? '🔐 Biometric Active' : '🔐 Enable Biometric Login';
-      bioBtn.disabled = alreadyEnabled;
+      const enabled = localStorage.getItem('biometric_enabled') === name;
+      bioBtn.classList.toggle('hidden', enabled);
+      bioBtn.textContent = enabled ? '🔐 Biometric Active' : '🔐 Enable Biometric Login';
+      bioBtn.disabled = enabled;
     }
   }
 }
 
-function logout() {
+async function logout() {
   clearInterval(autoRefreshTimer);
-  localStorage.removeItem('crm_token');
+  // Tell server to revoke session (best-effort)
+  try {
+    const token = localStorage.getItem('crm_token');
+    if (token) await fetch('/api/auth/logout', { method: 'POST', headers: { Authorization: 'Bearer ' + token } });
+  } catch (_) {}
+  clearTokens();
   localStorage.removeItem('crm_role');
   localStorage.removeItem('crm_user');
+  localStorage.removeItem('crm_user_id');
+  localStorage.removeItem('crm_session_id');
   state.role = null;
   showLoginPage();
 }
 
 function switchAccount() {
-  logout();
-  document.getElementById('login-username').value = '';
-  document.getElementById('login-password').value = '';
-  document.getElementById('login-error').textContent = '';
+  clearInterval(autoRefreshTimer);
+  clearTokens();
+  localStorage.removeItem('crm_role');
+  localStorage.removeItem('crm_user');
+  localStorage.removeItem('crm_user_id');
+  localStorage.removeItem('crm_session_id');
+  localStorage.removeItem('crm_device_trusted');
+  localStorage.removeItem('crm_device_id');
+  localStorage.removeItem('crm_device_has_pin');
+  state.role = null;
+  document.getElementById('pin-unlock-screen').style.display = 'none';
   showLoginScreen();
+}
+
+// ── PIN Unlock screen ─────────────────────────────────────────
+async function checkAndShowAuth() {
+  const rt          = localStorage.getItem('crm_refresh_token');
+  const deviceId    = localStorage.getItem('crm_device_id');
+  const devicePin   = localStorage.getItem('crm_device_has_pin') === 'true';
+  const savedUser   = localStorage.getItem('crm_user');
+
+  if (rt && deviceId && devicePin && savedUser) {
+    // Check with server if PIN still valid for this device
+    try {
+      const res  = await fetch('/api/auth/pin-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: rt, deviceId }),
+      });
+      const data = await res.json();
+      if (res.ok && data.hasPIN) {
+        showPinUnlockScreen(data.username || savedUser);
+        return;
+      }
+    } catch (_) {}
+  }
+
+  // No PIN → try silent refresh
+  if (rt) {
+    const ok = await tryRefreshToken();
+    if (ok) {
+      state.role = localStorage.getItem('crm_role') || 'sales';
+      hideLoginPage();
+      await initApp();
+      return;
+    }
+  }
+
+  // Fall through to login
+  showLoginPage();
+}
+
+function showPinUnlockScreen(username) {
+  document.getElementById('pin-unlock-name').textContent   = username || 'Welcome back';
+  document.getElementById('pin-unlock-avatar').textContent = (username || '?')[0].toUpperCase();
+  document.getElementById('pin-dots').innerHTML = '';
+  document.getElementById('pin-input').value   = '';
+  document.getElementById('pin-error').textContent = '';
+  document.getElementById('pin-unlock-screen').style.display = '';
+  document.getElementById('login-screen').style.display      = 'none';
+  document.getElementById('register-screen').style.display   = 'none';
+  document.getElementById('login-overlay').classList.remove('hidden');
+  document.getElementById('app').classList.add('hidden');
+  setTimeout(() => document.getElementById('pin-input').focus(), 100);
+}
+
+function pinInputChanged(val) {
+  const dots    = document.getElementById('pin-dots');
+  const len     = Math.min(val.length, 6);
+  dots.innerHTML = Array.from({ length: 6 }, (_, i) =>
+    `<div class="pin-dot${i < len ? ' filled' : ''}"></div>`
+  ).join('');
+}
+
+async function submitPinUnlock() {
+  const pin      = document.getElementById('pin-input').value.trim();
+  const deviceId = localStorage.getItem('crm_device_id');
+  const rt       = localStorage.getItem('crm_refresh_token');
+  const errEl    = document.getElementById('pin-error');
+  const btn      = document.getElementById('pin-unlock-btn');
+  errEl.textContent = '';
+  if (!pin || !/^\d{4,6}$/.test(pin)) { errEl.textContent = 'Enter 4–6 digit PIN'; return; }
+  btn.disabled = true;
+  try {
+    const res  = await fetch('/api/auth/pin-unlock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken: rt, pin, deviceId }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errEl.textContent = data.error || 'Wrong PIN';
+      document.getElementById('pin-input').value = '';
+      pinInputChanged('');
+      return;
+    }
+    storeTokens(data.accessToken, data.refreshToken);
+    localStorage.setItem('crm_user', data.username);
+    localStorage.setItem('crm_role', data.role);
+    state.role = data.role;
+    hideLoginPage();
+    await initApp();
+  } catch (err) {
+    errEl.textContent = 'Connection error. Try again.';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Post-login device setup ───────────────────────────────────
+async function offerDeviceSetup(loginData) {
+  const { deviceId, deviceTrusted, hasPIN, username, accessToken, refreshToken } = loginData;
+  storeTokens(accessToken, refreshToken);
+  localStorage.setItem('crm_user',    username);
+  localStorage.setItem('crm_role',    loginData.role);
+  localStorage.setItem('crm_user_id', String(loginData.userId || ''));
+  localStorage.setItem('crm_session_id', loginData.sessionId || '');
+  state.role = loginData.role;
+
+  if (deviceId) {
+    localStorage.setItem('crm_device_id',      deviceId);
+    localStorage.setItem('crm_device_trusted', 'true');
+    localStorage.setItem('crm_device_has_pin', String(hasPIN));
+  }
+
+  hideLoginPage();
+
+  // If trusted device and no PIN yet — offer PIN setup
+  if (deviceTrusted && !hasPIN) {
+    setTimeout(() => showPinSetupModal(deviceId), 500);
+  }
+
+  await initApp();
+}
+
+// ── PIN Setup modal ───────────────────────────────────────────
+function showPinSetupModal(deviceId) {
+  const modal = document.getElementById('pin-setup-modal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  modal.dataset.deviceId = deviceId || '';
+  document.getElementById('pin-setup-input').value   = '';
+  document.getElementById('pin-setup-input2').value  = '';
+  document.getElementById('pin-setup-error').textContent = '';
+}
+
+function closePinSetupModal() {
+  const modal = document.getElementById('pin-setup-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+async function submitPinSetup() {
+  const pin    = document.getElementById('pin-setup-input').value.trim();
+  const pin2   = document.getElementById('pin-setup-input2').value.trim();
+  const errEl  = document.getElementById('pin-setup-error');
+  const deviceId = document.getElementById('pin-setup-modal').dataset.deviceId;
+  errEl.textContent = '';
+  if (!/^\d{4,6}$/.test(pin))  { errEl.textContent = 'PIN must be 4–6 digits'; return; }
+  if (pin !== pin2)             { errEl.textContent = 'PINs do not match'; return; }
+  try {
+    const res = await apiFetch('/api/auth/pin-setup', {
+      method: 'POST',
+      body: JSON.stringify({ pin, deviceId }),
+    });
+    localStorage.setItem('crm_device_has_pin', 'true');
+    closePinSetupModal();
+    toast('Quick-unlock PIN set! Use it next time you open the app.', 'success');
+  } catch (err) {
+    errEl.textContent = err.message || 'Failed to set PIN';
+  }
 }
 
 function showRegisterScreen(e) {
@@ -184,22 +437,18 @@ async function handleRegister(e) {
       throw new Error(regData.error || 'Registration failed');
     }
 
-    // Auto-login directly — no synthetic event dispatch
-    const loginRes  = await fetch('/api/login', {
+    // Auto-login directly after registration
+    const fingerprint = getDeviceFingerprint();
+    const deviceMeta  = getDeviceMeta();
+    const loginRes  = await fetch('/api/auth/login', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ username: name, password: pin }),
+      body:    JSON.stringify({ credential: name, password: pin, fingerprint, trustDevice: true, deviceMeta }),
     });
     const loginData = await loginRes.json();
     if (!loginRes.ok) throw new Error(loginData.error || 'Login failed after registration');
-
-    localStorage.setItem('crm_token', loginData.token);
-    localStorage.setItem('crm_role',  loginData.role);
-    localStorage.setItem('crm_user',  loginData.username);
-    state.role = loginData.role;
-    hideLoginPage();
     toast('Welcome ' + name + '! Account created.', 'success');
-    await initApp();
+    await offerDeviceSetup(loginData);
   } catch (err) {
     errEl.textContent = (err instanceof TypeError && err.message.toLowerCase().includes('fetch'))
       ? 'Server is starting up, please try again in 30 seconds.'
@@ -212,38 +461,37 @@ async function handleRegister(e) {
 
 async function handleLogin(e) {
   e.preventDefault();
-  const username = document.getElementById('login-username').value.trim();
-  const password = document.getElementById('login-password').value.trim();
-  const errEl    = document.getElementById('login-error');
-  const btn      = document.getElementById('login-btn');
-  errEl.textContent = '';
-  btn.disabled      = true;
-  btn.textContent   = 'Logging in…';
+  const credential   = document.getElementById('login-username').value.trim();
+  const password     = document.getElementById('login-password').value.trim();
+  const trustDevice  = document.getElementById('remember-device')?.checked ?? true;
+  const errEl        = document.getElementById('login-error');
+  const btn          = document.getElementById('login-btn');
+  errEl.textContent  = '';
+  btn.disabled       = true;
+  btn.textContent    = 'Signing in…';
 
   try {
-    const res = await fetch('/api/login', {
+    const fingerprint = getDeviceFingerprint();
+    const deviceMeta  = getDeviceMeta();
+    const res = await fetch('/api/auth/login', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ username, password }),
+      body:    JSON.stringify({ credential, password, fingerprint, trustDevice, deviceMeta }),
     });
-    if (!res.ok) {
-      const d = await res.json();
-      throw new Error(d.error || 'Login failed');
-    }
     const data = await res.json();
-    localStorage.setItem('crm_token', data.token);
-    localStorage.setItem('crm_role',  data.role);
-    localStorage.setItem('crm_user',  data.username);
-    state.role = data.role;
-    hideLoginPage();
-    await initApp();
+    if (!res.ok) {
+      if (res.status === 423) errEl.textContent = data.error;
+      else errEl.textContent = data.error || 'Login failed';
+      return;
+    }
+    await offerDeviceSetup(data);
   } catch (err) {
     errEl.textContent = (err instanceof TypeError && err.message.toLowerCase().includes('fetch'))
       ? 'Server is starting up, please try again in 30 seconds.'
       : err.message;
   } finally {
     btn.disabled    = false;
-    btn.textContent = 'Log In';
+    btn.textContent = 'Sign In';
   }
 }
 
@@ -251,18 +499,33 @@ async function handleLogin(e) {
 //  API
 // ============================================================
 async function apiFetch(path, opts = {}) {
-  const token = localStorage.getItem('crm_token');
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = 'Bearer ' + token;
+  // Proactively refresh if access token is about to expire
+  if (tokenIsExpired()) await tryRefreshToken();
 
-  const res = await fetch(path, { headers, ...opts, headers });
+  const makeRequest = () => {
+    const token   = localStorage.getItem('crm_token');
+    const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    return fetch(path, { ...opts, headers });
+  };
+
+  let res = await makeRequest();
+
+  // If 401, attempt one refresh then retry
   if (res.status === 401) {
-    localStorage.removeItem('crm_token');
-    localStorage.removeItem('crm_role');
-    localStorage.removeItem('crm_user');
-    showLoginPage();
-    throw new Error('Session expired. Please log in again.');
+    const refreshed = await tryRefreshToken();
+    if (refreshed) {
+      res = await makeRequest();
+    } else {
+      clearTokens();
+      localStorage.removeItem('crm_role');
+      localStorage.removeItem('crm_user');
+      state.role = null;
+      showLoginPage();
+      throw new Error('Session expired. Please log in again.');
+    }
   }
+
   if (!res.ok) throw new Error(`${opts.method || 'GET'} ${path} → ${res.status}`);
   return res.json();
 }
@@ -1860,6 +2123,16 @@ function wireEvents() {
 
   document.getElementById('login-form').addEventListener('submit', handleLogin);
   document.getElementById('register-form').addEventListener('submit', handleRegister);
+  renderPinStrength('reg-pin', 'reg-pin-strength');
+  renderPinStrength('pin-setup-input', 'pin-setup-strength');
+  // Security modal ESC to close
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { closeSecurityModal(); closePinSetupModal(); }
+  });
+  // Auto-focus pin input when pin-unlock screen is visible (tap to wake keyboard)
+  document.getElementById('pin-unlock-screen')?.addEventListener('click', () => {
+    document.getElementById('pin-input')?.focus();
+  });
 
   // Profile modal
   document.getElementById('profile-form').addEventListener('submit', handleProfileSubmit);
@@ -1898,14 +2171,10 @@ async function initApp() {
 async function init() {
   initTheme();
   wireEvents();
-  const token = localStorage.getItem('crm_token');
-  if (!token) {
-    showLoginPage();
-    return;
-  }
-  state.role = localStorage.getItem('crm_role') || 'sales';
-  hideLoginPage();
-  await initApp();
+  // Show overlay while we check auth state
+  document.getElementById('login-overlay').classList.remove('hidden');
+  document.getElementById('app').classList.add('hidden');
+  await checkAndShowAuth();
 }
 
 // ============================================================
@@ -2682,6 +2951,160 @@ async function wsLeaveTeam() {
     toast('Left team');
     await renderWorkspace();
   } catch (err) { toast(err.message, 'error'); }
+}
+
+// ============================================================
+//  SESSIONS & DEVICES management (Profile modal tabs)
+// ============================================================
+async function openSecurityPanel() {
+  const modal = document.getElementById('security-modal');
+  if (modal) { modal.classList.remove('hidden'); await loadSecurityTabs(); }
+}
+
+function closeSecurityModal() {
+  const modal = document.getElementById('security-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+async function loadSecurityTabs() {
+  showSecurityTab('sessions');
+}
+
+function showSecurityTab(tab) {
+  document.querySelectorAll('.sec-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.sec-panel').forEach(p => p.classList.toggle('hidden', p.dataset.tab !== tab));
+  if (tab === 'sessions')     loadSessionsList();
+  if (tab === 'devices')      loadDevicesList();
+  if (tab === 'security-log') loadSecurityLog();
+}
+
+async function loadSessionsList() {
+  const el = document.getElementById('sessions-list');
+  if (!el) return;
+  el.innerHTML = '<p class="sec-loading">Loading…</p>';
+  try {
+    const sessions = await apiFetch('/api/sessions');
+    if (!sessions.length) { el.innerHTML = '<p class="sec-empty">No active sessions.</p>'; return; }
+    el.innerHTML = sessions.map(s => `
+      <div class="sec-row${s.current ? ' sec-row-current' : ''}">
+        <div class="sec-row-icon">${s.device_type === 'mobile' ? '📱' : '🖥'}</div>
+        <div class="sec-row-info">
+          <div class="sec-row-title">${escHtml(s.device_name || s.browser || 'Unknown')} ${s.current ? '<span class="sec-badge">Current</span>' : ''}</div>
+          <div class="sec-row-meta">${escHtml(s.os || '')} · ${escHtml(s.ip_address || '')} · Last active ${fmtRelTime(s.last_active_at)}</div>
+        </div>
+        ${!s.current ? `<button class="btn btn-ghost btn-sm" onclick="revokeSession('${escHtml(s.id)}')">Revoke</button>` : ''}
+      </div>
+    `).join('');
+  } catch (e) { el.innerHTML = `<p class="sec-error">${escHtml(e.message)}</p>`; }
+}
+
+async function revokeSession(id) {
+  if (!confirm('Revoke this session?')) return;
+  try { await apiFetch(`/api/sessions/${id}`, { method: 'DELETE' }); loadSessionsList(); toast('Session revoked'); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+async function revokeAllSessions() {
+  if (!confirm('Log out all other devices?')) return;
+  try { await apiFetch('/api/sessions', { method: 'DELETE' }); loadSessionsList(); toast('All other sessions revoked'); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+async function loadDevicesList() {
+  const el = document.getElementById('devices-list');
+  if (!el) return;
+  el.innerHTML = '<p class="sec-loading">Loading…</p>';
+  try {
+    const devices = await apiFetch('/api/devices');
+    const myDevId = localStorage.getItem('crm_device_id');
+    if (!devices.length) { el.innerHTML = '<p class="sec-empty">No trusted devices.</p>'; return; }
+    el.innerHTML = devices.map(d => `
+      <div class="sec-row">
+        <div class="sec-row-icon">${d.device_type === 'mobile' ? '📱' : '🖥'}</div>
+        <div class="sec-row-info">
+          <div class="sec-row-title">${escHtml(d.device_name)} ${d.id === myDevId ? '<span class="sec-badge">This device</span>' : ''}</div>
+          <div class="sec-row-meta">${escHtml(d.browser)} · ${escHtml(d.os)} · ${fmtRelTime(d.last_active_at)}</div>
+        </div>
+        <button class="btn btn-ghost btn-sm sec-danger" onclick="removeDevice('${escHtml(d.id)}')">Remove</button>
+      </div>
+    `).join('');
+  } catch (e) { el.innerHTML = `<p class="sec-error">${escHtml(e.message)}</p>`; }
+}
+
+async function removeDevice(id) {
+  if (!confirm('Remove this trusted device? Its sessions and PIN will be revoked.')) return;
+  try {
+    await apiFetch(`/api/devices/${id}`, { method: 'DELETE' });
+    if (id === localStorage.getItem('crm_device_id')) {
+      localStorage.removeItem('crm_device_id');
+      localStorage.removeItem('crm_device_trusted');
+      localStorage.removeItem('crm_device_has_pin');
+    }
+    loadDevicesList(); toast('Device removed');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function loadSecurityLog() {
+  const el = document.getElementById('security-log-list');
+  if (!el) return;
+  el.innerHTML = '<p class="sec-loading">Loading…</p>';
+  try {
+    const events = await apiFetch('/api/security-log?limit=30');
+    if (!events.length) { el.innerHTML = '<p class="sec-empty">No security events yet.</p>'; return; }
+    const icons = {
+      login_success: '✅', login_failed: '⚠️', logout: '🚪', logout_all: '🚪',
+      pin_created: '🔐', pin_unlock: '🔓', pin_failed: '❌', device_removed: '🗑',
+      session_revoked: '🔒', password_changed: '🔑', token_reuse_attack: '🚨',
+    };
+    el.innerHTML = events.map(ev => `
+      <div class="sec-log-row">
+        <span class="sec-log-icon">${icons[ev.event] || '📋'}</span>
+        <div class="sec-log-info">
+          <div class="sec-log-event">${escHtml(ev.event.replace(/_/g, ' '))}</div>
+          <div class="sec-log-meta">${fmtRelTime(ev.created_at)} · ${escHtml(ev.ip_address || 'unknown IP')}</div>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) { el.innerHTML = `<p class="sec-error">${escHtml(e.message)}</p>`; }
+}
+
+function fmtRelTime(ts) {
+  if (!ts) return 'unknown';
+  const diff = Date.now() - new Date(ts).getTime();
+  const s = Math.floor(diff / 1000);
+  if (s < 60)    return 'just now';
+  if (s < 3600)  return `${Math.floor(s/60)}m ago`;
+  if (s < 86400) return `${Math.floor(s/3600)}h ago`;
+  return `${Math.floor(s/86400)}d ago`;
+}
+
+// ── Password strength indicator ───────────────────────────────
+function checkPasswordStrength(val) {
+  const checks = {
+    length:   val.length >= 6,
+    upper:    /[A-Z]/.test(val),
+    lower:    /[a-z]/.test(val),
+    digit:    /\d/.test(val),
+  };
+  const score = Object.values(checks).filter(Boolean).length;
+  return { score, checks, label: ['', 'Weak', 'Fair', 'Good', 'Strong'][score] || 'Strong' };
+}
+
+function renderPinStrength(inputId, barId) {
+  const input = document.getElementById(inputId);
+  const bar   = document.getElementById(barId);
+  if (!input || !bar) return;
+  input.addEventListener('input', () => {
+    const val = input.value;
+    if (!val) { bar.innerHTML = ''; return; }
+    const { score, label } = checkPasswordStrength(val);
+    const colors = ['','#ef4444','#f59e0b','#10b981','#3b82f6'];
+    bar.innerHTML = `
+      <div class="strength-bar">
+        <div class="strength-fill" style="width:${score*25}%;background:${colors[score]||'#10b981'}"></div>
+      </div>
+      <span class="strength-label" style="color:${colors[score]||'#10b981'}">${label}</span>`;
+  });
 }
 
 init();

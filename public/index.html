@@ -29,18 +29,28 @@
       <!-- Sign In screen -->
       <div id="login-screen">
         <h2 class="login-title">Sign in</h2>
+
+        <!-- Registered user chips (loaded from server) -->
+        <div id="login-user-chips" class="login-user-chips hidden"></div>
+
         <form id="login-form" autocomplete="off">
           <div class="form-group">
             <label>Username</label>
             <input id="login-username" type="text" placeholder="Your name" autocomplete="username" />
           </div>
           <div class="form-group">
-            <label>PIN / Password</label>
-            <input id="login-password" type="password" placeholder="••••••" autocomplete="current-password" />
+            <label>PIN</label>
+            <input id="login-password" type="password" placeholder="••••••" autocomplete="current-password" inputmode="numeric" maxlength="6" />
           </div>
           <p id="login-error" class="login-error"></p>
           <button type="submit" id="login-btn" class="btn btn-primary full-width">Log In</button>
         </form>
+        <p style="text-align:center;margin-top:10px;font-size:13px">
+          <a href="#" onclick="showForgotPin(event)" style="color:var(--text-muted);text-decoration:none">Forgot PIN?</a>
+        </p>
+        <div id="forgot-pin-box" style="display:none;margin-top:10px;padding:12px;background:var(--bg);border-radius:8px;border:1px solid var(--border);font-size:13px;color:var(--text-muted);text-align:center;line-height:1.6">
+          Ask your <b style="color:var(--text)">admin</b> to reset your PIN from the<br><b style="color:var(--text)">Team → Reset PIN</b> option.
+        </div>
         <div id="biometric-login-section" class="hidden">
           <div class="or-divider"><span>or</span></div>
           <button type="button" id="btn-biometric-login" class="btn btn-biometric full-width" onclick="loginWithBiometric()">

@@ -1195,6 +1195,28 @@ app.post('/api/users', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// Public: list of user display names only (no PINs, no roles, no IDs)
+app.get('/api/users/names', async (req, res) => {
+  try {
+    const users = await db.getAllUsers();
+    res.json(users.map(u => u.display_name));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: reset any user's PIN
+app.patch('/api/users/:id/pin', authMiddleware, adminOnly, async (req, res) => {
+  const { pin } = req.body || {};
+  if (!pin || !/^\d{4,6}$/.test(String(pin))) return res.status(400).json({ error: 'PIN must be 4–6 digits' });
+  try {
+    await db.updateUserPin(parseInt(req.params.id, 10), String(pin));
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Public self-registration (no auth required — anyone can create a sales account)
 app.post('/api/register', async (req, res) => {
   const { name, pin } = req.body || {};

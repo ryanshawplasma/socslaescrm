@@ -932,6 +932,28 @@ body {
 
 .full-width { width: 100%; }
 
+/* ── Login user chips ───────────────────────────────────────── */
+.login-user-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.login-user-chips.hidden { display: none; }
+.user-chip {
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background var(--transition), border-color var(--transition);
+}
+.user-chip:hover { background: var(--primary-muted); border-color: var(--primary); color: var(--primary-lt); }
+
 /* ── Theme palette picker ───────────────────────────────── */
 .theme-palette {
   display: flex;

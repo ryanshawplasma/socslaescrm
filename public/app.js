@@ -60,10 +60,35 @@ Chart.register({
 // ============================================================
 //  AUTH
 // ============================================================
+async function loadLoginUserChips() {
+  try {
+    const names = await fetch('/api/users/names').then(r => r.ok ? r.json() : []);
+    const wrap = document.getElementById('login-user-chips');
+    if (!names.length) { wrap.classList.add('hidden'); return; }
+    wrap.innerHTML = names.map(n =>
+      `<button type="button" class="user-chip" onclick="selectUserChip(${JSON.stringify(n)})">${escHtml(n)}</button>`
+    ).join('');
+    wrap.classList.remove('hidden');
+  } catch (_) {}
+}
+
+function selectUserChip(name) {
+  document.getElementById('login-username').value = name;
+  document.getElementById('login-password').value = '';
+  document.getElementById('login-password').focus();
+  document.getElementById('login-error').textContent = '';
+}
+
+function showForgotPin(e) {
+  if (e) e.preventDefault();
+  const box = document.getElementById('forgot-pin-box');
+  box.style.display = box.style.display === 'none' ? '' : 'none';
+}
+
 function showLoginPage() {
   document.getElementById('login-overlay').classList.remove('hidden');
   document.getElementById('app').classList.add('hidden');
-  // Show biometric button if the browser supports it
+  loadLoginUserChips();
   if (window.SimpleWebAuthnBrowser?.browserSupportsWebAuthn()) {
     document.getElementById('biometric-login-section').classList.remove('hidden');
   }
@@ -176,7 +201,9 @@ async function handleRegister(e) {
     toast('Welcome ' + name + '! Account created.', 'success');
     await initApp();
   } catch (err) {
-    errEl.textContent = err.message;
+    errEl.textContent = (err instanceof TypeError && err.message.toLowerCase().includes('fetch'))
+      ? 'Server is starting up, please try again in 30 seconds.'
+      : err.message;
   } finally {
     btn.disabled    = false;
     btn.textContent = 'Create Account';
@@ -211,7 +238,9 @@ async function handleLogin(e) {
     hideLoginPage();
     await initApp();
   } catch (err) {
-    errEl.textContent = err.message;
+    errEl.textContent = (err instanceof TypeError && err.message.toLowerCase().includes('fetch'))
+      ? 'Server is starting up, please try again in 30 seconds.'
+      : err.message;
   } finally {
     btn.disabled    = false;
     btn.textContent = 'Log In';
@@ -1288,8 +1317,11 @@ async function renderTeam() {
           ${u.telegram_user_id ? '✓ Linked' : '— Not linked'}
         </td>
         <td style="color:var(--text-muted);font-size:12px">${u.created_at ? u.created_at.split(' ')[0] : '—'}</td>
-        <td>
-          ${u.role !== 'admin' ? `<button class="action-btn del" onclick="removeTeamMember(${u.id}, '${escAttr(u.display_name)}')">Remove</button>` : '<span style="color:var(--text-muted);font-size:12px">—</span>'}
+        <td style="display:flex;gap:6px;align-items:center">
+          ${u.role !== 'admin'
+            ? `<button class="action-btn" onclick="openResetPinModal(${u.id}, '${escAttr(u.display_name)}')">Reset PIN</button>
+               <button class="action-btn del" onclick="removeTeamMember(${u.id}, '${escAttr(u.display_name)}')">Remove</button>`
+            : '<span style="color:var(--text-muted);font-size:12px">—</span>'}
         </td>
       </tr>`).join('');
     document.getElementById('team-table').innerHTML = header + `
@@ -1313,6 +1345,56 @@ async function removeTeamMember(id, name) {
     renderTeam();
   } catch (err) {
     toast('Remove failed: ' + err.message, 'error');
+  }
+}
+
+function openResetPinModal(userId, userName) {
+  let overlay = document.getElementById('reset-pin-overlay');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'reset-pin-overlay';
+  overlay.style.cssText = 'position:fixed;top:0;right:0;bottom:0;left:0;background:rgba(0,0,0,0.55);z-index:1000;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = `
+    <div style="background:var(--card-bg);border-radius:12px;padding:24px;width:320px;max-width:95vw;box-shadow:0 8px 32px rgba(0,0,0,0.4)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+        <h3 style="margin:0;font-size:15px;color:var(--text)">Reset PIN — ${escHtml(userName)}</h3>
+        <button onclick="document.getElementById('reset-pin-overlay').remove()" class="icon-btn">✕</button>
+      </div>
+      <div class="form-group" style="margin-bottom:12px">
+        <label>New PIN <span style="font-weight:400;color:var(--text-muted)">(4–6 digits)</span></label>
+        <input id="rp-pin" type="password" placeholder="••••••" inputmode="numeric" maxlength="6" style="width:100%" autofocus />
+      </div>
+      <div class="form-group" style="margin-bottom:16px">
+        <label>Confirm PIN</label>
+        <input id="rp-pin2" type="password" placeholder="••••••" inputmode="numeric" maxlength="6" style="width:100%" />
+      </div>
+      <p id="rp-error" style="color:var(--danger);font-size:13px;margin:0 0 12px;min-height:18px"></p>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-ghost" onclick="document.getElementById('reset-pin-overlay').remove()">Cancel</button>
+        <button class="btn btn-primary" id="rp-btn" onclick="submitResetPin(${userId}, '${escAttr(userName)}')">Set PIN</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+async function submitResetPin(userId, userName) {
+  const pin   = document.getElementById('rp-pin').value.trim();
+  const pin2  = document.getElementById('rp-pin2').value.trim();
+  const errEl = document.getElementById('rp-error');
+  const btn   = document.getElementById('rp-btn');
+  errEl.textContent = '';
+  if (!/^\d{4,6}$/.test(pin)) { errEl.textContent = 'PIN must be 4–6 digits'; return; }
+  if (pin !== pin2)            { errEl.textContent = 'PINs do not match'; return; }
+  btn.disabled    = true;
+  btn.textContent = 'Saving…';
+  try {
+    await apiFetch(`/api/users/${userId}/pin`, { method: 'PATCH', body: JSON.stringify({ pin }) });
+    document.getElementById('reset-pin-overlay').remove();
+    toast(`PIN reset for ${userName}. Share the new PIN with them.`, 'success');
+  } catch (err) {
+    errEl.textContent = err.message;
+    btn.disabled    = false;
+    btn.textContent = 'Set PIN';
   }
 }
 

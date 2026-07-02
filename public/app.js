@@ -91,22 +91,48 @@ function tokenIsExpired() {
   return exp ? Date.now() / 1000 > exp - 30 : false; // treat as expired 30s early
 }
 
+// Refresh tokens are single-use — two calls racing on the same stored token
+// (e.g. the 60s auto-refresh's Promise.all([loadLeads(), loadStats()]) both
+// noticing the access token is about to expire) used to make the loser look
+// like a stolen-token replay to the server, which revoked the whole session
+// and silently broke "remember this device". De-duping concurrent calls to a
+// single in-flight promise — same-tab always, cross-tab via the Web Locks API
+// where supported — stops the race from happening in the first place; the
+// server also now tolerates a short race window as defense in depth.
+let _refreshInFlight = null;
 async function tryRefreshToken() {
-  const rt = localStorage.getItem('crm_refresh_token');
-  if (!rt) return false;
-  try {
-    const res  = await fetch('/api/auth/refresh', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken: rt }),
-    });
-    if (!res.ok) { clearTokens(); return false; }
-    const data = await res.json();
-    storeTokens(data.accessToken, data.refreshToken);
-    if (data.username) localStorage.setItem('crm_user', data.username);
-    if (data.role)     { localStorage.setItem('crm_role', data.role); state.role = data.role; }
-    return true;
-  } catch { return false; }
+  if (_refreshInFlight) return _refreshInFlight;
+  const run = async () => {
+    const rt = localStorage.getItem('crm_refresh_token');
+    if (!rt) return false;
+    try {
+      const res  = await fetch('/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: rt }),
+      });
+      if (!res.ok) { clearTokens(); return false; }
+      const data = await res.json();
+      storeTokens(data.accessToken, data.refreshToken);
+      if (data.username) localStorage.setItem('crm_user', data.username);
+      if (data.role)     { localStorage.setItem('crm_role', data.role); state.role = data.role; }
+      return true;
+    } catch { return false; }
+  };
+  _refreshInFlight = (async () => {
+    try {
+      if (navigator.locks && navigator.locks.request) {
+        // Cross-tab mutex: only one tab of this origin rotates the token at a time.
+        return await navigator.locks.request('crm-refresh-token', run);
+      }
+      return await run();
+    } catch {
+      return false; // tryRefreshToken() must never reject — callers just await a boolean
+    } finally {
+      _refreshInFlight = null;
+    }
+  })();
+  return _refreshInFlight;
 }
 
 // ── Device fingerprint ────────────────────────────────────────

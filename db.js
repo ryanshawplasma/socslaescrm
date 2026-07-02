@@ -254,6 +254,11 @@ async function initSchema() {
       )
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_rt_family ON refresh_tokens(family)`).catch(() => {});
+    // Timestamp of when a token was marked used — lets rotation tell a genuine
+    // replay-attack (an old token resurfacing much later) apart from two
+    // legitimate concurrent refresh calls racing on the same still-fresh token
+    // (e.g. two apiFetch calls firing together right as the access token expires).
+    await client.query(`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS used_at TIMESTAMPTZ`).catch(() => {});
 
     // Trusted devices: "remember me" devices
     await client.query(`
@@ -1155,22 +1160,46 @@ async function issueRefreshToken(sessionId) {
   return raw;
 }
 
+// Two apiFetch calls firing at once right as the access token expires (e.g. the
+// 60s auto-refresh's Promise.all([loadLeads(), loadStats()])) can both present
+// the SAME still-fresh refresh token. Tolerating that as a normal (if slightly
+// wasteful) double-rotation — rather than nuking the session — is what actually
+// keeps "remember this device" working; a session should only die for a REAL
+// stolen/replayed token showing up well after it was already rotated.
+const REUSE_GRACE_MS = 10_000;
+
 async function rotateRefreshToken(rawToken) {
   const hash = sha256(rawToken);
   const { rows } = await pool.query(`SELECT * FROM refresh_tokens WHERE token_hash = $1`, [hash]);
   const rt = rows[0];
   if (!rt) throw Object.assign(new Error('Invalid refresh token'), { status: 401 });
+  // A revoked session (e.g. from an earlier reuse-attack response, or an
+  // explicit logout-all) is dead regardless of any individual token's used/
+  // used_at state — checked here, not just by the /api/auth/refresh route, so
+  // rotateRefreshToken() is safe to call directly and can't be tricked by a
+  // sibling token whose used_at happens to look "fresh".
+  const session = await getSessionById(rt.session_id);
+  if (!session || session.revoked)
+    throw Object.assign(new Error('Session revoked'), { status: 401 });
   if (rt.used) {
-    // Reuse attack: revoke entire token family + session
-    await pool.query(`UPDATE refresh_tokens SET used = TRUE WHERE family = $1`, [rt.family]);
-    await pool.query(`UPDATE sessions SET revoked = TRUE WHERE id = $1`, [rt.session_id]);
-    await logSecurity(null, 'token_reuse_attack', { family: rt.family }, '', '', rt.session_id, null);
-    throw Object.assign(new Error('Token reuse detected — session revoked for security'), { status: 401 });
+    const usedMsAgo = rt.used_at ? Date.now() - new Date(rt.used_at).getTime() : Infinity;
+    if (usedMsAgo > REUSE_GRACE_MS) {
+      // Well outside the race window — treat as a genuine reuse/replay attack:
+      // revoke the entire token family + session.
+      await pool.query(`UPDATE refresh_tokens SET used = TRUE, used_at = COALESCE(used_at, NOW()) WHERE family = $1`, [rt.family]);
+      await pool.query(`UPDATE sessions SET revoked = TRUE WHERE id = $1`, [rt.session_id]);
+      await logSecurity(null, 'token_reuse_attack', { family: rt.family }, '', '', rt.session_id, null);
+      throw Object.assign(new Error('Token reuse detected — session revoked for security'), { status: 401 });
+    }
+    // Within the grace window — almost certainly a benign concurrent-request
+    // race, not an attack. Issue another rotation from the same family instead
+    // of revoking; harmless if it produces a short-lived unused sibling token.
+  } else {
+    if (new Date(rt.expires_at) < new Date())
+      throw Object.assign(new Error('Refresh token expired'), { status: 401 });
+    // Mark old as used
+    await pool.query(`UPDATE refresh_tokens SET used = TRUE, used_at = NOW() WHERE id = $1`, [rt.id]);
   }
-  if (new Date(rt.expires_at) < new Date())
-    throw Object.assign(new Error('Refresh token expired'), { status: 401 });
-  // Mark old as used
-  await pool.query(`UPDATE refresh_tokens SET used = TRUE WHERE id = $1`, [rt.id]);
   // Issue new in same family
   const newRaw  = crypto.randomBytes(48).toString('base64url');
   const newHash = sha256(newRaw);

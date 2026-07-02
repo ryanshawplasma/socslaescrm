@@ -204,6 +204,7 @@ async function initSchema() {
     // Extend users with email, mobile, lockout fields
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT`).catch(() => {});
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS default_area TEXT DEFAULT ''`).catch(() => {});
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_attempts SMALLINT DEFAULT 0`).catch(() => {});
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ`).catch(() => {});
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ`).catch(() => {});
@@ -651,6 +652,70 @@ async function addLead(data, createdBy = '') {
   return { ok: true, rowIndex: leadId };
 }
 
+// ── WRITE: bulk import (Excel / Google Sheets) ───────────────
+// Loads existing factory numbers/names ONCE, then inserts row by row,
+// skipping duplicates (against the DB and within the file itself).
+async function importLeads(rows, defaultCreatedBy, teamId) {
+  const { rows: existing } = await pool.query(`SELECT factory_number, factory_name FROM leads`);
+  const nums  = new Set(existing.map(r => String(r.factory_number || '').trim().toLowerCase()).filter(Boolean));
+  const names = new Set(existing.map(r => String(r.factory_name   || '').trim().toLowerCase()).filter(Boolean));
+
+  const now = nowIST();
+  let added = 0;
+  const skipped = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const r    = rows[i] || {};
+    const num  = String(r.factory_number || '').trim();
+    const name = String(r.factory_name   || '').trim();
+    if (!num && !name) { skipped.push({ row: i + 1, reason: 'no factory name or number' }); continue; }
+
+    const numKey = num.toLowerCase(), nameKey = name.toLowerCase();
+    if (numKey && nums.has(numKey))            { skipped.push({ row: i + 1, reason: `duplicate factory number "${num}"` }); continue; }
+    if (!numKey && nameKey && names.has(nameKey)) { skipped.push({ row: i + 1, reason: `duplicate factory name "${name}"` }); continue; }
+
+    const createdBy = String(r.created_by || '').trim() || defaultCreatedBy;
+    const { rows: [newRow] } = await pool.query(`
+      INSERT INTO leads
+        (factory_number, factory_name, person_in_charge, contact, designation, product,
+         quantity, rate, stage, follow_up, notes, area, lead_type, created_by,
+         last_updated, mapped_stage, stage_number, team_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+      RETURNING id
+    `, [
+      num, name,
+      String(r.person_in_charge || '').trim(),
+      String(r.contact || '').trim(),
+      '',
+      String(r.product || '').trim(),
+      String(r.quantity || '').trim(),
+      String(r.rate || '').trim(),
+      String(r.stage || '').trim(),
+      String(r.follow_up || '').trim(),
+      String(r.notes || '').trim(),
+      String(r.area || '').trim(),
+      String(r.lead_type || '').trim(),
+      createdBy, now,
+      String(r.stage || '').trim(),
+      r.stage_number != null && r.stage_number !== '' ? String(r.stage_number) : '',
+      teamId || null,
+    ]);
+
+    if (r.product) {
+      await pool.query(
+        `INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES ($1,$2,$3,$4)`,
+        [newRow.id, String(r.product).trim(), String(r.quantity || '').trim(), String(r.rate || '').trim()]
+      ).catch(() => {});
+    }
+
+    if (numKey) nums.add(numKey);
+    if (nameKey) names.add(nameKey);
+    added++;
+  }
+
+  return { added, skipped, total: rows.length };
+}
+
 // ── WRITE: update an existing lead ───────────────────────────
 async function updateLead(rowIndex, data) {
   const now = nowIST();
@@ -851,6 +916,11 @@ async function verifyUserPin(displayName, pin) {
     return user;
   }
   return null;
+}
+
+async function updateUserDefaultArea(userId, area) {
+  await pool.query(`UPDATE users SET default_area = $1 WHERE id = $2`, [String(area || '').trim(), userId]);
+  return { ok: true };
 }
 
 async function updateUserName(userId, newName) {
@@ -1699,10 +1769,10 @@ async function searchContacts(query, teamId) {
 module.exports = {
   pool,
   initSchema,
-  getLeads, getLeadsForUser, getLeadsByTeam, getStats, addLead, updateLead, deleteLead,
+  getLeads, getLeadsForUser, getLeadsByTeam, getStats, addLead, updateLead, deleteLead, importLeads,
   addPhoto, getPhotos, getLeadContacts,
   grantLeadAccess, revokeLeadAccess, getLeadAccess, claimFollowUp, reassignFollowUp,
-  createUser, getUserByName, getUserByTelegramId, updateUserPin, updateUserName,
+  createUser, getUserByName, getUserByTelegramId, updateUserPin, updateUserName, updateUserDefaultArea,
   getAllUsers, deleteUser, verifyUserPin, seedAdminUser,
   saveWebAuthnCred, getWebAuthnCred, getUserByWebAuthnCredId,
   getLeadCoordinates, updateLeadCoords,

@@ -111,6 +111,56 @@ router.put('/leads/:row', authMiddleware, noGuest, requireLeadAccess, async (req
   } catch (err) { next(err); }
 });
 
+// ── POST /api/leads/import — bulk import from Excel/Sheets ───
+router.post('/leads/import', authMiddleware, noGuest, async (req, res, next) => {
+  const { leads, assign_to, team_id } = req.body || {};
+  if (!Array.isArray(leads) || !leads.length) return res.status(400).json({ error: 'No rows to import' });
+  if (leads.length > 1000) return res.status(400).json({ error: 'Maximum 1000 rows per import — split the file' });
+  try {
+    const isAdmin = req.user.role === 'admin';
+    // Non-admins always import as themselves; admins can assign to a salesman
+    const defaultCreatedBy = (isAdmin && assign_to) ? String(assign_to).trim() : req.user.username;
+    const rows = leads.map(l => ({
+      ...l,
+      created_by: isAdmin ? String(l.created_by || '').trim() : '', // per-row salesman column (admin only)
+    }));
+
+    // Team scoping: only tag the team if the importer is an active member
+    let teamId = null;
+    if (team_id) {
+      const user = await db.getUserByName(req.user.username);
+      const member = user && await db.getTeamMember(parseInt(team_id, 10), user.id);
+      if (member && member.status === 'active') teamId = parseInt(team_id, 10);
+    }
+
+    const result = await db.importLeads(rows, defaultCreatedBy, teamId);
+    db.logAiAction(null, 'import', 'file', `${result.added}/${result.total} rows imported`, { skipped: result.skipped.slice(0, 50) },
+      req.user.username, teamId).catch(() => {});
+    res.json(result);
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/import/sheet — fetch a public Google Sheet as CSV ──
+router.post('/import/sheet', authMiddleware, async (req, res, next) => {
+  const url = String((req.body || {}).url || '').trim();
+  const m = url.match(/docs\.google\.com\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (!m) return res.status(400).json({ error: 'Paste a Google Sheets link (docs.google.com/spreadsheets/…)' });
+  const gid = (url.match(/[#&?]gid=(\d+)/) || [])[1] || '0';
+  try {
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${m[1]}/export?format=csv&gid=${gid}`;
+    const { data } = await axios.get(csvUrl, { timeout: 20000, maxRedirects: 5, responseType: 'text' });
+    if (typeof data !== 'string' || /<html/i.test(data.slice(0, 300))) {
+      return res.status(400).json({ error: 'Could not read the sheet — make sure sharing is set to "Anyone with the link can view".' });
+    }
+    res.json({ csv: data });
+  } catch (err) {
+    if (err.response?.status === 401 || err.response?.status === 403 || err.response?.status === 404) {
+      return res.status(400).json({ error: 'Sheet is private or not found — set sharing to "Anyone with the link can view".' });
+    }
+    next(err);
+  }
+});
+
 // ── DELETE /api/leads/:row ────────────────────────────────────
 router.delete('/leads/:row', authMiddleware, adminOnly, requireLeadAccess, async (req, res, next) => {
   try {

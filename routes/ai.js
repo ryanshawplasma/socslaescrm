@@ -630,6 +630,11 @@ router.post('/ai/command', authMiddleware, async (req, res, next) => {
         payload.quantity = payload.items[0].quantity;
         payload.rate     = payload.items[0].rate;
       }
+      // No area mentioned → fall back to the user's default area
+      if (!payload.area) {
+        const creator = await db.getUserByName(req.user.username).catch(() => null);
+        if (creator?.default_area) payload.area = creator.default_area;
+      }
 
       const result = await db.addLead(payload, req.user.username);
       if (result.conflict) {

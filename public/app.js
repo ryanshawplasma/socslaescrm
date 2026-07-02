@@ -11,6 +11,7 @@ const state = {
   search:      '',
   filterStage: '',
   filterProduct: '',
+  filterSalesman: '',
   view:        'table',
   fuFilter:    'overdue',
   sortKey:     '',
@@ -732,6 +733,256 @@ function exportCSV() {
 // ============================================================
 //  Date conversion helpers (sheet uses dd/MM/yyyy, input uses yyyy-MM-dd)
 // ============================================================
+// ============================================================
+//  IMPORT — Excel / CSV / Google Sheets
+// ============================================================
+const IMPORT_FIELDS = [
+  ['',                 '— skip —'],
+  ['factory_number',   'Factory #'],
+  ['factory_name',     'Factory / Party Name'],
+  ['person_in_charge', 'Contact Person'],
+  ['contact',          'Phone / Mobile'],
+  ['product',          'Product'],
+  ['quantity',         'Quantity'],
+  ['rate',             'Rate'],
+  ['stage',            'Stage / Status'],
+  ['follow_up',        'Follow-up Date'],
+  ['area',             'Area / City'],
+  ['notes',            'Notes / Remarks'],
+  ['lead_type',        'Lead Type (Hot/Warm/Cold)'],
+  ['created_by',       'Salesman (admin only)'],
+];
+
+const IMPORT_ALIASES = {
+  factory_number:   ['factorynumber','factoryno','factno','fnumber','fno','code','partycode','leadno','leadid'],
+  factory_name:     ['factoryname','factory','partyname','party','company','companyname','business','businessname','firm','firmname','customer','customername','name','account'],
+  person_in_charge: ['personincharge','person','contactperson','incharge','proprietor','propreitor','concernedperson','ownername'],
+  contact:          ['contact','phone','mobile','phonenumber','mobilenumber','contactnumber','phoneno','mobileno','contactno','whatsapp','whatsappno'],
+  product:          ['product','products','item','items','material'],
+  quantity:         ['quantity','qty','volume'],
+  rate:             ['rate','price','rateperkg','priceperkg','rates'],
+  stage:            ['stage','status','leadstage','dealstage'],
+  follow_up:        ['followup','followupdate','nextfollowup','nextvisit','visitdate','followupon','date'],
+  area:             ['area','city','location','region','district','zone'],
+  notes:            ['notes','note','remarks','remark','comments','comment','description'],
+  lead_type:        ['leadtype','type','temperature','temp','priority'],
+  created_by:       ['salesman','salesperson','salesrep','agent','addedby','createdby','executive','salesexecutive'],
+};
+
+let _import = null; // { name, headers, rows, mapping[] }
+
+function openImportModal() {
+  if (state.role === 'guest') { toast('Create an account to import data', 'warning'); return; }
+  _import = null;
+  document.getElementById('import-step-source').classList.remove('hidden');
+  document.getElementById('import-step-map').classList.add('hidden');
+  document.getElementById('import-step-done').classList.add('hidden');
+  document.getElementById('import-source-error').textContent = '';
+  document.getElementById('import-gsheet-url').value = '';
+  document.getElementById('import-file-input').value = '';
+  document.getElementById('import-modal-overlay').classList.remove('hidden');
+}
+
+function closeImportModal(refreshAfter) {
+  document.getElementById('import-modal-overlay').classList.add('hidden');
+  _import = null;
+  if (refreshAfter) refresh();
+}
+
+function importReset() { openImportModal(); }
+
+function importFileSelected(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array', cellDates: false });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
+      importLoaded(file.name, aoa);
+    } catch (err) {
+      document.getElementById('import-source-error').textContent = 'Could not read the file: ' + err.message;
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+async function importFromGoogleSheet() {
+  const url = document.getElementById('import-gsheet-url').value.trim();
+  const errEl = document.getElementById('import-source-error');
+  const btn = document.getElementById('import-gsheet-btn');
+  errEl.textContent = '';
+  if (!url) { errEl.textContent = 'Paste the Google Sheets link first'; return; }
+  btn.disabled = true; btn.textContent = 'Fetching…';
+  try {
+    const { csv } = await apiFetch('/api/import/sheet', { method: 'POST', body: JSON.stringify({ url }) });
+    const wb = XLSX.read(csv, { type: 'string' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
+    importLoaded('Google Sheet', aoa);
+  } catch (err) {
+    errEl.textContent = err.message;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Fetch Sheet';
+  }
+}
+
+function importLoaded(name, aoa) {
+  // First non-empty row = headers
+  const rows = (aoa || []).filter(r => (r || []).some(c => String(c).trim() !== ''));
+  if (rows.length < 2) {
+    document.getElementById('import-source-error').textContent = 'The file needs a header row and at least one data row.';
+    return;
+  }
+  const headers = rows[0].map(h => String(h || '').trim());
+  const dataRows = rows.slice(1);
+
+  // Auto-map headers → CRM fields
+  const used = new Set();
+  const mapping = headers.map(h => {
+    const norm = h.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!norm) return '';
+    for (const [field, aliases] of Object.entries(IMPORT_ALIASES)) {
+      if (used.has(field)) continue;
+      if (aliases.includes(norm)) { used.add(field); return field; }
+    }
+    return '';
+  });
+
+  _import = { name, headers, rows: dataRows, mapping };
+  renderImportMap();
+  document.getElementById('import-step-source').classList.add('hidden');
+  document.getElementById('import-step-map').classList.remove('hidden');
+  loadImportAssignees();
+}
+
+async function loadImportAssignees() {
+  const sel = document.getElementById('import-assign-select');
+  const me = localStorage.getItem('crm_user') || '';
+  if (state.role === 'admin') {
+    let names = [me];
+    try { names = (await apiFetch('/api/users')).map(u => u.display_name); } catch (_) {}
+    sel.innerHTML = names.map(n => `<option ${n === me ? 'selected' : ''}>${escHtml(n)}</option>`).join('');
+    sel.disabled = false;
+  } else {
+    sel.innerHTML = `<option>${escHtml(me)}</option>`;
+    sel.disabled = true;
+    document.querySelector('.import-assign-hint').textContent = 'Imported leads are added under your name';
+  }
+}
+
+function renderImportMap() {
+  const { name, headers, rows, mapping } = _import;
+  document.getElementById('import-file-label').textContent = `${name} · ${rows.length} row${rows.length !== 1 ? 's' : ''}`;
+  document.getElementById('import-count-label').textContent = `${rows.length} rows`;
+
+  const fieldOptions = IMPORT_FIELDS
+    .filter(([v]) => v !== 'created_by' || state.role === 'admin')
+    .map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+
+  document.getElementById('import-map-head').innerHTML = `
+    <tr>${headers.map((h, i) => `
+      <th>
+        <div class="import-col-name" title="${escAttr(h)}">${escHtml(h || '(col ' + (i + 1) + ')')}</div>
+        <select class="import-map-select" onchange="importMapChanged(${i}, this.value)">${fieldOptions}</select>
+      </th>`).join('')}
+    </tr>`;
+  // set current mapping values
+  document.querySelectorAll('.import-map-select').forEach((sel, i) => { sel.value = mapping[i] || ''; });
+
+  document.getElementById('import-map-preview').innerHTML = rows.slice(0, 5).map(r => `
+    <tr>${headers.map((_, i) => `<td class="${mapping[i] ? '' : 'import-col-skipped'}">${escHtml(String(r[i] ?? '').slice(0, 40)) || '—'}</td>`).join('')}</tr>
+  `).join('');
+}
+
+function importMapChanged(idx, val) {
+  // one CRM field per column
+  if (val) _import.mapping = _import.mapping.map((m, i) => (i !== idx && m === val) ? '' : m);
+  _import.mapping[idx] = val;
+  renderImportMap();
+}
+
+function normImportDate(v) {
+  const s = String(v || '').trim();
+  if (!s) return '';
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);                      // ISO yyyy-mm-dd
+  if (m) return `${m[3].padStart(2, '0')}/${m[2].padStart(2, '0')}/${m[1]}`;
+  m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);           // d/m/y (Indian convention)
+  if (m) {
+    const y = m[3].length === 2 ? '20' + m[3] : m[3];
+    return `${m[1].padStart(2, '0')}/${m[2].padStart(2, '0')}/${y}`;
+  }
+  return s;
+}
+
+function normImportLeadType(v) {
+  const s = String(v || '').toLowerCase();
+  if (s.includes('hot'))  return 'Hot';
+  if (s.includes('warm')) return 'Warm';
+  if (s.includes('cold')) return 'Cold';
+  return '';
+}
+
+function normImportStage(v) {
+  const s = String(v || '').trim();
+  if (!s) return { stage: '', stage_number: '' };
+  const canonical = Object.keys(STAGE_NUMBERS).find(k => k.toLowerCase() === s.toLowerCase());
+  if (canonical) return { stage: canonical, stage_number: STAGE_NUMBERS[canonical] };
+  return { stage: s, stage_number: '' };
+}
+
+async function runImport() {
+  const { headers, rows, mapping } = _import;
+  const errEl = document.getElementById('import-map-error');
+  errEl.textContent = '';
+  if (!mapping.includes('factory_name') && !mapping.includes('factory_number')) {
+    errEl.textContent = 'Map at least the Factory/Party Name or Factory # column.';
+    return;
+  }
+
+  const leads = rows.map(r => {
+    const obj = {};
+    mapping.forEach((field, i) => {
+      if (!field) return;
+      const val = String(r[i] ?? '').trim();
+      if (!val) return;
+      if (field === 'follow_up')      obj.follow_up = normImportDate(val);
+      else if (field === 'lead_type') obj.lead_type = normImportLeadType(val) || val;
+      else if (field === 'stage')     Object.assign(obj, normImportStage(val));
+      else obj[field] = val;
+    });
+    return obj;
+  }).filter(o => Object.keys(o).length);
+
+  const btn = document.getElementById('import-run-btn');
+  btn.disabled = true; btn.textContent = 'Importing…';
+  try {
+    const result = await apiFetch('/api/leads/import', {
+      method: 'POST',
+      body: JSON.stringify({
+        leads,
+        assign_to: document.getElementById('import-assign-select').value,
+        team_id: state.activeOrgId || null,
+      }),
+    });
+    const skippedHtml = result.skipped.length
+      ? `<div class="import-skip-list"><b>Skipped ${result.skipped.length}:</b><br>${
+          result.skipped.slice(0, 12).map(s => `Row ${s.row}: ${escHtml(s.reason)}`).join('<br>')
+        }${result.skipped.length > 12 ? `<br>…and ${result.skipped.length - 12} more` : ''}</div>`
+      : '';
+    document.getElementById('import-result-summary').innerHTML = `
+      <div class="import-result-big">✅ Imported <b>${result.added}</b> of ${result.total} leads</div>
+      ${skippedHtml}`;
+    document.getElementById('import-step-map').classList.add('hidden');
+    document.getElementById('import-step-done').classList.remove('hidden');
+  } catch (err) {
+    errEl.textContent = err.message;
+  } finally {
+    btn.disabled = false; btn.innerHTML = `Import <span id="import-count-label">${rows.length} rows</span>`;
+  }
+}
+
 function ddmmyyyyToISO(str) {
   if (!str) return '';
   const parts = String(str).split('/');
@@ -1161,9 +1412,10 @@ function filteredLeads() {
     const allContactText = (l.contacts || []).map(c => `${c.person_name} ${c.contact}`).join(' ');
     const matchSearch = !q || [l.factory_number, l.factory_name, l.product, allContactText]
       .some(v => String(v).toLowerCase().includes(q));
-    const matchStage   = !state.filterStage   || l.stage   === state.filterStage;
-    const matchProduct = !state.filterProduct || l.product === state.filterProduct;
-    return matchSearch && matchStage && matchProduct;
+    const matchStage    = !state.filterStage    || l.stage      === state.filterStage;
+    const matchProduct  = !state.filterProduct  || l.product    === state.filterProduct;
+    const matchSalesman = !state.filterSalesman || l.created_by === state.filterSalesman;
+    return matchSearch && matchStage && matchProduct && matchSalesman;
   });
   if (state.sortKey) {
     leads = [...leads].sort((a, b) => {
@@ -1363,9 +1615,10 @@ function renderDashboard() {
 
   // Recent leads table
   const recent = [...state.leads].reverse().slice(0, 8);
-  document.getElementById('recent-table').innerHTML = buildTable(
-    recent, ['factory_number','factory_name','product','stage','follow_up'], true
-  );
+  const recentCols = state.role === 'admin'
+    ? ['factory_number','factory_name','product','stage','follow_up','created_by']
+    : ['factory_number','factory_name','product','stage','follow_up'];
+  document.getElementById('recent-table').innerHTML = buildTable(recent, recentCols, true);
 }
 
 function renderChart(id, type, labels, data, colors, opts = {}) {
@@ -1461,18 +1714,31 @@ function populateFilters() {
   const products  = uniqueValues('product');
   stageEl.innerHTML   = '<option value="">All Stages</option>'   + stages.map(s => `<option ${s===state.filterStage?'selected':''}>${s}</option>`).join('');
   productEl.innerHTML = '<option value="">All Products</option>' + products.map(p => `<option ${p===state.filterProduct?'selected':''}>${p}</option>`).join('');
+
+  // Salesman filter — for admins, or team views with multiple owners
+  const salesEl  = document.getElementById('filter-salesman');
+  if (salesEl) {
+    const salesmen = uniqueValues('created_by');
+    const show = (state.role === 'admin' || (state.activeOrgId && salesmen.length > 1)) && salesmen.length > 0;
+    salesEl.style.display = show ? '' : 'none';
+    if (show) {
+      salesEl.innerHTML = '<option value="">All Salesmen</option>' +
+        salesmen.map(s => `<option ${s===state.filterSalesman?'selected':''}>${escHtml(s)}</option>`).join('');
+    } else if (state.filterSalesman) {
+      state.filterSalesman = '';
+    }
+  }
 }
 
 function renderLeadsView() {
   const leads = filteredLeads();
+  // Admins (and team views) see whose lead each row is
+  const cols = ['factory_number','factory_name','person_in_charge','contact','product','quantity','rate','stage','lead_type','follow_up','area'];
+  if (state.role === 'admin' || state.activeOrgId) cols.push('created_by');
   if (state.view === 'table') {
     document.getElementById('leads-table-wrap').classList.remove('hidden');
     document.getElementById('leads-kanban-wrap').classList.add('hidden');
-    document.getElementById('leads-table-wrap').innerHTML = buildTable(
-      leads,
-      ['factory_number','factory_name','person_in_charge','contact','product','quantity','rate','stage','lead_type','follow_up','area'],
-      true
-    );
+    document.getElementById('leads-table-wrap').innerHTML = buildTable(leads, cols, true);
   } else {
     document.getElementById('leads-table-wrap').classList.add('hidden');
     document.getElementById('leads-kanban-wrap').classList.remove('hidden');
@@ -1936,6 +2202,11 @@ async function openProfileModal() {
   try {
     const me = await apiFetch('/api/users/me');
     document.getElementById('p-name').value = me.display_name || '';
+    // Server value wins — default area follows the account across devices
+    if (me.default_area != null && me.default_area !== '') {
+      document.getElementById('p-default-area').value = me.default_area;
+      localStorage.setItem('crm_default_area', me.default_area);
+    }
   } catch (_) {
     document.getElementById('p-name').value = localStorage.getItem('crm_user') || '';
   }
@@ -1961,7 +2232,7 @@ async function handleProfileSubmit(e) {
   try {
     const result = await apiFetch('/api/users/me/profile', {
       method: 'PATCH',
-      body: JSON.stringify({ display_name: name, ...(pin ? { pin } : {}) }),
+      body: JSON.stringify({ display_name: name, default_area: defaultArea, ...(pin ? { pin } : {}) }),
     });
     if (result.token) {
       localStorage.setItem('crm_token', result.token);
@@ -2377,6 +2648,11 @@ function wireEvents() {
   });
   document.getElementById('btn-refresh').addEventListener('click', refresh);
   document.getElementById('btn-export').addEventListener('click', exportCSV);
+  document.getElementById('btn-import')?.addEventListener('click', openImportModal);
+  document.getElementById('filter-salesman')?.addEventListener('change', e => {
+    state.filterSalesman = e.target.value;
+    renderLeadsView();
+  });
   document.getElementById('btn-theme').addEventListener('click', toggleTheme);
   document.querySelectorAll('.palette-dot').forEach(dot => {
     dot.addEventListener('click', () => applyAccent(dot.dataset.accent));
@@ -2494,6 +2770,12 @@ async function initApp() {
   try {
     await loadMyTeams();
     renderOrgSwitcher();
+    // Sync profile prefs (default area) from the server, non-blocking
+    if (state.role !== 'guest') {
+      apiFetch('/api/users/me').then(me => {
+        if (me?.default_area) localStorage.setItem('crm_default_area', me.default_area);
+      }).catch(() => {});
+    }
     await Promise.all([loadLeads(), loadStats()]);
     lastRefreshed = new Date();
     navigate('dashboard');

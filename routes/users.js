@@ -118,14 +118,14 @@ router.get('/users/me', authMiddleware, async (req, res, next) => {
   try {
     const user = await db.getUserByName(req.user.username);
     if (!user) return res.status(404).json({ error: 'User not found' });
-    const { id, display_name, role, telegram_user_id, created_at } = user;
-    res.json({ id, display_name, role, telegram_user_id, created_at });
+    const { id, display_name, role, telegram_user_id, created_at, default_area } = user;
+    res.json({ id, display_name, role, telegram_user_id, created_at, default_area: default_area || '' });
   } catch (err) { next(err); }
 });
 
 // ── PATCH /api/users/me/profile ───────────────────────────────
 router.patch('/users/me/profile', authMiddleware, async (req, res, next) => {
-  const { display_name, pin } = req.body || {};
+  const { display_name, pin, default_area } = req.body || {};
   try {
     const user = await db.getUserByName(req.user.username);
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -138,6 +138,9 @@ router.patch('/users/me/profile', authMiddleware, async (req, res, next) => {
     if (pin) {
       if (!/^\d{4,6}$/.test(String(pin))) return res.status(400).json({ error: 'PIN must be 4-6 digits' });
       await db.updateUserPin(user.id, pin);
+    }
+    if (default_area !== undefined) {
+      await db.updateUserDefaultArea(user.id, String(default_area).slice(0, 60));
     }
     const newToken = signAccessToken(user.id, newName, user.role, req.user.sessionId || null);
     res.json({ ok: true, token: newToken, username: newName, role: user.role });

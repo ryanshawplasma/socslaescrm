@@ -14,9 +14,10 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=8" />
+  <link rel="stylesheet" href="style.css?v=9" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -162,6 +163,68 @@
         </p>
       </div>
       </div><!-- /login-main -->
+    </div>
+  </div>
+
+  <!-- ── IMPORT MODAL — Excel / Google Sheets ─────────────────── -->
+  <div id="import-modal-overlay" class="hidden">
+    <div id="import-modal">
+      <div class="modal-header">
+        <h2>⬆ Import Leads</h2>
+        <button class="icon-btn" onclick="closeImportModal()">✕</button>
+      </div>
+
+      <!-- Step 1: choose source -->
+      <div id="import-step-source">
+        <div class="import-source-grid">
+          <label class="import-drop" for="import-file-input">
+            <div class="import-drop-icon">📄</div>
+            <div class="import-drop-title">Excel / CSV file</div>
+            <div class="import-drop-sub">.xlsx, .xls or .csv — click to choose</div>
+            <input type="file" id="import-file-input" accept=".xlsx,.xls,.csv" style="display:none" onchange="importFileSelected(this)" />
+          </label>
+          <div class="import-gsheet">
+            <div class="import-drop-icon">🟩</div>
+            <div class="import-drop-title">Google Sheets</div>
+            <div class="import-drop-sub">Share the sheet as "Anyone with the link can view", then paste the link:</div>
+            <input type="url" id="import-gsheet-url" placeholder="https://docs.google.com/spreadsheets/d/…" />
+            <button class="btn btn-primary btn-sm" id="import-gsheet-btn" onclick="importFromGoogleSheet()">Fetch Sheet</button>
+          </div>
+        </div>
+        <p id="import-source-error" class="login-error" style="margin-top:10px"></p>
+      </div>
+
+      <!-- Step 2: map columns + assign + preview -->
+      <div id="import-step-map" class="hidden">
+        <div class="import-meta-row">
+          <span id="import-file-label" class="import-file-label">file.xlsx · 0 rows</span>
+          <button class="btn btn-ghost btn-sm" onclick="importReset()">← Different file</button>
+        </div>
+        <div class="import-assign-row" id="import-assign-row">
+          <label>Assign leads to</label>
+          <select id="import-assign-select"></select>
+          <span class="import-assign-hint">A mapped "Salesman" column overrides this per row</span>
+        </div>
+        <div class="import-map-scroll">
+          <table class="crm-table import-map-table">
+            <thead id="import-map-head"></thead>
+            <tbody id="import-map-preview"></tbody>
+          </table>
+        </div>
+        <p id="import-map-error" class="login-error" style="margin-top:8px"></p>
+        <div class="modal-footer" style="padding:14px 0 0">
+          <button class="btn btn-ghost" onclick="closeImportModal()">Cancel</button>
+          <button class="btn btn-primary" id="import-run-btn" onclick="runImport()">Import <span id="import-count-label"></span></button>
+        </div>
+      </div>
+
+      <!-- Step 3: results -->
+      <div id="import-step-done" class="hidden">
+        <div id="import-result-summary"></div>
+        <div class="modal-footer" style="padding:14px 0 0">
+          <button class="btn btn-primary" onclick="closeImportModal(true)">Done</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -356,6 +419,7 @@
             <span class="search-icon">⌕</span>
             <input id="global-search" type="text" placeholder="Search leads…" />
           </div>
+          <button id="btn-import" class="btn btn-ghost" title="Import leads from Excel or Google Sheets">⬆ Import</button>
           <button id="btn-export" class="btn btn-ghost" title="Export CSV">⬇ CSV</button>
           <button id="btn-add-lead" class="btn btn-primary">+ Add Lead</button>
           <div class="theme-palette" id="theme-palette">
@@ -431,6 +495,7 @@
             <div class="filter-group">
               <select id="filter-stage"><option value="">All Stages</option></select>
               <select id="filter-product"><option value="">All Products</option></select>
+              <select id="filter-salesman" style="display:none"><option value="">All Salesmen</option></select>
             </div>
             <div class="view-toggle">
               <button class="toggle-btn active" data-view="table">☰ Table</button>

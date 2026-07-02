@@ -13,14 +13,51 @@ const DEMO_LEADS = [
   { id: 9003, factory_number: 'D3', factory_name: 'Joshi Trading',     person_in_charge: 'Vikram Joshi', contact: '+91 98300 00003', lead_type: 'Cold', stage: 'New Lead', stage_number: '1', notes: 'Found via referral', created_by: 'demo', last_updated: '', items: [{ product: 'Rubber Adhesive', quantity: '100 kg', rate: '150' }], contacts: [] },
 ];
 
+// ── Team context helper (?teamId= scoping) ───────────────────
+const TEAM_MANAGER_ROLES = ['owner', 'admin', 'manager'];
+
+async function resolveTeamContext(req) {
+  const teamId = parseInt(req.query.teamId, 10);
+  if (!teamId) return null;
+  const user = await db.getUserByName(req.user.username);
+  if (!user) return { forbidden: true };
+  const member = await db.getTeamMember(teamId, user.id);
+  if (!member || member.status !== 'active') return { forbidden: true };
+  return { teamId, user, member };
+}
+
+// Returns the leads visible to this request (personal or team-scoped),
+// each annotated with can_edit. Throws {status:403} if not a team member.
+async function leadsForRequest(req) {
+  if (req.user.role === 'guest') return DEMO_LEADS.map(l => ({ ...l, can_edit: false }));
+
+  const ctx = await resolveTeamContext(req);
+  if (ctx?.forbidden) {
+    const err = new Error('Not an active member of this team');
+    err.status = 403;
+    throw err;
+  }
+
+  if (ctx) {
+    const leads   = await db.getLeadsByTeam(ctx.teamId);
+    const manager = req.user.role === 'admin' || TEAM_MANAGER_ROLES.includes(ctx.member.role);
+    const shared  = manager ? null : await db.getAccessibleLeadIds(req.user.username);
+    return leads.map(l => ({
+      ...l,
+      can_edit: manager || l.created_by === req.user.username || shared.has(Number(l.rowIndex)),
+    }));
+  }
+
+  const leads = req.user.role === 'admin'
+    ? await db.getLeads()
+    : await db.getLeadsForUser(req.user.username);
+  return leads.map(l => ({ ...l, can_edit: true }));
+}
+
 // ── GET /api/leads ────────────────────────────────────────────
 router.get('/leads', authMiddleware, async (req, res, next) => {
   try {
-    if (req.user.role === 'guest') return res.json(DEMO_LEADS);
-    const leads = req.user.role === 'admin'
-      ? await db.getLeads()
-      : await db.getLeadsForUser(req.user.username);
-    res.json(leads);
+    res.json(await leadsForRequest(req));
   } catch (err) { next(err); }
 });
 
@@ -97,22 +134,102 @@ router.get('/leads/:id/photos', authMiddleware, async (req, res, next) => {
   catch (err) { next(err); }
 });
 
+// ── Lead sharing: owner, global admin, or team owner/admin ───
+async function requireLeadManage(req, res, next) {
+  try {
+    const leadId = parseInt(req.params.id, 10);
+    const lead = await db.getLeadById(leadId);
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+    req.lead = lead;
+    if (req.user.role === 'admin' || lead.created_by === req.user.username) return next();
+    if (lead.team_id) {
+      const user = await db.getUserByName(req.user.username);
+      const member = user && await db.getTeamMember(lead.team_id, user.id);
+      if (member && member.status === 'active' && ['owner', 'admin'].includes(member.role)) return next();
+    }
+    return res.status(403).json({ error: 'Only the lead owner or an admin can manage sharing' });
+  } catch (err) { next(err); }
+}
+
 // ── GET /api/leads/:id/access ─────────────────────────────────
-router.get('/leads/:id/access', authMiddleware, adminOnly, async (req, res, next) => {
+router.get('/leads/:id/access', authMiddleware, requireLeadManage, async (req, res, next) => {
   try { res.json(await db.getLeadAccess(parseInt(req.params.id, 10))); }
   catch (err) { next(err); }
 });
 
-router.post('/leads/:id/access', authMiddleware, adminOnly, async (req, res, next) => {
+router.post('/leads/:id/access', authMiddleware, noGuest, requireLeadManage, async (req, res, next) => {
   const { user_display_name } = req.body || {};
   if (!user_display_name) return res.status(400).json({ error: 'user_display_name required' });
-  try { res.json(await db.grantLeadAccess(parseInt(req.params.id, 10), user_display_name, req.user.username)); }
+  try {
+    const result = await db.grantLeadAccess(parseInt(req.params.id, 10), user_display_name, req.user.username);
+    db.logLeadActivity(parseInt(req.params.id, 10), req.lead?.team_id || null, 'shared',
+      `Shared with ${user_display_name} by ${req.user.username}`, {}, req.user.username).catch(() => {});
+    notifyLeadShared(req.lead, user_display_name, req.user.username).catch(() => {});
+    res.json(result);
+  } catch (err) { next(err); }
+});
+
+router.delete('/leads/:id/access/:name', authMiddleware, noGuest, requireLeadManage, async (req, res, next) => {
+  try { res.json(await db.revokeLeadAccess(parseInt(req.params.id, 10), decodeURIComponent(req.params.name))); }
   catch (err) { next(err); }
 });
 
-router.delete('/leads/:id/access/:name', authMiddleware, adminOnly, async (req, res, next) => {
-  try { res.json(await db.revokeLeadAccess(parseInt(req.params.id, 10), decodeURIComponent(req.params.name))); }
-  catch (err) { next(err); }
+// ── POST /api/leads/:id/request-access ───────────────────────
+router.post('/leads/:id/request-access', authMiddleware, noGuest, async (req, res, next) => {
+  const leadId = parseInt(req.params.id, 10);
+  const message = String((req.body || {}).message || '').slice(0, 300);
+  try {
+    const lead = await db.getLeadById(leadId);
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+    if (lead.created_by === req.user.username)
+      return res.status(400).json({ error: 'You already own this lead' });
+    if (await db.userHasLeadAccess(leadId, req.user.username))
+      return res.status(409).json({ error: 'You already have access to this lead' });
+    const request = await db.createLeadShareRequest(leadId, lead.team_id, req.user.username, lead.created_by || '', message);
+    notifyShareRequest(lead, req.user.username, message).catch(() => {});
+    res.json({ ok: true, request });
+  } catch (err) { next(err); }
+});
+
+// ── GET /api/lead-requests — my inbox + outbox ───────────────
+router.get('/lead-requests', authMiddleware, async (req, res, next) => {
+  try {
+    if (req.user.role === 'guest') return res.json({ incoming: [], outgoing: [] });
+    const [incoming, outgoing] = await Promise.all([
+      db.getIncomingLeadRequests(req.user.username, req.user.role === 'admin'),
+      db.getOutgoingLeadRequests(req.user.username),
+    ]);
+    res.json({ incoming, outgoing });
+  } catch (err) { next(err); }
+});
+
+// ── PATCH /api/lead-requests/:id — approve / reject ──────────
+router.patch('/lead-requests/:id', authMiddleware, noGuest, async (req, res, next) => {
+  const { status } = req.body || {};
+  if (!['approved', 'rejected'].includes(status))
+    return res.status(400).json({ error: 'status must be approved or rejected' });
+  try {
+    const request = await db.getLeadShareRequestById(parseInt(req.params.id, 10));
+    if (!request) return res.status(404).json({ error: 'Request not found' });
+    if (request.status !== 'pending') return res.status(409).json({ error: 'Request already reviewed' });
+
+    let allowed = req.user.role === 'admin' || request.owner === req.user.username;
+    if (!allowed && request.team_id) {
+      const user = await db.getUserByName(req.user.username);
+      const member = user && await db.getTeamMember(request.team_id, user.id);
+      allowed = !!(member && member.status === 'active' && ['owner', 'admin'].includes(member.role));
+    }
+    if (!allowed) return res.status(403).json({ error: 'Only the lead owner or an admin can review this request' });
+
+    await db.reviewLeadShareRequest(request.id, status, req.user.username);
+    if (status === 'approved') {
+      await db.grantLeadAccess(request.lead_id, request.requester, req.user.username);
+      db.logLeadActivity(request.lead_id, request.team_id || null, 'shared',
+        `Access request from ${request.requester} approved by ${req.user.username}`, {}, req.user.username).catch(() => {});
+    }
+    notifyShareDecision(request, status).catch(() => {});
+    res.json({ ok: true });
+  } catch (err) { next(err); }
 });
 
 // ── GET/POST /api/leads/:id/activities ───────────────────────
@@ -136,11 +253,7 @@ router.post('/leads/:id/claim', authMiddleware, async (req, res, next) => {
 // ── GET /api/stats ────────────────────────────────────────────
 router.get('/stats', authMiddleware, async (req, res, next) => {
   try {
-    const leads = req.user.role === 'guest'
-      ? DEMO_LEADS
-      : req.user.role === 'admin'
-        ? await db.getLeads()
-        : await db.getLeadsForUser(req.user.username);
+    const leads = await leadsForRequest(req);
     const byStage = {}, byProduct = {}, byProductRevenue = {};
     let won = 0, lost = 0;
     for (const l of leads) {
@@ -213,6 +326,45 @@ router.post('/route/optimize', authMiddleware, async (req, res, next) => {
     next(err);
   }
 });
+
+// ── Telegram notifications for sharing ───────────────────────
+async function tgSendTo(displayName, text) {
+  const { TELEGRAM_TOKEN } = process.env;
+  if (!TELEGRAM_TOKEN || !displayName) return;
+  const user = await db.getUserByName(displayName);
+  if (!user?.telegram_user_id) return;
+  await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
+    { chat_id: user.telegram_user_id, text, parse_mode: 'HTML' }).catch(() => {});
+}
+
+async function notifyShareRequest(lead, requester, message) {
+  const text = [
+    `🔑 <b>Lead access request</b>`, '',
+    `👤 <b>${esc(requester)}</b> is requesting access to:`,
+    `🏭 <b>${esc(lead.factory_name || lead.factory_number)}</b>`,
+    message ? `💬 “${esc(message)}”` : '',
+    '', 'Review it in the dashboard → Workspace → Requests.',
+  ].filter(Boolean).join('\n');
+  await tgSendTo(lead.created_by, text);
+}
+
+async function notifyLeadShared(lead, withUser, byUser) {
+  const text = [
+    `🤝 <b>Lead shared with you</b>`, '',
+    `🏭 <b>${esc(lead?.factory_name || lead?.factory_number || 'A lead')}</b>`,
+    `👤 Shared by: <b>${esc(byUser)}</b>`,
+  ].join('\n');
+  await tgSendTo(withUser, text);
+}
+
+async function notifyShareDecision(request, status) {
+  const emoji = status === 'approved' ? '✅' : '❌';
+  const text = [
+    `${emoji} <b>Access request ${status}</b>`, '',
+    `🏭 <b>${esc(request.factory_name || request.factory_number || `Lead #${request.lead_id}`)}</b>`,
+  ].join('\n');
+  await tgSendTo(request.requester, text);
+}
 
 // ── Notify Order Won (Telegram) ───────────────────────────────
 async function notifyOrderWon(lead, byUser) {

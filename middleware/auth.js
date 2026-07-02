@@ -139,8 +139,19 @@ async function requireLeadAccess(req, res, next) {
 
     const hasAccess = lead.created_by === req.user.username ||
       await db.userHasLeadAccess(leadId, req.user.username);
-    if (!hasAccess) return res.status(403).json({ error: 'Forbidden' });
-    next();
+    if (hasAccess) return next();
+
+    // Team leads: owner/admin/manager of the lead's team can edit
+    if (lead.team_id) {
+      const user = await db.getUserByName(req.user.username);
+      if (user) {
+        const member = await db.getTeamMember(lead.team_id, user.id);
+        if (member && member.status === 'active' && ['owner', 'admin', 'manager'].includes(member.role)) {
+          return next();
+        }
+      }
+    }
+    return res.status(403).json({ error: 'Forbidden', code: 'no_lead_access' });
   } catch (err) {
     next(err);
   }

@@ -16,7 +16,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=3" />
+  <link rel="stylesheet" href="style.css?v=4" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -25,6 +25,7 @@
   <div id="login-overlay" class="hidden">
     <div id="login-box">
       <div class="login-brand">◈ SalesCRM</div>
+      <div class="login-tagline">Your team's leads, pipeline &amp; follow-ups — in one place.</div>
 
       <!-- ── PIN Unlock screen (trusted device) ───────────── -->
       <div id="pin-unlock-screen" style="display:none">
@@ -73,8 +74,11 @@
           </div>
           <div class="form-group">
             <label>PIN / Password</label>
-            <input id="login-password" type="password" placeholder="Enter PIN or password"
-              autocomplete="current-password" />
+            <div class="pw-wrap">
+              <input id="login-password" type="password" placeholder="Enter PIN or password"
+                autocomplete="current-password" />
+              <button type="button" class="pw-toggle" aria-label="Show PIN" onclick="togglePw('login-password', this)">👁</button>
+            </div>
           </div>
           <div class="remember-row">
             <label>
@@ -289,6 +293,7 @@
         </div>
         <div class="topbar-right">
           <span id="last-refreshed" class="refresh-label"></span>
+          <div id="org-switcher" class="org-switcher hidden"></div>
           <div class="search-wrap">
             <span class="search-icon">⌕</span>
             <input id="global-search" type="text" placeholder="Search leads…" />
@@ -563,7 +568,7 @@
             <div class="ws-tabs" id="ws-tabs">
               <button class="ws-tab active" data-tab="overview"  onclick="wsShowTab('overview')">Overview</button>
               <button class="ws-tab"        data-tab="members"   onclick="wsShowTab('members')">Members</button>
-              <button class="ws-tab ws-tab-admin" data-tab="requests" onclick="wsShowTab('requests')">Requests <span id="ws-req-badge" class="ws-badge hidden">0</span></button>
+              <button class="ws-tab" data-tab="requests" onclick="wsShowTab('requests')">Requests <span id="ws-req-badge" class="ws-badge hidden">0</span></button>
               <button class="ws-tab"        data-tab="search"    onclick="wsShowTab('search')">Find Teams</button>
               <button class="ws-tab ws-tab-admin" data-tab="settings" onclick="wsShowTab('settings')">Settings</button>
             </div>
@@ -666,8 +671,8 @@
             <label>Notes</label>
             <textarea id="f-notes" rows="3" placeholder="Any additional notes…"></textarea>
           </div>
-          <div class="form-group full-width admin-only" id="modal-access-section" style="display:none">
-            <label>Team Access <span style="font-weight:400;color:var(--text-muted);font-size:12px">— grant salespeople access to this lead</span></label>
+          <div class="form-group full-width" id="modal-access-section" style="display:none">
+            <label>🤝 Sharing <span style="font-weight:400;color:var(--text-muted);font-size:12px">— give teammates access to this lead</span></label>
             <div id="modal-access-list" style="margin-top:8px"></div>
           </div>
 

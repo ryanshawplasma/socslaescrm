@@ -408,6 +408,25 @@ async function initSchema() {
       )
     `).catch(() => {});
 
+    // ── New: Lead share requests (teammates request access) ────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS lead_share_requests (
+        id          SERIAL PRIMARY KEY,
+        lead_id     INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+        team_id     INTEGER,
+        requester   TEXT NOT NULL,
+        owner       TEXT DEFAULT '',
+        message     TEXT DEFAULT '',
+        status      TEXT DEFAULT 'pending',
+        reviewed_by TEXT DEFAULT '',
+        created_at  TIMESTAMPTZ DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(lead_id, requester)
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lsr_owner ON lead_share_requests(owner, status)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lsr_requester ON lead_share_requests(requester)`).catch(() => {});
+
     // ── New: AI corrections (learning engine) ──────────────────
     await client.query(`
       CREATE TABLE IF NOT EXISTS ai_corrections (
@@ -1395,6 +1414,59 @@ async function userHasLeadAccess(leadId, username) {
   return rows.length > 0;
 }
 
+async function getAccessibleLeadIds(username) {
+  const { rows } = await pool.query(
+    `SELECT lead_id FROM lead_access WHERE user_display_name=$1`, [username]
+  );
+  return new Set(rows.map(r => r.lead_id));
+}
+
+// ── Lead share requests ───────────────────────────────────────
+async function createLeadShareRequest(leadId, teamId, requester, owner, message = '') {
+  const { rows } = await pool.query(
+    `INSERT INTO lead_share_requests (lead_id, team_id, requester, owner, message)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (lead_id, requester) DO UPDATE
+       SET status='pending', message=EXCLUDED.message, owner=EXCLUDED.owner,
+           team_id=EXCLUDED.team_id, reviewed_by='', updated_at=NOW()
+     RETURNING *`,
+    [leadId, teamId || null, requester, owner || '', message]
+  );
+  return rows[0];
+}
+
+async function getLeadShareRequestById(id) {
+  const { rows } = await pool.query(`SELECT * FROM lead_share_requests WHERE id=$1`, [id]);
+  return rows[0] || null;
+}
+
+async function getIncomingLeadRequests(username, isAdmin = false) {
+  const cond = isAdmin ? '' : 'WHERE r.owner = $1';
+  const vals = isAdmin ? [] : [username];
+  const { rows } = await pool.query(
+    `SELECT r.*, l.factory_number, l.factory_name
+     FROM lead_share_requests r JOIN leads l ON l.id = r.lead_id
+     ${cond} ORDER BY r.created_at DESC LIMIT 100`, vals
+  );
+  return rows;
+}
+
+async function getOutgoingLeadRequests(username) {
+  const { rows } = await pool.query(
+    `SELECT r.*, l.factory_number, l.factory_name
+     FROM lead_share_requests r JOIN leads l ON l.id = r.lead_id
+     WHERE r.requester = $1 ORDER BY r.created_at DESC LIMIT 100`, [username]
+  );
+  return rows;
+}
+
+async function reviewLeadShareRequest(id, status, reviewedBy) {
+  await pool.query(
+    `UPDATE lead_share_requests SET status=$1, reviewed_by=$2, updated_at=NOW() WHERE id=$3`,
+    [status, reviewedBy || '', id]
+  );
+}
+
 // ── Lead activity timeline ────────────────────────────────────
 async function logLeadActivity(leadId, teamId, activityType, description, metadata, performedBy) {
   await pool.query(
@@ -1606,7 +1678,10 @@ module.exports = {
   // AI Entry Mode
   getVocab, addVocab, deleteVocab, logAiAction,
   // Lead security
-  getLeadById, userHasLeadAccess,
+  getLeadById, userHasLeadAccess, getAccessibleLeadIds,
+  // Lead share requests
+  createLeadShareRequest, getLeadShareRequestById,
+  getIncomingLeadRequests, getOutgoingLeadRequests, reviewLeadShareRequest,
   // Activity timeline + history
   logLeadActivity, getLeadActivities, logLeadHistory, getLeadHistory,
   // Departments

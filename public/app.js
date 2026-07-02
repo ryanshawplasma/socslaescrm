@@ -6,6 +6,8 @@ const state = {
   stats:       null,
   page:        'dashboard',
   role:        localStorage.getItem('crm_role') || null,
+  myTeams:     [],
+  activeOrgId: localStorage.getItem('crm_org_id') || '',
   search:      '',
   filterStage: '',
   filterProduct: '',
@@ -178,9 +180,37 @@ function showLoginPage() {
   document.getElementById('register-screen').style.display   = 'none';
   document.getElementById('login-overlay').classList.remove('hidden');
   document.getElementById('app').classList.add('hidden');
+  // Prefill last-used username for a faster sign-in
+  const lastUser = localStorage.getItem('crm_last_user');
+  const credEl   = document.getElementById('login-username');
+  if (lastUser && credEl && !credEl.value) {
+    credEl.value = lastUser;
+    updateCredentialLabel(lastUser);
+    setTimeout(() => document.getElementById('login-password')?.focus(), 50);
+  } else {
+    setTimeout(() => credEl?.focus(), 50);
+  }
   loadLoginUserChips();
   if (window.SimpleWebAuthnBrowser?.browserSupportsWebAuthn())
     document.getElementById('biometric-login-section').classList.remove('hidden');
+}
+
+// ── Login helpers: show/hide secret + error shake ─────────────
+function togglePw(inputId, btn) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  btn.textContent = show ? '🙈' : '👁';
+  btn.setAttribute('aria-label', show ? 'Hide PIN' : 'Show PIN');
+  input.focus();
+}
+
+function shakeError(el) {
+  if (!el) return;
+  el.classList.remove('shake');
+  void el.offsetWidth; // restart animation
+  el.classList.add('shake');
 }
 
 function hideLoginPage() {
@@ -558,6 +588,7 @@ async function handleLogin(e) {
   const btn          = document.getElementById('login-btn');
   errEl.textContent  = '';
   btn.disabled       = true;
+  btn.classList.add('btn-loading');
   btn.textContent    = 'Signing in…';
 
   try {
@@ -570,17 +601,21 @@ async function handleLogin(e) {
     });
     const data = await res.json();
     if (!res.ok) {
-      if (res.status === 423) errEl.textContent = data.error;
-      else errEl.textContent = data.error || 'Login failed';
+      errEl.textContent = data.error || 'Login failed';
+      shakeError(errEl);
+      document.getElementById('login-password')?.select();
       return;
     }
+    localStorage.setItem('crm_last_user', credential);
     await offerDeviceSetup(data);
   } catch (err) {
     errEl.textContent = (err instanceof TypeError && err.message.toLowerCase().includes('fetch'))
       ? 'Server is starting up, please try again in 30 seconds.'
       : err.message;
+    shakeError(errEl);
   } finally {
     btn.disabled    = false;
+    btn.classList.remove('btn-loading');
     btn.textContent = 'Sign In';
   }
 }
@@ -628,9 +663,14 @@ async function apiFetch(path, opts = {}) {
   return res.json();
 }
 
-async function loadLeads()  { state.leads = await apiFetch('/api/leads'); }
-async function loadStats()  { state.stats = await apiFetch('/api/stats'); }
-async function createLead(data) { return apiFetch('/api/leads', { method: 'POST', body: JSON.stringify(data) }); }
+function orgQuery() { return state.activeOrgId ? `?teamId=${encodeURIComponent(state.activeOrgId)}` : ''; }
+
+async function loadLeads()  { state.leads = await apiFetch('/api/leads' + orgQuery()); }
+async function loadStats()  { state.stats = await apiFetch('/api/stats' + orgQuery()); }
+async function createLead(data) {
+  if (state.activeOrgId) data.team_id = parseInt(state.activeOrgId, 10);
+  return apiFetch('/api/leads', { method: 'POST', body: JSON.stringify(data) });
+}
 async function updateLead(row, data) { return apiFetch(`/api/leads/${row}`, { method: 'PUT', body: JSON.stringify(data) }); }
 async function deleteLead(row) { return apiFetch(`/api/leads/${row}`, { method: 'DELETE' }); }
 
@@ -739,6 +779,7 @@ function renderPage(page) {
   if (page === 'map')        renderMap();
   if (page === 'chat')       chatFocusInput();
   if (page === 'workspace')  renderWorkspace();
+  if (page === 'ai-debug')   renderAiDebugPage();
 }
 
 // ============================================================
@@ -1172,12 +1213,20 @@ function buildTable(leads, cols, actions = true) {
   const rows = leads.map(l => {
     const rowClass = TYPE_ROW_CLASS[l.lead_type] || '';
     const cells = cols.map(c => `<td>${colDefs[c] ? colDefs[c][1](l) : (l[c] || '—')}</td>`).join('');
-    const act   = actions ? `<td>
-      <div class="table-actions admin-only" style="display:${state.role === 'admin' ? '' : 'none'}">
-        <button class="action-btn" onclick="openEditModal(${l.rowIndex})">Edit</button>
-        <button class="action-btn del" onclick="confirmDelete(${l.rowIndex}, '${escAttr(l.factory_name || l.factory_number)}')">Del</button>
-      </div>
-    </td>` : '';
+    let act = '';
+    if (actions && state.role !== 'guest') {
+      const canEdit   = state.role === 'admin' || l.can_edit !== false;
+      const canDelete = state.role === 'admin';
+      const btns = [
+        canEdit
+          ? `<button class="action-btn" onclick="openEditModal(${l.rowIndex})">Edit</button>`
+          : `<button class="action-btn" title="Ask the owner for edit access" onclick="requestLeadAccess(${l.rowIndex})">🔑 Request</button>`,
+        canDelete ? `<button class="action-btn del" onclick="confirmDelete(${l.rowIndex}, '${escAttr(l.factory_name || l.factory_number)}')">Del</button>` : '',
+      ].filter(Boolean).join('');
+      act = `<td><div class="table-actions">${btns}</div></td>`;
+    } else if (actions) {
+      act = '<td>—</td>';
+    }
     return `<tr class="${rowClass}">${cells}${act}</tr>`;
   }).join('');
 
@@ -1887,8 +1936,19 @@ async function handleProfileSubmit(e) {
 }
 
 // ============================================================
-//  Lead Access (admin grants/revokes salesperson access)
+//  Lead Access — sharing & requesting
 // ============================================================
+async function requestLeadAccess(rowIndex) {
+  const lead = state.leads.find(l => String(l.rowIndex) === String(rowIndex));
+  const name = lead ? (lead.factory_name || lead.factory_number || `Lead #${rowIndex}`) : `Lead #${rowIndex}`;
+  const message = prompt(`Request edit access to "${name}" from ${lead?.created_by || 'the owner'}?\n\nOptional message:`, '');
+  if (message === null) return;
+  try {
+    await apiFetch(`/api/leads/${rowIndex}/request-access`, { method: 'POST', body: JSON.stringify({ message }) });
+    toast('Access request sent to the lead owner');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
 async function grantAccess(leadId, userName) {
   try {
     await apiFetch(`/api/leads/${leadId}/access`, { method: 'POST', body: JSON.stringify({ user_display_name: userName }) });
@@ -2051,25 +2111,29 @@ function openEditModal(rowIndex) {
   renderItemsEditor(itemsToEdit);
   document.getElementById('modal-overlay').classList.remove('hidden');
 
-  // Admin: load team access section
+  // Activity timeline
+  if (document.getElementById('lead-timeline-content')) loadLeadTimeline(rowIndex);
+
+  // Sharing section — lead owner or admin can share with teammates
   const accessSection = document.getElementById('modal-access-section');
   const accessList    = document.getElementById('modal-access-list');
-  if (state.role === 'admin' && accessSection) {
+  const me            = localStorage.getItem('crm_user') || '';
+  const canShare      = state.role !== 'guest' && (state.role === 'admin' || lead.created_by === me);
+  if (canShare && accessSection) {
     accessSection.style.display = '';
     accessList.innerHTML = '<em style="color:var(--text-muted);font-size:12px">Loading…</em>';
-    Promise.all([apiFetch(`/api/leads/${rowIndex}/access`), apiFetch('/api/users')]).then(([access, users]) => {
-      const salespeople  = users.filter(u => u.role !== 'admin');
+    Promise.all([apiFetch(`/api/leads/${rowIndex}/access`), loadShareCandidates()]).then(([access, names]) => {
       const grantedNames = new Set(access.map(a => a.user_display_name));
-      if (!salespeople.length) {
-        accessList.innerHTML = '<em style="color:var(--text-muted);font-size:12px">No salespeople registered yet</em>';
+      if (!names.length) {
+        accessList.innerHTML = '<em style="color:var(--text-muted);font-size:12px">No teammates to share with yet</em>';
         return;
       }
-      accessList.innerHTML = salespeople.map(u => `
+      accessList.innerHTML = names.map(n => `
         <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
-          <span style="flex:1;font-size:13px">${escAttr(u.display_name)}</span>
-          ${grantedNames.has(u.display_name)
-            ? `<span style="font-size:11px;color:var(--success);margin-right:4px">✓ Has access</span><button class="action-btn del" style="font-size:11px" onclick="revokeAccess(${rowIndex},'${escAttr(u.display_name)}')">Revoke</button>`
-            : `<button class="action-btn" style="font-size:11px" onclick="grantAccess(${rowIndex},'${escAttr(u.display_name)}')">Grant</button>`}
+          <span style="flex:1;font-size:13px">${escHtml(n)}</span>
+          ${grantedNames.has(n)
+            ? `<span style="font-size:11px;color:var(--success);margin-right:4px">✓ Has access</span><button class="action-btn del" style="font-size:11px" onclick="revokeAccess(${rowIndex},'${escAttr(n)}')">Revoke</button>`
+            : `<button class="action-btn" style="font-size:11px" onclick="grantAccess(${rowIndex},'${escAttr(n)}')">Share</button>`}
         </div>`).join('');
     }).catch(err => {
       accessList.innerHTML = `<em style="color:var(--danger);font-size:12px">${err.message}</em>`;
@@ -2077,6 +2141,24 @@ function openEditModal(rowIndex) {
   } else if (accessSection) {
     accessSection.style.display = 'none';
   }
+}
+
+// Who can this lead be shared with? Team members in org mode,
+// all users for admins, otherwise the public username directory.
+async function loadShareCandidates() {
+  const me = localStorage.getItem('crm_user') || '';
+  if (state.activeOrgId) {
+    const members = await apiFetch(`/api/teams/${state.activeOrgId}/members`, {
+      headers: { 'X-Team-ID': String(state.activeOrgId) },
+    });
+    return members.filter(m => m.status === 'active').map(m => m.display_name).filter(n => n && n !== me);
+  }
+  if (state.role === 'admin') {
+    const users = await apiFetch('/api/users');
+    return users.map(u => u.display_name).filter(n => n && n !== me);
+  }
+  const names = await apiFetch('/api/users/names');
+  return names.filter(n => n && n !== me);
 }
 
 function closeModal() {
@@ -2327,8 +2409,49 @@ function wireEvents() {
 // ============================================================
 //  Init
 // ============================================================
+// ── Organisation / workspace switcher ─────────────────────────
+async function loadMyTeams() {
+  if (state.role === 'guest') { state.myTeams = []; return; }
+  try { state.myTeams = await apiFetch('/api/my/teams'); }
+  catch (_) { state.myTeams = []; }
+  // Drop a saved org the user is no longer part of
+  if (state.activeOrgId && !state.myTeams.some(t => String(t.id) === String(state.activeOrgId))) {
+    state.activeOrgId = '';
+    localStorage.removeItem('crm_org_id');
+  }
+}
+
+function renderOrgSwitcher() {
+  const el = document.getElementById('org-switcher');
+  if (!el) return;
+  if (!state.myTeams.length) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+  el.classList.remove('hidden');
+  el.innerHTML = `
+    <select id="org-select" title="Switch workspace" onchange="switchOrg(this.value)">
+      <option value="">👤 Personal</option>
+      ${state.myTeams.map(t =>
+        `<option value="${t.id}" ${String(t.id) === String(state.activeOrgId) ? 'selected' : ''}>🏢 ${escHtml(t.name)}</option>`
+      ).join('')}
+    </select>`;
+}
+
+async function switchOrg(id) {
+  state.activeOrgId = id || '';
+  if (id) { localStorage.setItem('crm_org_id', id); localStorage.setItem('ws_team_id', id); }
+  else    { localStorage.removeItem('crm_org_id'); }
+  const team = state.myTeams.find(t => String(t.id) === String(id));
+  toast(team ? `Workspace: ${team.name}` : 'Personal workspace');
+  try {
+    await Promise.all([loadLeads(), loadStats()]);
+    lastRefreshed = new Date();
+    renderPage(state.page);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
 async function initApp() {
   try {
+    await loadMyTeams();
+    renderOrgSwitcher();
     await Promise.all([loadLeads(), loadStats()]);
     lastRefreshed = new Date();
     navigate('dashboard');
@@ -2616,7 +2739,7 @@ function buildChatPreview({ parsed, action, existingRow }) {
     </div>`;
 }
 
-async function chatSend() {
+async function chatSendLegacy() {
   const input = document.getElementById('chat-input');
   const text  = (input?.value || '').trim();
   if (!text) return;
@@ -2898,42 +3021,96 @@ async function wsRemoveMember(userId, name) {
 async function wsRenderRequests() {
   const panel = document.getElementById('ws-panel-requests');
   panel.innerHTML = `<div style="padding:20px;color:var(--text-muted)">Loading requests…</div>`;
+  const isAdmin = ['owner', 'admin'].includes(ws.activeTeam?.role) || state.role === 'admin';
+
+  let joinRequests = [];
+  let leadReqs = { incoming: [], outgoing: [] };
   try {
-    const requests = await wsTeamApiFetch(`/api/teams/${ws.activeTeam.id}/requests`);
-    const pending  = requests.filter(r => r.status === 'pending');
-    // Update badge
-    const badge = document.getElementById('ws-req-badge');
-    if (pending.length) { badge.textContent = pending.length; badge.classList.remove('hidden'); }
-    else                { badge.classList.add('hidden'); }
+    [joinRequests, leadReqs] = await Promise.all([
+      isAdmin ? wsTeamApiFetch(`/api/teams/${ws.activeTeam.id}/requests`).catch(() => []) : Promise.resolve([]),
+      apiFetch('/api/lead-requests').catch(() => ({ incoming: [], outgoing: [] })),
+    ]);
+  } catch (err) {
+    panel.innerHTML = `<div class="ws-error">${escHtml(err.message)}</div>`;
+    return;
+  }
 
-    if (!requests.length) {
-      panel.innerHTML = `<div style="padding:30px;text-align:center;color:var(--text-muted)">No join requests yet.</div>`;
-      return;
-    }
+  const pendingJoin     = joinRequests.filter(r => r.status === 'pending');
+  const pendingIncoming = (leadReqs.incoming || []).filter(r => r.status === 'pending');
 
-    const rows = requests.map(r => `
-      <tr>
-        <td style="font-weight:500">${escHtml(r.user_name)}</td>
-        <td style="color:var(--text-muted);font-size:12px">${r.message || '—'}</td>
-        <td><span class="ws-status-badge ws-status-${r.status}">${r.status}</span></td>
-        <td style="font-size:12px;color:var(--text-muted)">${(r.created_at || '').split(' ')[0]}</td>
-        <td>
-          ${r.status === 'pending' ? `
-            <button class="action-btn" onclick="wsReviewRequest(${r.id}, 'approved')">Approve</button>
-            <button class="action-btn del" onclick="wsReviewRequest(${r.id}, 'rejected')">Reject</button>
-          ` : '—'}
-        </td>
-      </tr>`).join('');
+  // Badge = pending join requests + pending lead requests for me
+  const badge = document.getElementById('ws-req-badge');
+  const badgeCount = pendingJoin.length + pendingIncoming.length;
+  if (badge) {
+    if (badgeCount) { badge.textContent = badgeCount; badge.classList.remove('hidden'); }
+    else            { badge.classList.add('hidden'); }
+  }
 
-    panel.innerHTML = `
-      <div style="margin-bottom:14px;font-size:15px;font-weight:600">${pending.length} Pending · ${requests.length} Total</div>
-      <div class="card">
-        <div class="table-scroll"><table class="crm-table">
-          <thead><tr><th>Name</th><th>Message</th><th>Status</th><th>Requested</th><th>Action</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table></div>
-      </div>`;
-  } catch (err) { panel.innerHTML = `<div class="ws-error">${escHtml(err.message)}</div>`; }
+  const leadReqRow = (r, incoming) => `
+    <tr>
+      <td style="font-weight:500">${escHtml(r.factory_name || r.factory_number || ('Lead #' + r.lead_id))}</td>
+      <td>${escHtml(incoming ? r.requester : (r.owner || '—'))}</td>
+      <td style="color:var(--text-muted);font-size:12px">${escHtml(r.message || '—')}</td>
+      <td><span class="ws-status-badge ws-status-${r.status}">${r.status}</span></td>
+      <td>
+        ${incoming && r.status === 'pending' ? `
+          <button class="action-btn" onclick="wsReviewLeadRequest(${r.id}, 'approved')">Approve</button>
+          <button class="action-btn del" onclick="wsReviewLeadRequest(${r.id}, 'rejected')">Reject</button>
+        ` : '—'}
+      </td>
+    </tr>`;
+
+  const leadReqTable = (rows, incoming) => rows.length ? `
+    <div class="card" style="margin-bottom:20px">
+      <div class="table-scroll"><table class="crm-table">
+        <thead><tr><th>Lead</th><th>${incoming ? 'Requested by' : 'Owner'}</th><th>Message</th><th>Status</th><th>Action</th></tr></thead>
+        <tbody>${rows.map(r => leadReqRow(r, incoming)).join('')}</tbody>
+      </table></div>
+    </div>`
+    : `<div style="padding:14px 4px 20px;color:var(--text-muted);font-size:13px">None yet.</div>`;
+
+  const joinRows = joinRequests.map(r => `
+    <tr>
+      <td style="font-weight:500">${escHtml(r.user_name)}</td>
+      <td style="color:var(--text-muted);font-size:12px">${escHtml(r.message || '—')}</td>
+      <td><span class="ws-status-badge ws-status-${r.status}">${r.status}</span></td>
+      <td style="font-size:12px;color:var(--text-muted)">${(r.created_at || '').split(' ')[0]}</td>
+      <td>
+        ${r.status === 'pending' ? `
+          <button class="action-btn" onclick="wsReviewRequest(${r.id}, 'approved')">Approve</button>
+          <button class="action-btn del" onclick="wsReviewRequest(${r.id}, 'rejected')">Reject</button>
+        ` : '—'}
+      </td>
+    </tr>`).join('');
+
+  panel.innerHTML = `
+    <h3 style="font-size:14px;font-weight:600;margin-bottom:10px">🔑 Lead Access — Requests for your leads
+      ${pendingIncoming.length ? `<span class="ws-badge">${pendingIncoming.length}</span>` : ''}</h3>
+    ${leadReqTable(leadReqs.incoming || [], true)}
+    <h3 style="font-size:14px;font-weight:600;margin-bottom:10px">📤 Lead Access — Your requests</h3>
+    ${leadReqTable(leadReqs.outgoing || [], false)}
+    ${isAdmin ? `
+      <h3 style="font-size:14px;font-weight:600;margin-bottom:10px">👥 Team Join Requests
+        ${pendingJoin.length ? `<span class="ws-badge">${pendingJoin.length}</span>` : ''}</h3>
+      ${joinRequests.length ? `
+        <div class="card">
+          <div class="table-scroll"><table class="crm-table">
+            <thead><tr><th>Name</th><th>Message</th><th>Status</th><th>Requested</th><th>Action</th></tr></thead>
+            <tbody>${joinRows}</tbody>
+          </table></div>
+        </div>`
+      : `<div style="padding:14px 4px;color:var(--text-muted);font-size:13px">No join requests yet.</div>`}
+    ` : ''}`;
+}
+
+async function wsReviewLeadRequest(requestId, status) {
+  try {
+    await apiFetch(`/api/lead-requests/${requestId}`, {
+      method: 'PATCH', body: JSON.stringify({ status }),
+    });
+    toast(status === 'approved' ? 'Access granted!' : 'Request rejected');
+    wsRenderRequests();
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 async function wsReviewRequest(requestId, status) {
@@ -3793,7 +3970,7 @@ function renderUnderstandingCard(data) {
       <div class="ai-card-footer">
         <button class="btn btn-primary" onclick="aiConfirmSave()">✅ Save Lead</button>
         <button class="btn btn-ghost" onclick="aiEditAll()">✏️ Edit All</button>
-        <button class="btn btn-ghost" onclick="aiClearCard()">✕ Clear</button>
+        <button class="btn btn-ghost" onclick="aiClearUnderstandingCard()">✕ Clear</button>
       </div>`;
   }
 
@@ -3801,7 +3978,7 @@ function renderUnderstandingCard(data) {
     <div class="ai-card">
       <div class="ai-card-header">
         <span class="ai-card-title">🧠 AI Understood</span>
-        <button class="btn btn-ghost btn-xs" onclick="aiClearCard()">↩ Ask Again</button>
+        <button class="btn btn-ghost btn-xs" onclick="aiClearUnderstandingCard()">↩ Ask Again</button>
       </div>
       ${subsHtml}
       <table class="ai-card-table">
@@ -3898,7 +4075,7 @@ async function aiConfirmSave() {
       if (result?.conflict) { toast(`Duplicate: ${result.message}`, 'error'); return; }
       toast('Lead saved');
     }
-    aiClearCard();
+    aiClearUnderstandingCard();
     await loadLeads(); await loadStats(); renderPage(state.page);
   } catch (err) { toast('Save failed: ' + err.message, 'error'); }
 }
@@ -3923,7 +4100,7 @@ function openEditModalFromParsed(parsed) {
   document.getElementById('modal-overlay').classList.remove('hidden');
 }
 
-function aiClearCard() {
+function aiClearUnderstandingCard() {
   const cardArea = document.getElementById('ai-card-area');
   if (cardArea) cardArea.innerHTML = `<div class="ai-empty">💬 Type a lead above and AI will parse it here.</div>`;
   aiSession = null;
@@ -3932,11 +4109,8 @@ function aiClearCard() {
 }
 
 // Enhanced chatSend — routes based on current AI mode
-const _originalChatSend = chatSend;
-window._originalChatSend = _originalChatSend;
-
 async function chatSend() {
-  if (aiMode !== 'understanding') { return _originalChatSend(); }
+  if (aiMode !== 'understanding') { return chatSendLegacy(); }
 
   const input = document.getElementById('chat-input');
   const text  = (input?.value || '').trim();
@@ -3988,16 +4162,7 @@ async function loadLeadTimeline(leadId) {
   }
 }
 
-// Monkey-patch openEditModal to show timeline tab
-const _origOpenEditModal = openEditModal;
-function openEditModal(rowIndex) {
-  _origOpenEditModal(rowIndex);
-  // If timeline section exists, populate it
-  const timelineContent = document.getElementById('lead-timeline-content');
-  if (timelineContent && rowIndex) {
-    loadLeadTimeline(rowIndex);
-  }
-}
+// (timeline loading happens inside openEditModal itself)
 
 // ============================================================
 //  ADMIN AI DEBUG CONSOLE
@@ -4065,12 +4230,7 @@ function toggleDebugRow(i) {
   if (el) el.classList.toggle('hidden');
 }
 
-// Hook into page navigation to load debug console when shown
-const _origRenderPage = renderPage;
-function renderPage(page) {
-  _origRenderPage(page);
-  if (page === 'ai-debug') renderAiDebugPage();
-}
+// (ai-debug page hook lives in the main renderPage above)
 
 // ============================================================
 //  DEPARTMENT UI (Workspace Members tab extension)

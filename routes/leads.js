@@ -396,3 +396,4 @@ function esc(v) {
 }
 
 module.exports = router;
+module.exports.leadsForRequest = leadsForRequest;

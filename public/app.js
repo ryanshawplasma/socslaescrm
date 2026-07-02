@@ -3895,6 +3895,74 @@ async function deleteVocabAlias(id) {
 
 // Current AI mode: 'understanding' | 'assistant' | 'command'
 let aiMode = 'understanding';
+const _modeGreeted = {};
+
+const CHAT_MODE_INFO = {
+  understanding: {
+    ph: 'Type, speak 🎤 or snap 📷 a business card…',
+    chips: null, // keep the default product chips
+  },
+  assistant: {
+    ph: 'Ask about your pipeline… e.g. "kitne hot leads hain?"',
+    hello: '💬 <b>Assistant</b> — ask me anything about your leads:<br>counts, follow-ups due, pipeline, revenue, who to call today.',
+    chips: [
+      ['🔥 Hot leads?',        'How many hot leads do I have and which ones?'],
+      ['📅 Due today',         'Which follow-ups are due today or overdue?'],
+      ['🏆 Pipeline summary',  'Give me a quick pipeline summary by stage'],
+      ['💰 Revenue potential', 'What is my revenue potential by product?'],
+      ['🎯 Who to call?',      'Who should I call first today and why?'],
+    ],
+  },
+  command: {
+    ph: 'e.g. "set M277 stage to won" or "follow up F12 next week"',
+    hello: '⚡ <b>Command</b> — tell me what to change and I\'ll do it:<br>• <code>set M277 stage to won</code><br>• <code>follow up F12 next week</code><br>• <code>mark D2 hot</code> · <code>add note to M277: visited today</code> · <code>find surat leads</code>',
+    chips: [
+      ['📊 Set stage',   'set  stage to '],
+      ['📅 Follow-up',   'follow up  tomorrow'],
+      ['🌡 Temperature', 'mark  hot'],
+      ['📝 Add note',    'add note to : '],
+      ['🔍 Find',        'find '],
+    ],
+  },
+};
+
+function renderChatChips(mode) {
+  const bar = document.getElementById('chat-chips-bar');
+  if (!bar) return;
+  const info = CHAT_MODE_INFO[mode];
+  if (!info?.chips) { // restore default understanding chips
+    bar.innerHTML = `
+      <button class="chat-chip chip-hot"  onclick="chatInsertChip('hot')">🔴 Hot</button>
+      <button class="chat-chip chip-warm" onclick="chatInsertChip('warm')">🟡 Warm</button>
+      <button class="chat-chip chip-cold" onclick="chatInsertChip('cold')">🔵 Cold</button>
+      <button class="chat-chip" onclick="chatInsertChip('follow up')">📅 Follow-up</button>
+      <span class="chip-divider">|</span>
+      <button class="chat-chip" onclick="chatInsertChip('hotmelt')">Hotmelt</button>
+      <button class="chat-chip" onclick="chatInsertChip('latex')">Latex</button>
+      <button class="chat-chip" onclick="chatInsertChip('bc')">BC</button>
+      <button class="chat-chip" onclick="chatInsertChip('toluene')">Toluene</button>
+      <button class="chat-chip" onclick="chatInsertChip('r6')">R6</button>
+      <button class="chat-chip" onclick="chatInsertChip('mek')">MEK</button>
+      <button class="chat-chip" onclick="chatInsertChip('pu adhesive')">PU Adhesive</button>
+      <button class="chat-chip" onclick="chatInsertChip('silicon')">Silicon</button>`;
+    return;
+  }
+  bar.innerHTML = info.chips.map(([label, text]) =>
+    `<button class="chat-chip" onclick="chatChipAction('${escAttr(text)}')">${label}</button>`
+  ).join('');
+}
+
+function chatChipAction(text) {
+  const input = document.getElementById('chat-input');
+  if (!input) return;
+  if (aiMode === 'assistant') { input.value = text; chatSend(); return; }
+  // command chips are templates — put in the box for the user to complete
+  input.value = text;
+  input.focus();
+  const gap = text.indexOf('  ');
+  if (gap !== -1) input.setSelectionRange(gap + 1, gap + 1);
+  else input.setSelectionRange(text.length, text.length);
+}
 let aiSession = null; // { sessionId, originalText, parsed, confidence }
 
 function setAiMode(mode) {
@@ -3905,6 +3973,15 @@ function setAiMode(mode) {
   if (!box || !cardArea) return;
   if (mode === 'understanding') { box.style.display = 'none'; cardArea.style.display = ''; }
   else                          { box.style.display = ''; cardArea.style.display = 'none'; }
+
+  const info = CHAT_MODE_INFO[mode];
+  const input = document.getElementById('chat-input');
+  if (input && info?.ph) input.placeholder = info.ph;
+  renderChatChips(mode);
+  if (info?.hello && !_modeGreeted[mode]) {
+    _modeGreeted[mode] = true;
+    chatAppendMessage('bot', info.hello);
+  }
 }
 
 function confBadgeClass(conf) {
@@ -4225,9 +4302,67 @@ async function findMatchForParsed(parsed) {
   return -1;
 }
 
+// ── Assistant mode: data-aware Q&A ────────────────────────────
+let _assistantHistory = [];
+
+function mdLite(text) {
+  let s = escHtml(String(text || ''));
+  s = s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  s = s.replace(/^\s*[-*]\s+/gm, '• ');
+  return s.replace(/\n/g, '<br>');
+}
+
+async function assistantSend(text) {
+  chatAppendMessage('user', escHtml(text));
+  chatAppendMessage('bot', '💭 Thinking…');
+  try {
+    const data = await apiFetch('/api/ai/assistant', {
+      method: 'POST',
+      body: JSON.stringify({ message: text, history: _assistantHistory.slice(-8), teamId: state.activeOrgId || null }),
+    });
+    _assistantHistory.push({ role: 'user', text }, { role: 'assistant', text: data.reply });
+    chatReplaceLastBot(mdLite(data.reply));
+  } catch (err) {
+    chatReplaceLastBot('❌ ' + escHtml(err.message || 'Assistant unavailable'));
+  }
+}
+
+// ── Command mode: execute natural-language commands ───────────
+async function commandSend(text) {
+  chatAppendMessage('user', escHtml(text));
+  chatAppendMessage('bot', '⚡ Working…');
+  try {
+    const data = await apiFetch('/api/ai/command', {
+      method: 'POST',
+      body: JSON.stringify({ command: text, teamId: state.activeOrgId || null }),
+    });
+    // server messages use <b> for emphasis — re-allow just that tag
+    let html = escHtml(String(data.message || (data.ok ? '✅ Done' : '⚠️ Could not do that')))
+      .replace(/&lt;b&gt;/g, '<b>').replace(/&lt;\/b&gt;/g, '</b>');
+    if (data.action === 'find' && data.results?.length) {
+      html += '<br>' + data.results.map(r =>
+        `• <b>${escHtml(r.factory_number || '—')}</b> ${escHtml(r.factory_name || '')} — ${escHtml(r.stage || '—')}${r.lead_type ? ' · ' + escHtml(r.lead_type) : ''}${r.follow_up ? ' · FU ' + escHtml(r.follow_up) : ''}`
+      ).join('<br>');
+    }
+    chatReplaceLastBot(html);
+    if (data.ok && data.action !== 'find') {
+      await Promise.all([loadLeads(), loadStats()]).catch(() => {});
+    }
+  } catch (err) {
+    chatReplaceLastBot('❌ ' + escHtml(err.message || 'Command failed'));
+  }
+}
+
 // Enhanced chatSend — routes based on current AI mode
 async function chatSend() {
-  if (aiMode !== 'understanding') { return chatSendLegacy(); }
+  if (aiMode !== 'understanding') {
+    const input = document.getElementById('chat-input');
+    const text  = (input?.value || '').trim();
+    if (!text) return;
+    input.value = '';
+    document.getElementById('chat-autocomplete').className = 'chat-autocomplete';
+    return aiMode === 'assistant' ? assistantSend(text) : commandSend(text);
+  }
 
   const input = document.getElementById('chat-input');
   const text  = (input?.value || '').trim();

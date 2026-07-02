@@ -118,9 +118,13 @@ class GeminiProvider {
     this.models = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
   }
 
-  async _call(model, systemPrompt, parts, maxOutputTokens) {
+  async _call(model, systemPrompt, parts, opts = {}) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${this.apiKey}`;
-    const generationConfig = { temperature: 0.1, maxOutputTokens, responseMimeType: 'application/json' };
+    const generationConfig = {
+      temperature:      opts.temperature ?? 0.1,
+      maxOutputTokens:  opts.maxOutputTokens ?? 2000,
+      responseMimeType: opts.responseMimeType ?? 'application/json',
+    };
     // 2.5 models burn output tokens on internal "thinking" by default,
     // which truncates the JSON — disable it for fast extraction.
     if (model.startsWith('gemini-2.5')) generationConfig.thinkingConfig = { thinkingBudget: 0 };
@@ -136,13 +140,30 @@ class GeminiProvider {
     for (const model of this.models) {
       const t0 = Date.now();
       try {
-        const raw = await this._call(model, systemPrompt, parts, maxOutputTokens);
+        const raw = await this._call(model, systemPrompt, parts, { maxOutputTokens });
         const parsed = normaliseItems(parseModelJson(raw));
         return { parsed, model, latency: Date.now() - t0 };
       } catch (err) {
         const code = err.response?.data?.error?.code;
         if ([400, 404, 429, 503].includes(code)) { console.warn(`⚠️ Gemini ${label} ${model} (${code})`); continue; }
         console.error(`Gemini ${label} error:`, err.response?.data?.error?.message || err.message);
+      }
+    }
+    return null;
+  }
+
+  // Free-form text generation (assistant replies, not JSON extraction)
+  async generateText(systemPrompt, userText, maxOutputTokens = 1200) {
+    for (const model of this.models) {
+      const t0 = Date.now();
+      try {
+        const raw = await this._call(model, systemPrompt, [{ text: userText }],
+          { maxOutputTokens, responseMimeType: 'text/plain', temperature: 0.4 });
+        return { text: String(raw || '').trim(), model, latency: Date.now() - t0 };
+      } catch (err) {
+        const code = err.response?.data?.error?.code;
+        if ([400, 404, 429, 503].includes(code)) { console.warn(`⚠️ Gemini assistant ${model} (${code})`); continue; }
+        console.error('Gemini assistant error:', err.response?.data?.error?.message || err.message);
       }
     }
     return null;
@@ -386,6 +407,171 @@ router.get('/ai/debug', authMiddleware, adminOnly, async (req, res, next) => {
     const limit  = Math.min(parseInt(req.query.limit || '50', 10), 200);
     const log    = await db.getAIDebugLog(teamId, limit);
     res.json(log);
+  } catch (err) { next(err); }
+});
+
+// ============================================================
+//  IN-APP ASSISTANT — answers questions about the user's CRM data
+// ============================================================
+const { leadsForRequest } = require('./leads');
+
+function parseFuDate(s) {
+  const m = String(s || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return null;
+  return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+}
+
+function buildAssistantContext(leads) {
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  now.setHours(0, 0, 0, 0);
+  let overdue = 0, dueToday = 0;
+  for (const l of leads) {
+    const d = parseFuDate(l.follow_up);
+    if (!d || l.stage === 'Lost') continue;
+    if (d < now) overdue++;
+    else if (d.getTime() === now.getTime()) dueToday++;
+  }
+  const lines = leads.slice(0, 120).map(l => {
+    const items = (l.items || []).map(i => `${i.product} ${i.quantity}${i.rate ? '@₹' + i.rate : ''}`).join(' + ');
+    return [
+      l.factory_number || '—', l.factory_name || '—', l.person_in_charge || '',
+      l.stage || '', l.lead_type || '', 'FU:' + (l.follow_up || '—'),
+      l.area || '', items, l.created_by ? 'by ' + l.created_by : '',
+    ].filter(Boolean).join(' | ');
+  });
+  return `\n\nCRM SNAPSHOT — ${leads.length} leads visible to this user ` +
+    `(${overdue} overdue follow-ups, ${dueToday} due today).\n` +
+    `Each line: number | name | person | stage | type | follow-up | area | items | owner\n` +
+    lines.join('\n').slice(0, 9000);
+}
+
+const ASSISTANT_PROMPT_BASE =
+`You are the built-in assistant of SalesCRM, used by an adhesive sales team in India.
+Answer questions about the user's CRM data below: counts, pipelines, follow-ups, who to call today, revenue potential (quantity × rate), best next actions.
+Rules:
+- Answer ONLY from the CRM snapshot. If the data doesn't contain the answer, say so.
+- Be concise: a short sentence or a list of at most 10 rows. Use the user's language (English or Hinglish).
+- Format with plain text, **bold** for emphasis, and "- " bullets. No tables, no HTML, no markdown headers.
+- If asked to change data, reply that they can use ⚡ Command mode (e.g. "set M277 stage to won").
+- Dates are dd/MM/yyyy.`;
+
+router.post('/ai/assistant', authMiddleware, async (req, res, next) => {
+  const { message, history = [], teamId } = req.body || {};
+  if (!message || !String(message).trim()) return res.status(400).json({ error: 'message required' });
+  try {
+    let leads = [];
+    try { leads = await leadsForRequest({ user: req.user, query: { teamId: teamId || '' } }); } catch (_) {}
+    const sys = ASSISTANT_PROMPT_BASE +
+      `\n\nTODAY: ${todayISTLabel()} (dd/MM/yyyy, IST).` +
+      buildAssistantContext(leads);
+
+    const convo = (Array.isArray(history) ? history.slice(-8) : [])
+      .map(h => `${h.role === 'user' ? 'User' : 'Assistant'}: ${String(h.text || '').slice(0, 600)}`)
+      .concat(`User: ${String(message).slice(0, 1200)}`)
+      .join('\n');
+
+    const result = await gemini.generateText(sys, convo);
+    if (!result || !result.text) return res.status(422).json({ error: 'Assistant is unavailable right now — try again in a minute.' });
+
+    db.logAiAction(null, 'assistant', 'text', String(message).slice(0, 500),
+      { reply: result.text.slice(0, 1500) }, req.user.username, teamId).catch(() => {});
+    res.json({ reply: result.text, model: result.model, latency: result.latency });
+  } catch (err) { next(err); }
+});
+
+// ============================================================
+//  COMMAND MODE — natural-language commands that execute
+// ============================================================
+const COMMAND_PROMPT =
+`You convert one natural-language CRM command (English or Hinglish) into a JSON action.
+Actions:
+- "update_stage": change a lead's stage. Map to: New Lead=1, Sample Required=2, Sample Sent=3, Quotation=4, Negotiation=5, Order Won=6 ("won"/"jeet gaye"), Repeat Customer=7, Lost=0 ("lost"/"cancel"/"nahi chahiye").
+- "set_followup": set follow-up date (resolve relative dates; output dd/MM/yyyy).
+- "set_lead_type": set temperature Hot/Warm/Cold ("garam"=Hot, "thanda"=Cold).
+- "add_note": append a note to the lead.
+- "find": search leads ("query" = search text).
+- "unsupported": anything else (deleting, creating users, bulk changes…) — set "reason".
+"target" = the factory number (e.g. M277) or factory name mentioned.
+Return ONLY JSON:
+{"action":"","target":"","stage":"","stage_number":null,"date":"","lead_type":"","note":"","query":"","reason":""}`;
+
+const STAGE_BY_NUM = { 0: 'Lost', 1: 'New Lead', 2: 'Sample Required', 3: 'Sample Sent', 4: 'Quotation', 5: 'Negotiation', 6: 'Order Won', 7: 'Repeat Customer' };
+
+router.post('/ai/command', authMiddleware, async (req, res, next) => {
+  const { command, teamId } = req.body || {};
+  if (!command || !String(command).trim()) return res.status(400).json({ error: 'command required' });
+  try {
+    const result = await gemini._generateWithFallback(
+      COMMAND_PROMPT + `\nTODAY: ${todayISTLabel()} (dd/MM/yyyy, IST).`,
+      [{ text: String(command).slice(0, 600) }], 600, 'command');
+    if (!result) return res.status(422).json({ error: 'Could not understand the command — try rephrasing.' });
+    const cmd = result.parsed || {};
+
+    let leads = [];
+    try { leads = await leadsForRequest({ user: req.user, query: { teamId: teamId || '' } }); } catch (_) {}
+
+    // FIND — search and return matches
+    if (cmd.action === 'find') {
+      const q = String(cmd.query || cmd.target || '').toLowerCase().trim();
+      const matches = leads.filter(l =>
+        [l.factory_number, l.factory_name, l.person_in_charge, l.area]
+          .some(v => String(v || '').toLowerCase().includes(q))
+      ).slice(0, 5);
+      return res.json({
+        ok: true, action: 'find',
+        message: matches.length ? `Found ${matches.length} lead${matches.length > 1 ? 's' : ''}:` : `No leads matching "${q}".`,
+        results: matches.map(l => ({
+          rowIndex: l.rowIndex, factory_number: l.factory_number, factory_name: l.factory_name,
+          person_in_charge: l.person_in_charge, stage: l.stage, lead_type: l.lead_type, follow_up: l.follow_up,
+        })),
+      });
+    }
+
+    if (cmd.action === 'unsupported' || !['update_stage', 'set_followup', 'set_lead_type', 'add_note'].includes(cmd.action)) {
+      return res.json({ ok: false, message: cmd.reason || 'I can update stage, follow-up date, lead temperature, or add a note. Deleting must be done from the Leads table.' });
+    }
+
+    // Locate the target lead among the user's visible leads
+    const target = String(cmd.target || '').toLowerCase().trim();
+    if (!target) return res.json({ ok: false, message: 'Which lead? Mention the factory number or name (e.g. "set M277 stage to won").' });
+    const lead = leads.find(l => String(l.factory_number || '').toLowerCase() === target)
+      || leads.find(l => String(l.factory_name || '').toLowerCase().includes(target));
+    if (!lead) return res.json({ ok: false, message: `No lead found for "${cmd.target}" in your view.` });
+    if (req.user.role === 'guest') return res.status(403).json({ error: 'demo_only', message: 'Create an account to save data' });
+    if (lead.can_edit === false) return res.json({ ok: false, message: `You don't have edit access to ${lead.factory_name || lead.factory_number}. Use 🔑 Request on the Leads page.` });
+
+    const rowIndex = parseInt(lead.rowIndex, 10);
+    const label = lead.factory_name || lead.factory_number;
+    let update = {}, message = '';
+
+    if (cmd.action === 'update_stage') {
+      const num = cmd.stage_number != null ? Number(cmd.stage_number) : null;
+      const stage = STAGE_BY_NUM[num] || cmd.stage;
+      if (!stage) return res.json({ ok: false, message: 'Which stage? (New Lead, Sample Sent, Quotation, Negotiation, Order Won, Lost…)' });
+      update = { stage, stage_number: String(num ?? (Object.entries(STAGE_BY_NUM).find(([, s]) => s === stage)?.[0] ?? '')) };
+      message = `✅ ${label} → stage <b>${stage}</b>`;
+    } else if (cmd.action === 'set_followup') {
+      if (!/^\d{2}\/\d{2}\/\d{4}$/.test(cmd.date || '')) return res.json({ ok: false, message: 'Which date? Try "follow up M277 tomorrow" or a dd/MM/yyyy date.' });
+      update = { follow_up: cmd.date };
+      message = `✅ ${label} → follow-up <b>${cmd.date}</b>`;
+    } else if (cmd.action === 'set_lead_type') {
+      if (!['Hot', 'Warm', 'Cold'].includes(cmd.lead_type)) return res.json({ ok: false, message: 'Which temperature — Hot, Warm, or Cold?' });
+      update = { lead_type: cmd.lead_type };
+      message = `✅ ${label} → <b>${cmd.lead_type}</b> lead`;
+    } else if (cmd.action === 'add_note') {
+      const note = String(cmd.note || '').trim();
+      if (!note) return res.json({ ok: false, message: 'What should the note say?' });
+      const existing = String(lead.notes || '').trim();
+      update = { notes: existing ? `${existing} | ${note}` : note };
+      message = `✅ Note added to ${label}`;
+    }
+
+    await db.updateLead(rowIndex, update);
+    db.logLeadActivity(rowIndex, lead.team_id || null, 'edit',
+      `Via AI command by ${req.user.username}: ${String(command).slice(0, 120)}`, {}, req.user.username).catch(() => {});
+    db.logAiAction(rowIndex, 'command', 'text', String(command).slice(0, 500), cmd, req.user.username, teamId).catch(() => {});
+
+    res.json({ ok: true, action: cmd.action, message, rowIndex });
   } catch (err) { next(err); }
 });
 

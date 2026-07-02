@@ -222,9 +222,19 @@ function hideLoginPage() {
 function applyRoleUI() {
   const isAdmin = state.role === 'admin';
   document.querySelectorAll('.admin-only').forEach(el => el.style.display = isAdmin ? '' : 'none');
-  const userEl = document.getElementById('current-user');
   const name   = localStorage.getItem('crm_user') || '';
+  const userEl = document.getElementById('current-user');
   if (userEl) userEl.textContent = `${name} (${state.role || '?'})`;
+
+  // New sidebar user card
+  const avatarEl = document.getElementById('sidebar-avatar');
+  const nameEl   = document.getElementById('sidebar-username');
+  const roleEl   = document.getElementById('sidebar-role');
+  const initials = name ? name.trim().replace(/[^a-zA-Z0-9]/g, ' ').trim().split(/\s+/)
+    .slice(0, 2).map(w => w[0]).join('').toUpperCase() || name[0].toUpperCase() : '?';
+  if (avatarEl) avatarEl.textContent = initials;
+  if (nameEl)   nameEl.textContent   = name || 'Guest';
+  if (roleEl)   roleEl.textContent   = (state.role || 'user').replace(/^\w/, c => c.toUpperCase());
   if (window.SimpleWebAuthnBrowser?.browserSupportsWebAuthn()) {
     const bioBtn = document.getElementById('btn-enable-biometric');
     if (bioBtn) {
@@ -1245,32 +1255,67 @@ function escAttr(v) {
 // ============================================================
 //  Dashboard
 // ============================================================
+function renderDashHero() {
+  const name = (localStorage.getItem('crm_user') || '').trim();
+  const first = name ? name.split(/[\s._]/)[0].replace(/^\w/, c => c.toUpperCase()) : '';
+  const hour = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour: 'numeric', hour12: false });
+  const h = parseInt(hour, 10);
+  const part = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+  const emoji = h < 12 ? '☀️' : h < 17 ? '👋' : '🌙';
+  const greetEl = document.getElementById('dash-greeting');
+  if (greetEl) greetEl.innerHTML = `${part}${first ? ', ' + escHtml(first) : ''} ${emoji}`;
+
+  // Live subline from data
+  const sub = document.getElementById('dash-subline');
+  if (sub) {
+    const today = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric' });
+    let overdue = 0, dueToday = 0;
+    for (const l of state.leads) {
+      const fu = String(l.follow_up || '').trim();
+      if (!fu || l.stage === 'Lost') continue;
+      const parts = fu.split(/[\/\-]/);
+      if (parts.length < 3) continue;
+      const d = new Date(+parts[2], +parts[1] - 1, +parts[0]); d.setHours(0,0,0,0);
+      const t = new Date(); t.setHours(0,0,0,0);
+      if (d < t) overdue++; else if (d.getTime() === t.getTime()) dueToday++;
+    }
+    const bits = [];
+    if (dueToday) bits.push(`<b class="hero-hot">${dueToday}</b> follow-up${dueToday>1?'s':''} due today`);
+    if (overdue)  bits.push(`<b class="hero-warn">${overdue}</b> overdue`);
+    sub.innerHTML = bits.length
+      ? `${today} · ${bits.join(' · ')}`
+      : `${today} · You're all caught up — no follow-ups pending. 🎉`;
+  }
+}
+
 function renderDashboard() {
   const s = state.stats;
   if (!s || !s.by_stage) return;
 
-  document.getElementById('stat-cards').innerHTML = `
-    <div class="stat-card stat-accent-blue">
-      <div class="stat-label">Total Leads</div>
-      <div class="stat-value">${s.total}</div>
-      <div class="stat-sub">All time</div>
-    </div>
-    <div class="stat-card stat-accent-amber">
-      <div class="stat-label">Active</div>
-      <div class="stat-value">${s.active}</div>
-      <div class="stat-sub">In pipeline</div>
-    </div>
-    <div class="stat-card stat-accent-green">
-      <div class="stat-label">Won</div>
-      <div class="stat-value">${s.won}</div>
-      <div class="stat-sub">Order Won + Repeat</div>
-    </div>
-    <div class="stat-card stat-accent-red">
-      <div class="stat-label">Lost</div>
-      <div class="stat-value">${s.lost}</div>
-      <div class="stat-sub">Marked Lost</div>
-    </div>
-  `;
+  renderDashHero();
+
+  const winRate = s.won + s.lost > 0 ? Math.round((s.won / (s.won + s.lost)) * 100) : 0;
+  const ICONS = {
+    total: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+    active: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+    won: '<path d="M20 6 9 17l-5-5"/>',
+    lost: '<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>',
+  };
+  const card = (accent, key, label, value, sub) => `
+    <div class="stat-card stat-${accent}">
+      <div class="stat-top">
+        <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[key]}</svg></span>
+        <span class="stat-label">${label}</span>
+      </div>
+      <div class="stat-value">${value}</div>
+      <div class="stat-sub">${sub}</div>
+    </div>`;
+
+  document.getElementById('stat-cards').innerHTML =
+    card('blue',  'total',  'Total Leads', s.total,  'All time') +
+    card('amber', 'active', 'Active',      s.active, 'In pipeline') +
+    card('green', 'won',    'Won',         s.won,    `${winRate}% win rate`) +
+    card('red',   'lost',   'Lost',        s.lost,   'Marked Lost');
 
   // Pipeline by Stage — doughnut with center total
   renderChart('chart-stage', 'doughnut',

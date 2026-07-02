@@ -16,7 +16,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=6" />
+  <link rel="stylesheet" href="style.css?v=7" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -232,53 +232,88 @@
     <!-- ── Sidebar ─────────────────────────────────────────── -->
     <aside id="sidebar">
       <div class="sidebar-brand">
-        <span class="brand-icon">◈</span>
-        <span class="brand-name">SalesCRM</span>
+        <span class="brand-mark">◈</span>
+        <span class="brand-text">
+          <span class="brand-name">SalesCRM</span>
+          <span class="brand-tag">Smart Sales OS</span>
+        </span>
       </div>
 
       <nav class="sidebar-nav">
+        <div class="nav-section">Menu</div>
         <a class="nav-item active" data-page="dashboard">
-          <span class="nav-icon">⬡</span> Dashboard
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+          <span class="nav-label">Dashboard</span>
         </a>
         <a class="nav-item" data-page="leads">
-          <span class="nav-icon">◎</span> Leads
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span class="nav-label">Leads</span>
         </a>
         <a class="nav-item" data-page="pipeline">
-          <span class="nav-icon">◈</span> Pipeline
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+          <span class="nav-label">Pipeline</span>
         </a>
         <a class="nav-item" data-page="followups">
-          <span class="nav-icon">◷</span> Follow-ups
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+          <span class="nav-label">Follow-ups</span>
         </a>
         <a class="nav-item" data-page="reports">
-          <span class="nav-icon">◫</span> Reports
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="20" x2="4" y2="12"/><line x1="10" y1="20" x2="10" y2="4"/><line x1="16" y1="20" x2="16" y2="9"/><line x1="22" y1="20" x2="2" y2="20"/></svg>
+          <span class="nav-label">Reports</span>
+        </a>
+
+        <div class="nav-section">Workspace</div>
+        <a class="nav-item" data-page="chat">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7A8.38 8.38 0 0 1 4 11.5 8.5 8.5 0 0 1 12.5 3 8.38 8.38 0 0 1 21 11.5z"/></svg>
+          <span class="nav-label">AI Chat</span>
+          <span class="nav-pill">AI</span>
         </a>
         <a class="nav-item admin-only" data-page="team" style="display:none">
-          <span class="nav-icon">👥</span> Team
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span class="nav-label">Team</span>
         </a>
         <a class="nav-item" data-page="workspace">
-          <span class="nav-icon">🏢</span> Workspace
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-4"/><line x1="9" y1="9" x2="9" y2="9.01"/><line x1="9" y1="13" x2="9" y2="13.01"/><line x1="9" y1="17" x2="9" y2="17.01"/></svg>
+          <span class="nav-label">Workspace</span>
         </a>
         <a class="nav-item" data-page="map">
-          <span class="nav-icon">◉</span> Map
-        </a>
-        <a class="nav-item" data-page="chat">
-          <span class="nav-icon">💬</span> Chat
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+          <span class="nav-label">Map</span>
         </a>
         <a class="nav-item admin-only" data-page="ai-debug" style="display:none">
-          <span class="nav-icon">🧠</span> AI Debug
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="6" height="6" rx="1"/><rect x="4" y="4" width="16" height="16" rx="2"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+          <span class="nav-label">AI Debug</span>
         </a>
       </nav>
 
       <div class="sidebar-footer">
-        <div class="sidebar-badge">
-          <span class="dot dot-green"></span> Bot Active
-        </div>
-        <div id="current-user" class="sidebar-user"></div>
         <button id="btn-enable-biometric" class="btn-biometric-enable hidden" onclick="enableBiometric()">🔐 Enable Biometric Login</button>
-        <button class="btn-profile" onclick="openProfileModal()">✏️ Edit Profile</button>
-        <button class="btn-profile" onclick="openSecurityPanel()" style="margin-top:0">🔒 Security</button>
-        <button class="btn-switch-account" onclick="switchAccount()">🔄 Switch Account</button>
-        <button class="btn-logout" onclick="logout()">Sign out</button>
+        <div class="user-card">
+          <div class="user-avatar" id="sidebar-avatar">?</div>
+          <div class="user-meta">
+            <div class="user-name" id="sidebar-username">—</div>
+            <div class="user-role"><span class="user-status-dot"></span><span id="sidebar-role">—</span></div>
+          </div>
+          <button class="user-card-btn" title="Edit profile" onclick="openProfileModal()">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+        </div>
+        <div id="current-user" class="sidebar-user hidden"></div>
+        <div class="sidebar-actions">
+          <button class="sb-action" onclick="openSecurityPanel()" title="Security">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <span>Security</span>
+          </button>
+          <button class="sb-action" onclick="switchAccount()" title="Switch account">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+            <span>Switch</span>
+          </button>
+          <button class="sb-action sb-action-danger" onclick="logout()" title="Sign out">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            <span>Sign out</span>
+          </button>
+        </div>
+        <div class="sidebar-badge"><span class="dot dot-green"></span> Bot Active · synced</div>
       </div>
     </aside>
 
@@ -316,6 +351,22 @@
 
         <!-- ── DASHBOARD ──────────────────────────────────── -->
         <section id="page-dashboard" class="page active">
+          <div class="dash-hero" id="dash-hero">
+            <div class="dash-hero-text">
+              <h2 id="dash-greeting">Welcome back</h2>
+              <p id="dash-subline">Here's what's happening with your pipeline today.</p>
+            </div>
+            <div class="dash-hero-actions">
+              <button class="btn btn-ghost dash-hero-btn" onclick="navigate('followups')">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+                Today's Follow-ups
+              </button>
+              <button class="btn btn-primary dash-hero-btn" onclick="openAddModal()">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Add Lead
+              </button>
+            </div>
+          </div>
           <div class="stat-grid" id="stat-cards"></div>
 
           <div class="row-2col">

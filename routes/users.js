@@ -5,7 +5,7 @@ const { pool } = require('../db');
 const db      = require('../db');
 const {
   authMiddleware, adminOnly,
-  signToken,
+  signAccessToken,
   teamMemberMiddleware, teamAdminMiddleware,
   requirePermission, PERMISSIONS,
 } = require('../middleware/auth');
@@ -34,8 +34,9 @@ router.post('/users', authMiddleware, adminOnly, async (req, res, next) => {
   if (!pin || !/^\d{4,6}$/.test(String(pin))) return res.status(400).json({ error: 'PIN must be 4–6 digits' });
   const safeRole = ['admin', 'sales'].includes(role) ? role : 'sales';
   try {
-    const user = await db.createUser(name.trim(), String(pin), safeRole, '');
-    res.json({ success: true, user });
+    const result = await db.createUser(name.trim(), String(pin), safeRole, '');
+    if (!result.ok) return res.status(409).json({ error: result.message || 'A user with this name already exists' });
+    res.json({ success: true });
   } catch (err) {
     if (err.message?.includes('UNIQUE') || err.message?.includes('unique'))
       return res.status(409).json({ error: 'A user with this name already exists' });
@@ -138,7 +139,7 @@ router.patch('/users/me/profile', authMiddleware, async (req, res, next) => {
       if (!/^\d{4,6}$/.test(String(pin))) return res.status(400).json({ error: 'PIN must be 4-6 digits' });
       await db.updateUserPin(user.id, pin);
     }
-    const newToken = signToken(newName, user.role);
+    const newToken = signAccessToken(user.id, newName, user.role, req.user.sessionId || null);
     res.json({ ok: true, token: newToken, username: newName, role: user.role });
   } catch (err) { next(err); }
 });

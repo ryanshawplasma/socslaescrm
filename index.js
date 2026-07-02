@@ -29,7 +29,19 @@ const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 
 // ── Core middleware ────────────────────────────────────────────
 app.set('trust proxy', 1);
-app.use(express.json());
+app.disable('x-powered-by');
+// Large limit: voice notes are sent as base64 JSON (default 100kb rejects them)
+app.use(express.json({ limit: '25mb' }));
+
+// Security headers
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), payment=(), usb=()');
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ── Health check ──────────────────────────────────────────────
@@ -42,7 +54,18 @@ app.use('/uploads', express.static(uploadsDir));
 
 // ── Socket.IO — Live Agent Location ───────────────────────────
 const agentLocations = {};
+const AGENT_TTL_MS = 10 * 60 * 1000;
+
+function pruneStaleAgents() {
+  const cutoff = Date.now() - AGENT_TTL_MS;
+  for (const [id, loc] of Object.entries(agentLocations)) {
+    if (loc.ts < cutoff) delete agentLocations[id];
+  }
+}
+setInterval(pruneStaleAgents, 60 * 1000).unref();
+
 io.on('connection', (socket) => {
+  pruneStaleAgents();
   if (Object.keys(agentLocations).length) socket.emit('agents-snapshot', agentLocations);
   socket.on('update-agent-location', ({ agentId, lat, lng, name, accuracy }) => {
     if (!agentId || lat == null || lng == null) return;
@@ -131,8 +154,9 @@ async function startServer() {
 
   httpServer.listen(PORT, () => {
     console.log(`\n🚀 SalesCRM running at http://localhost:${PORT}`);
-    console.log(`   Database    : PostgreSQL (Aiven)`);
-    console.log(`   Admin login : ${ADMIN_USER} / ${ADMIN_PASS}`);
+    console.log(`   Database    : PostgreSQL`);
+    if (!process.env.JWT_SECRET) console.warn('   ⚠️  JWT_SECRET is not set — using an insecure default. Set it in production!');
+    if (!process.env.ADMIN_PASS) console.warn('   ⚠️  ADMIN_PASS is not set — the seeded admin uses the default password. Set it in production!');
     startDailyBriefings();
     if (usePolling()) {
       console.log('   Mode        : POLLING (no webhook URL set)');

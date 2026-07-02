@@ -8,9 +8,9 @@ const { authMiddleware, adminOnly, noGuest, requireLeadAccess } = require('../mi
 const router = express.Router();
 
 const DEMO_LEADS = [
-  { id: 9001, factory_number: 'D1', factory_name: 'Arun Enterprises', person_in_charge: 'Arun Sharma', contact: '+91 98100 00001', lead_type: 'Hot', stage: 'Sample Sent', notes: 'Interested in Hotmelt', created_by: 'demo', last_updated: '', items: [], contacts: [] },
-  { id: 9002, factory_number: 'D2', factory_name: 'Mehta Industries',  person_in_charge: 'Priya Mehta',  contact: '+91 98200 00002', lead_type: 'Warm', stage: 'Quotation', notes: 'Asked for brochure', created_by: 'demo', last_updated: '', items: [], contacts: [] },
-  { id: 9003, factory_number: 'D3', factory_name: 'Joshi Trading',     person_in_charge: 'Vikram Joshi', contact: '+91 98300 00003', lead_type: 'Cold', stage: 'New Lead', notes: 'Found via referral', created_by: 'demo', last_updated: '', items: [], contacts: [] },
+  { id: 9001, factory_number: 'D1', factory_name: 'Arun Enterprises', person_in_charge: 'Arun Sharma', contact: '+91 98100 00001', lead_type: 'Hot', stage: 'Sample Sent', stage_number: '3', notes: 'Interested in Hotmelt', created_by: 'demo', last_updated: '', items: [{ product: 'Hotmelt', quantity: '500 kg', rate: '120' }], contacts: [] },
+  { id: 9002, factory_number: 'D2', factory_name: 'Mehta Industries',  person_in_charge: 'Priya Mehta',  contact: '+91 98200 00002', lead_type: 'Warm', stage: 'Quotation', stage_number: '4', notes: 'Asked for brochure', created_by: 'demo', last_updated: '', items: [{ product: 'Solvent', quantity: '200 ltr', rate: '80' }], contacts: [] },
+  { id: 9003, factory_number: 'D3', factory_name: 'Joshi Trading',     person_in_charge: 'Vikram Joshi', contact: '+91 98300 00003', lead_type: 'Cold', stage: 'New Lead', stage_number: '1', notes: 'Found via referral', created_by: 'demo', last_updated: '', items: [{ product: 'Rubber Adhesive', quantity: '100 kg', rate: '150' }], contacts: [] },
 ];
 
 // ── GET /api/leads ────────────────────────────────────────────
@@ -57,12 +57,14 @@ router.put('/leads/:row', authMiddleware, noGuest, requireLeadAccess, async (req
         `Lead updated by ${req.user.username}`, {}, req.user.username).catch(() => {});
     }
 
-    // Field-level history: diff changed fields
+    // Field-level history: only log fields that actually changed
     const trackFields = ['factory_name','person_in_charge','contact','stage','follow_up','notes','area','lead_type'];
     for (const field of trackFields) {
-      if (req.body[field] !== undefined) {
-        db.logLeadHistory(rowId, req.user.username, field, '', req.body[field], req.body.team_id || null).catch(() => {});
-      }
+      const newVal = req.body[field];
+      if (newVal === undefined) continue;
+      const oldVal = before ? String(before[field] ?? '') : '';
+      if (String(newVal) === oldVal) continue;
+      db.logLeadHistory(rowId, req.user.username, field, oldVal, newVal, req.body.team_id || before?.team_id || null).catch(() => {});
     }
 
     if (req.body.stage === 'Order Won') {
@@ -134,9 +136,11 @@ router.post('/leads/:id/claim', authMiddleware, async (req, res, next) => {
 // ── GET /api/stats ────────────────────────────────────────────
 router.get('/stats', authMiddleware, async (req, res, next) => {
   try {
-    const leads = req.user.role === 'admin'
-      ? await db.getLeads()
-      : await db.getLeadsForUser(req.user.username);
+    const leads = req.user.role === 'guest'
+      ? DEMO_LEADS
+      : req.user.role === 'admin'
+        ? await db.getLeads()
+        : await db.getLeadsForUser(req.user.username);
     const byStage = {}, byProduct = {}, byProductRevenue = {};
     let won = 0, lost = 0;
     for (const l of leads) {

@@ -201,13 +201,14 @@ function clarificationEngine(fields, confidence, threshold = 0.70) {
 }
 
 // ── Full Understanding Pipeline ───────────────────────────────
-async function runUnderstandingPipeline(text, teamId, userId, sessionId) {
+async function runUnderstandingPipeline(text, teamId, username, sessionId) {
   const t0 = Date.now();
 
-  // 1. Preprocessing
+  // 1. Preprocessing (personal vocab is keyed by numeric user id)
+  const user = username ? await db.getUserByName(username).catch(() => null) : null;
   const [teamVocab, personalVocab] = await Promise.all([
     teamId ? db.getVocab(teamId) : [],
-    userId ? db.getPersonalVocab(userId) : [],
+    user?.id ? db.getPersonalVocab(user.id) : [],
   ]);
   const { cleanedText, substitutions } = preprocessInput(text, teamVocab, personalVocab);
 
@@ -228,9 +229,7 @@ async function runUnderstandingPipeline(text, teamId, userId, sessionId) {
   const clarification = clarificationEngine(parsed, confidence);
 
   // 5. Audit log
-  db.logAiAction(null, 'understand', 'text', text, parsed, userId, teamId, {
-    sessionId, model, latency: Date.now() - t0, substitutions, confidence,
-  }).catch(() => {});
+  db.logAiAction(null, 'understand', 'text', text, parsed, username, teamId).catch(() => {});
 
   return {
     sessionId,

@@ -28,6 +28,6 @@ setInterval(() => {
   for (const [key, entry] of store.entries()) {
     if (now > entry.expiresAt) store.delete(key);
   }
-}, 5 * 60 * 1000);
+}, 5 * 60 * 1000).unref();
 
 module.exports = { put, get, remove };

@@ -799,7 +799,8 @@ async function getUserByTelegramId(telegramUserId) {
 }
 
 async function updateUserPin(userId, newPin) {
-  await pool.query(`UPDATE users SET pin_hash = $1 WHERE id = $2`, [hashPin(newPin), userId]);
+  const pinHash = await bcrypt.hash(String(newPin), 10);
+  await pool.query(`UPDATE users SET pin_hash = $1 WHERE id = $2`, [pinHash, userId]);
   return { ok: true };
 }
 
@@ -1383,9 +1384,7 @@ async function logAiAction(leadId, action, inputType, rawInput, parsedJson, save
 
 // ── Lead security helpers ─────────────────────────────────────
 async function getLeadById(id) {
-  const { rows } = await pool.query(
-    `SELECT id, created_by, team_id FROM leads WHERE id=$1`, [id]
-  );
+  const { rows } = await pool.query(`SELECT * FROM leads WHERE id=$1`, [id]);
   return rows[0] || null;
 }
 

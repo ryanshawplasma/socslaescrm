@@ -22,10 +22,12 @@ const {
 const router = express.Router();
 
 const PORT = process.env.PORT || 3000;
-const ADMIN_USER = process.env.ADMIN_USER || 'admin';
-const ADMIN_PASS = process.env.ADMIN_PASS || 'admin123';
-const SALES_USER = process.env.SALES_USER || 'sales';
-const SALES_PASS = process.env.SALES_PASS || 'sales123';
+// Env-credential fast-path only works when explicitly configured —
+// no hardcoded fallbacks (the seeded DB admin covers first-boot login).
+const ADMIN_USER = process.env.ADMIN_USER || '';
+const ADMIN_PASS = process.env.ADMIN_PASS || '';
+const SALES_USER = process.env.SALES_USER || '';
+const SALES_PASS = process.env.SALES_PASS || '';
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -52,8 +54,10 @@ router.post(['/auth/login', '/login'], loginLimiter, async (req, res, next) => {
   if (!cred || !secret) return res.status(400).json({ error: 'Credential and password/PIN are required' });
 
   try {
-    if ((cred === ADMIN_USER && secret === ADMIN_PASS) || (cred === SALES_USER && secret === SALES_PASS)) {
-      const role     = cred === ADMIN_USER ? 'admin' : 'sales';
+    const envAdminMatch = ADMIN_USER && ADMIN_PASS && cred === ADMIN_USER && secret === ADMIN_PASS;
+    const envSalesMatch = SALES_USER && SALES_PASS && cred === SALES_USER && secret === SALES_PASS;
+    if (envAdminMatch || envSalesMatch) {
+      const role     = envAdminMatch ? 'admin' : 'sales';
       const dbUser   = await db.getUserByCredential(cred);
       const userId   = dbUser?.id || 0;
       let   session  = null;

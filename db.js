@@ -1615,6 +1615,49 @@ async function logCorrection(sessionId, fieldName, originalValue, correctedValue
   ).catch(() => {});
 }
 
+// How many times has this user made this exact correction?
+async function countSameCorrection(userId, fieldName, originalValue, correctedValue) {
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM ai_corrections
+     WHERE user_id = $1 AND field_name = $2
+       AND LOWER(original_value) = LOWER($3) AND LOWER(corrected_value) = LOWER($4)`,
+    [userId, fieldName, originalValue, correctedValue]
+  );
+  return rows[0]?.n || 0;
+}
+
+// Recurring corrections (2+ times) for this user/team — fed back into the prompt
+async function getLearnedCorrections(userId, teamId) {
+  const { rows } = await pool.query(
+    `SELECT field_name, original_value, corrected_value, COUNT(*)::int AS times
+     FROM ai_corrections
+     WHERE original_value <> '' AND corrected_value <> ''
+       AND LOWER(original_value) <> LOWER(corrected_value)
+       AND (($1::int IS NOT NULL AND user_id = $1) OR ($2::int IS NOT NULL AND team_id = $2))
+     GROUP BY field_name, original_value, corrected_value
+     HAVING COUNT(*) >= 2
+     ORDER BY times DESC LIMIT 25`,
+    [userId || null, teamId || null]
+  );
+  return rows;
+}
+
+// The user's own habits: what they sell, where they operate
+async function getUserStyleStats(username) {
+  const { rows: products } = await pool.query(
+    `SELECT li.product, COUNT(*)::int AS n
+     FROM lead_items li JOIN leads l ON l.id = li.lead_id
+     WHERE l.created_by = $1 AND li.product <> ''
+     GROUP BY li.product ORDER BY n DESC LIMIT 5`, [username]);
+  const { rows: areas } = await pool.query(
+    `SELECT area, COUNT(*)::int AS n FROM leads
+     WHERE created_by = $1 AND area <> ''
+     GROUP BY area ORDER BY n DESC LIMIT 3`, [username]);
+  const { rows: [counts] } = await pool.query(
+    `SELECT COUNT(*)::int AS total FROM leads WHERE created_by = $1`, [username]);
+  return { products, areas, total: counts?.total || 0 };
+}
+
 async function getAIDebugLog(teamId, limit = 50) {
   const { rows } = await pool.query(
     `SELECT id, lead_id, action, input_type, raw_input, saved_by, parsed_json, created_at
@@ -1693,6 +1736,7 @@ module.exports = {
   getPersonalVocab, addPersonalVocab, deletePersonalVocab,
   // AI learning + debug
   logCorrection, getAIDebugLog,
+  countSameCorrection, getLearnedCorrections, getUserStyleStats,
   // CRM search
   searchBusinesses, searchContacts,
   bcrypt,

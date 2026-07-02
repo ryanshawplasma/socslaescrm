@@ -2831,3 +2831,16 @@ tr.row-cold:hover td { background: #dbeafe; }
   line-height: 1.5;
   word-break: break-word;
 }
+
+/* ── AI learning badge ─────────────────────────────────────── */
+.ai-learn-badge {
+  margin: 6px 12px 0;
+  padding: 5px 10px;
+  display: inline-block;
+  background: linear-gradient(90deg, rgba(94,106,210,.10), rgba(94,106,210,.03));
+  border: 1px solid rgba(94,106,210,.25);
+  border-radius: 999px;
+  font-size: 11.5px;
+  color: var(--primary);
+  font-weight: 500;
+}

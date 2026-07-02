@@ -4,6 +4,7 @@ const express = require('express');
 const axios   = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const db      = require('../db');
+const cache   = require('../cache');
 const { authMiddleware, adminOnly } = require('../middleware/auth');
 
 const router = express.Router();
@@ -73,7 +74,7 @@ function todayISTLabel() {
   });
 }
 
-function buildSystemPrompt(vocab = []) {
+function buildSystemPrompt(vocab = [], extra = '') {
   let prompt = CRM_SYSTEM_PROMPT +
     `\n\nTODAY'S DATE: ${todayISTLabel()} (dd/MM/yyyy, IST timezone). Resolve ALL relative dates against this: ` +
     `"kal"/"tomorrow" = today+1 day, "parso" = today+2, "next week" = today+7, "in 2 weeks" = today+14, ` +
@@ -82,7 +83,45 @@ function buildSystemPrompt(vocab = []) {
     prompt += '\n\nCOMPANY VOCABULARY (treat as exact synonyms during extraction):\n' +
       vocab.map(v => `"${v.alias}" → "${v.canonical}"`).join('; ');
   }
+  if (extra) prompt += '\n\n' + extra;
   return prompt;
+}
+
+// ── Per-user learning context (cached 5 min) ──────────────────
+// Feeds the user's past corrections and habits back into the prompt so
+// the AI adapts to how each person actually types and talks.
+async function buildUserLearningContext(username, teamId) {
+  if (!username) return { text: '', corrections: 0, profiled: false };
+  const cacheKey = `learn_${username}_${teamId || 0}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  let corrections = [], style = null;
+  try {
+    const user = await db.getUserByName(username);
+    [corrections, style] = await Promise.all([
+      db.getLearnedCorrections(user?.id || null, teamId ? parseInt(teamId, 10) : null).catch(() => []),
+      db.getUserStyleStats(username).catch(() => null),
+    ]);
+  } catch (_) {}
+
+  const parts = [];
+  if (corrections.length) {
+    parts.push('LEARNED FROM THIS USER\'S PAST CORRECTIONS (apply these automatically when you see the left value):\n' +
+      corrections.map(c => `"${c.original_value}" → "${c.corrected_value}" (${c.field_name}, corrected ${c.times}×)`).join('\n'));
+  }
+  if (style && style.total >= 3) {
+    const prods = (style.products || []).map(p => `${p.product}(${p.n})`).join(', ');
+    const areas = (style.areas || []).map(a => a.area).join(', ');
+    parts.push(`THIS USER'S HABITS (${style.total} leads): ` +
+      (prods ? `usually sells ${prods}. ` : '') +
+      (areas ? `Usual areas: ${areas}. ` : '') +
+      'Prefer these interpretations when the input is ambiguous.');
+  }
+
+  const out = { text: parts.join('\n\n'), corrections: corrections.length, profiled: !!(style && style.total >= 3) };
+  cache.put(cacheKey, out, 300);
+  return out;
 }
 
 // Tolerant JSON extraction: strips code fences, falls back to the
@@ -169,12 +208,12 @@ class GeminiProvider {
     return null;
   }
 
-  async generate(userText, vocab = []) {
-    return this._generateWithFallback(buildSystemPrompt(vocab), [{ text: userText }], 2000, 'text');
+  async generate(userText, vocab = [], extra = '') {
+    return this._generateWithFallback(buildSystemPrompt(vocab, extra), [{ text: userText }], 2000, 'text');
   }
 
-  async generateFromAudio(audioBase64, mimeType = 'audio/ogg', vocab = []) {
-    const voicePrompt = buildSystemPrompt(vocab) +
+  async generateFromAudio(audioBase64, mimeType = 'audio/ogg', vocab = [], extra = '') {
+    const voicePrompt = buildSystemPrompt(vocab, extra) +
       '\n\nThe user sent a VOICE NOTE — it may be in Hindi, English, or Hinglish (mixed). ' +
       'First transcribe the audio carefully (keep product names and numbers exact), then extract CRM fields from the transcription. ' +
       'Add a "_transcript" key to the JSON containing your exact transcription of the audio.';
@@ -184,8 +223,8 @@ class GeminiProvider {
     ], 2500, 'voice');
   }
 
-  async generateFromImage(imageBase64, mimeType = 'image/jpeg', caption = '', vocab = []) {
-    const imagePrompt = buildSystemPrompt(vocab) +
+  async generateFromImage(imageBase64, mimeType = 'image/jpeg', caption = '', vocab = [], extra = '') {
+    const imagePrompt = buildSystemPrompt(vocab, extra) +
       '\n\nThe user sent a PHOTO — it may be a business card, shop/factory signboard, letterhead, product label, ' +
       'or a handwritten note (possibly in Hindi/Devanagari). Read ALL text in the image and extract CRM fields from it. ' +
       'Business cards: the company name → factory_name, the person\'s name → person_in_charge, phone → contact, city → area. ' +
@@ -286,12 +325,15 @@ async function runUnderstandingPipeline(text, teamId, username, sessionId) {
   ]);
   const { cleanedText, substitutions } = preprocessInput(text, teamVocab, personalVocab);
 
-  // 2. CRM context
-  const crmContext = await buildCRMContext(cleanedText, teamId);
-  const augmented  = crmContext ? `${cleanedText}\n\n[CRM CONTEXT]\n${crmContext}` : cleanedText;
+  // 2. CRM context + per-user learning context
+  const [crmContext, learning] = await Promise.all([
+    buildCRMContext(cleanedText, teamId),
+    buildUserLearningContext(username, teamId),
+  ]);
+  const augmented = crmContext ? `${cleanedText}\n\n[CRM CONTEXT]\n${crmContext}` : cleanedText;
 
   // 3. Gemini
-  const result = await gemini.generate(augmented, []);
+  const result = await gemini.generate(augmented, [], learning.text);
   if (!result) {
     return { error: 'Could not parse — try again with more detail.', fallback: localParse(cleanedText) };
   }
@@ -314,6 +356,7 @@ async function runUnderstandingPipeline(text, teamId, username, sessionId) {
     latency: Date.now() - t0,
     needsClarification: !!clarification,
     clarification,
+    learning: { corrections: learning.corrections, profiled: learning.profiled, vocab: teamVocab.length + personalVocab.length },
   };
 }
 
@@ -335,8 +378,11 @@ router.post('/ai/understand/voice', authMiddleware, async (req, res, next) => {
   const { audioBase64, mimeType = 'audio/webm', teamId } = req.body || {};
   if (!audioBase64) return res.status(400).json({ error: 'audioBase64 required' });
   try {
-    const vocab = await db.getVocab(teamId || null).catch(() => []);
-    const audioResult = await gemini.generateFromAudio(audioBase64, mimeType, vocab);
+    const [vocab, learning] = await Promise.all([
+      db.getVocab(teamId || null).catch(() => []),
+      buildUserLearningContext(req.user.username, teamId),
+    ]);
+    const audioResult = await gemini.generateFromAudio(audioBase64, mimeType, vocab, learning.text);
     if (!audioResult) return res.status(422).json({ error: 'Could not parse audio — try speaking more clearly or use text instead.' });
 
     const { parsed, model, latency } = audioResult;
@@ -359,8 +405,11 @@ router.post('/ai/understand/image', authMiddleware, async (req, res, next) => {
   const { imageBase64, mimeType = 'image/jpeg', caption = '', teamId } = req.body || {};
   if (!imageBase64) return res.status(400).json({ error: 'imageBase64 required' });
   try {
-    const vocab = await db.getVocab(teamId || null).catch(() => []);
-    const imgResult = await gemini.generateFromImage(imageBase64, mimeType, String(caption).slice(0, 500), vocab);
+    const [vocab, learning] = await Promise.all([
+      db.getVocab(teamId || null).catch(() => []),
+      buildUserLearningContext(req.user.username, teamId),
+    ]);
+    const imgResult = await gemini.generateFromImage(imageBase64, mimeType, String(caption).slice(0, 500), vocab, learning.text);
     if (!imgResult) return res.status(422).json({ error: 'Could not read the image — try a clearer, well-lit photo.' });
 
     const { parsed, model, latency } = imgResult;
@@ -389,14 +438,32 @@ router.post('/ai/clarify', authMiddleware, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// ── POST /api/ai/correct — log correction for learning ────────
+// ── POST /api/ai/correct — log correction + auto-learn ────────
+const LEARNABLE_FIELDS = ['factory_name', 'person_in_charge', 'area', 'product', 'factory_number'];
+
 router.post('/ai/correct', authMiddleware, async (req, res, next) => {
   const { sessionId, field, originalValue, correctedValue, rawInput, teamId } = req.body || {};
   if (!field || correctedValue === undefined) return res.status(400).json({ error: 'field and correctedValue required' });
   try {
     const user = await db.getUserByName(req.user.username);
     await db.logCorrection(sessionId, field, originalValue, correctedValue, rawInput, user?.id, teamId);
-    res.json({ ok: true });
+
+    // Auto-learn: the same fix made twice becomes a personal vocab rule
+    let learned = false;
+    const orig = String(originalValue || '').trim();
+    const corr = String(correctedValue || '').trim();
+    if (user && LEARNABLE_FIELDS.includes(field) &&
+        orig && corr && orig.toLowerCase() !== corr.toLowerCase() &&
+        orig.length <= 40 && corr.length <= 60) {
+      const times = await db.countSameCorrection(user.id, field, orig, corr).catch(() => 0);
+      if (times >= 2) {
+        await db.addPersonalVocab(user.id, orig, corr).catch(() => {});
+        cache.remove(`learn_${req.user.username}_${teamId || 0}`);
+        cache.remove(`learn_${req.user.username}_0`);
+        learned = true;
+      }
+    }
+    res.json({ ok: true, learned, alias: learned ? orig : undefined, canonical: learned ? corr : undefined });
   } catch (err) { next(err); }
 });
 

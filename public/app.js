@@ -2628,16 +2628,43 @@ function chatInsertChip(text) {
 function chatInputChanged(val) {
   const ac = document.getElementById('chat-autocomplete');
   if (!ac) return;
+  if (aiMode === 'assistant') { ac.className = 'chat-autocomplete'; return; }
   const words = val.trimEnd().split(/\s+/);
   const last  = words[words.length - 1].toLowerCase();
   if (last.length < 2) { ac.className = 'chat-autocomplete'; return; }
-  const matches = CHAT_PRODUCTS.filter(p =>
-    p.label.toLowerCase().startsWith(last) && p.label.toLowerCase() !== last
-  );
+
+  // Products first, then the user's own factories / contacts / areas —
+  // the AI suggests what YOU usually type.
+  const seen = new Set();
+  const matches = [];
+  for (const p of CHAT_PRODUCTS) {
+    if (p.label.toLowerCase().startsWith(last) && p.label.toLowerCase() !== last) {
+      matches.push({ icon: p.icon, label: p.label });
+      seen.add(p.label.toLowerCase());
+    }
+  }
+  for (const l of state.leads) {
+    if (matches.length >= 6) break;
+    const cands = [
+      ['🏭', l.factory_number], ['🏢', l.factory_name],
+      ['👤', l.person_in_charge], ['📍', l.area],
+    ];
+    for (const [icon, v] of cands) {
+      const s = String(v || '').trim();
+      const sl = s.toLowerCase();
+      if (!s || sl === last || seen.has(sl)) continue;
+      if (sl.startsWith(last) || sl.split(/\s+/).some(w => w.startsWith(last))) {
+        matches.push({ icon, label: s });
+        seen.add(sl);
+        if (matches.length >= 6) break;
+      }
+    }
+  }
+
   if (!matches.length) { ac.className = 'chat-autocomplete'; return; }
-  ac.innerHTML = matches.map(m =>
-    `<div class="chat-ac-item" onmousedown="chatSelectProduct('${m.label}')">
-       <span class="chat-ac-icon">${m.icon}</span>${m.label}
+  ac.innerHTML = matches.slice(0, 6).map(m =>
+    `<div class="chat-ac-item" onmousedown="chatSelectProduct('${escAttr(m.label)}')">
+       <span class="chat-ac-icon">${m.icon}</span>${escHtml(m.label)}
      </div>`
   ).join('');
   ac.className = 'chat-autocomplete open';
@@ -4043,6 +4070,13 @@ function renderUnderstandingCard(data) {
       ? `<div class="ai-transcript">📷 Read: ${escHtml(String(parsed._image_text).slice(0, 300))}</div>`
       : '';
 
+  const learnBits = [];
+  if (data.learning?.corrections) learnBits.push(`${data.learning.corrections} learned correction${data.learning.corrections > 1 ? 's' : ''}`);
+  if (data.learning?.vocab)       learnBits.push(`${data.learning.vocab} vocabulary term${data.learning.vocab > 1 ? 's' : ''}`);
+  if (data.learning?.profiled)    learnBits.push('your habits');
+  const learnHtml = learnBits.length
+    ? `<div class="ai-learn-badge" title="This parse was personalised using what the AI has learned about you">📚 Personalised with ${learnBits.join(' · ')}</div>`
+    : '';
   const metaHtml = `<div class="ai-meta">${model || 'Gemini'} · ${latency ? latency + 'ms' : '—'}</div>`;
 
   let actionHtml;
@@ -4070,6 +4104,7 @@ function renderUnderstandingCard(data) {
         ${itemsHtml}
       </table>
       ${actionHtml}
+      ${learnHtml}
       ${metaHtml}
     </div>`;
 }
@@ -4099,10 +4134,14 @@ async function aiFieldCorrected(field, el) {
   const originalValue = aiSession.parsed[field] || '';
   aiSession.parsed[field] = correctedValue;
   try {
-    await apiFetch('/api/ai/correct', { method: 'POST', body: JSON.stringify({
+    const resp = await apiFetch('/api/ai/correct', { method: 'POST', body: JSON.stringify({
       sessionId: aiSession.sessionId, field,
       originalValue, correctedValue, rawInput: aiSession.originalText,
+      teamId: state.activeOrgId || null,
     }) });
+    if (resp?.learned) {
+      toast(`📚 Learned: "${resp.alias}" means "${resp.canonical}" — I'll apply this automatically from now on.`);
+    }
   } catch (_) {}
 }
 

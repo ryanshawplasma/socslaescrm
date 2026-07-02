@@ -128,6 +128,9 @@ async function findExistingLead(parsed) {
 // ── Build Telegram preview ────────────────────────────────────
 function buildPreview(p, action, existingRow) {
   const actionTag    = action === 'UPDATE' ? `🔄 <b>UPDATE</b> — Row ${existingRow}` : '🆕 <b>NEW ENTRY</b>';
+  const sourceLine   = p._transcript
+    ? `🎤 <i>“${esc(String(p._transcript).slice(0, 180))}”</i>`
+    : p._image_text ? `📷 <i>Read from photo</i>` : '';
   const stageDisplay = p.stage ? esc(p.stage) + (p.stage_number != null ? ` (#${p.stage_number})` : '') : '—';
   const typeEmoji    = { Hot: '🔥', Warm: '🟡', Cold: '🔵' };
   const typeDisplay  = p.lead_type ? (typeEmoji[p.lead_type] || '') + ' ' + esc(p.lead_type) : '—';
@@ -135,7 +138,7 @@ function buildPreview(p, action, existingRow) {
   const itemsBlock   = itemsList.length ? '\n' + itemsList.map((it, i) => `   ${i + 1}. ${esc(it.product)} × ${esc(it.quantity)} @ ₹${esc(it.rate)}`).join('\n') : '\n   —';
 
   return [
-    '📋 <b>CRM Entry Preview</b>', actionTag, '━━━━━━━━━━━━━━━━━━━━',
+    '📋 <b>CRM Entry Preview</b>', actionTag, sourceLine, '━━━━━━━━━━━━━━━━━━━━',
     `🏭 <b>Factory #:</b>   ${esc(p.factory_number)}`,
     `🏢 <b>Factory:</b>     ${esc(p.factory_name)}`,
     `👤 <b>Person:</b>      ${esc(p.person_in_charge)}`,
@@ -147,7 +150,7 @@ function buildPreview(p, action, existingRow) {
     `📝 <b>Notes:</b>       ${esc(p.notes)}`,
     `🗺️ <b>Area:</b>        ${esc(p.area)}`,
     '━━━━━━━━━━━━━━━━━━━━',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 function confirmEditKeyboard(uuid, currentLeadType = '') {
@@ -261,7 +264,8 @@ async function handleVoice(message) {
 
     console.log(`🎤 Voice: ${(audioRes.data.byteLength / 1024).toFixed(1)} KB downloaded`);
 
-    const result = await gemini.generateFromAudio(audioBase64);
+    const vocab  = await db.getVocab(null).catch(() => []);
+    const result = await gemini.generateFromAudio(audioBase64, 'audio/ogg', vocab);
     if (!result) {
       await sendTelegram('sendMessage', {
         chat_id: chatId, parse_mode: 'HTML',
@@ -307,8 +311,65 @@ async function handlePhoto(message) {
     return;
   }
 
-  cache.put('photo_pending_' + chatId, JSON.stringify({ fileId, caption, uploadedBy: registeredUser?.display_name || '' }), 300);
-  await sendTelegram('sendMessage', { chat_id: chatId, text: '📷 Photo received! Which factory is this for?\nSend factory number or name:' });
+  // Offer: extract lead data with AI vision, or attach photo to an existing lead
+  const uuid = uuidv4();
+  cache.put('photo_choice_' + uuid, JSON.stringify({ fileId, caption, uploadedBy: registeredUser?.display_name || '' }), 600);
+  await sendTelegram('sendMessage', {
+    chat_id: chatId, parse_mode: 'HTML',
+    text: '📷 <b>Photo received!</b> What should I do with it?\n\n🧠 <b>Extract</b> — read business card / signboard / notes and create a lead\n📎 <b>Attach</b> — save the photo to an existing lead',
+    reply_markup: { inline_keyboard: [[
+      { text: '🧠 Extract lead info', callback_data: 'PHX_' + uuid },
+      { text: '📎 Attach to a lead', callback_data: 'PHA_' + uuid },
+    ]] },
+  });
+}
+
+// ── AI vision: extract lead data from a photo ─────────────────
+async function extractLeadFromPhoto(chatId, messageId, uuid) {
+  const cached = cache.get('photo_choice_' + uuid);
+  if (!cached) {
+    await sendTelegram('editMessageText', { chat_id: chatId, message_id: messageId, text: '⏰ <b>Session expired.</b> Send the photo again.', parse_mode: 'HTML' });
+    return;
+  }
+  const { fileId, caption, uploadedBy } = JSON.parse(cached);
+  await sendTelegram('editMessageText', { chat_id: chatId, message_id: messageId, text: '🧠 Reading the photo…', parse_mode: 'HTML' });
+
+  try {
+    const fileRes  = await axios.get(`${TELEGRAM_API}/getFile`, { params: { file_id: fileId } });
+    const filePath = fileRes.data.result.file_path;
+    const fileUrl  = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${filePath}`;
+    const imgData  = await axios.get(fileUrl, { responseType: 'arraybuffer' });
+    const imageBase64 = Buffer.from(imgData.data).toString('base64');
+
+    const vocab  = await db.getVocab(null).catch(() => []);
+    const result = await gemini.generateFromImage(imageBase64, 'image/jpeg', caption, vocab);
+    if (!result) {
+      await sendTelegram('editMessageText', { chat_id: chatId, message_id: messageId, parse_mode: 'HTML',
+        text: '⚠️ Could not read the photo. Try a clearer, well-lit picture, or type the details.' });
+      return;
+    }
+
+    const { parsed } = result;
+    const { existingRow, action } = await findExistingLead(parsed);
+    if (!parsed.stage && action === 'ADD') { parsed.stage = 'New Lead'; parsed.stage_number = 1; }
+
+    const dataUuid = uuidv4();
+    cache.put('data_' + dataUuid, JSON.stringify({
+      parsed, existingRow, action, createdBy: uploadedBy,
+      photoFileId: fileId, photoCaption: caption || '',
+    }), 600);
+    cache.remove('photo_choice_' + uuid);
+
+    await sendTelegram('editMessageText', {
+      chat_id: chatId, message_id: messageId,
+      text: '📷 ' + buildPreview(parsed, action, existingRow),
+      parse_mode: 'HTML', reply_markup: confirmEditKeyboard(dataUuid, parsed.lead_type),
+    });
+  } catch (err) {
+    console.error('Photo extract error:', err.message);
+    await sendTelegram('editMessageText', { chat_id: chatId, message_id: messageId, parse_mode: 'HTML',
+      text: '⚠️ Failed to process the photo. Try again or type the details.' });
+  }
 }
 
 async function savePhotoForLead(chatId, fileId, leadId, caption, uploadedBy) {
@@ -604,8 +665,8 @@ async function handleMessage(message) {
         '👋 <b>CRM Bot Ready</b>', '',
         '<b>Add/Update a lead:</b>',
         '<code>M277 Ramesh Industries Sureshji hotmelt 500@120, solvent 200@80 hot</code>', '',
-        '🎤 <b>Voice:</b> Send a voice note with lead details',
-        '📷 <b>Photo:</b> Send a factory photo and specify the lead', '',
+        '🎤 <b>Voice:</b> Send a voice note — I transcribe &amp; extract the lead',
+        '📷 <b>Photo:</b> Send a business card / signboard / handwritten note — I read it and create the lead, or attach it to an existing one', '',
         '<b>Commands:</b>',
         '/find &lt;name or factory #&gt;', '/lead &lt;factory #&gt;', '/followups',
         '/register  — create your salesperson account', '/changepin — update your PIN',
@@ -744,6 +805,25 @@ async function handleCallback(callbackQuery) {
     return;
   }
 
+  if (cbData.startsWith('PHX_')) {
+    await extractLeadFromPhoto(chatId, messageId, cbData.slice(4));
+    return;
+  }
+
+  if (cbData.startsWith('PHA_')) {
+    const uuid   = cbData.slice(4);
+    const cached = cache.get('photo_choice_' + uuid);
+    if (!cached) {
+      await sendTelegram('editMessageText', { chat_id: chatId, message_id: messageId, text: '⏰ <b>Session expired.</b> Send the photo again.', parse_mode: 'HTML' });
+      return;
+    }
+    cache.put('photo_pending_' + chatId, cached, 300);
+    cache.remove('photo_choice_' + uuid);
+    await sendTelegram('editMessageText', { chat_id: chatId, message_id: messageId, parse_mode: 'HTML',
+      text: '📎 Which factory is this photo for?\nSend the factory number or name:' });
+    return;
+  }
+
   if (cbData.startsWith('CANCEL_')) {
     cache.remove('edit_' + chatId); cache.remove('editall_' + chatId);
     await sendTelegram('editMessageText', { chat_id: chatId, message_id: messageId, text: '❌ <b>Cancelled.</b> No changes saved.', parse_mode: 'HTML' });
@@ -848,7 +928,7 @@ async function handleCallback(callbackQuery) {
     const uuid   = cbData.replace('CONFIRM_', '');
     const cached = cache.get('data_' + uuid);
     if (!cached) { await sendTelegram('editMessageText', { chat_id: chatId, message_id: messageId, text: '⏰ <b>Session expired.</b> Please send again.', parse_mode: 'HTML' }); return; }
-    const { parsed, existingRow, action, createdBy = '' } = JSON.parse(cached);
+    const { parsed, existingRow, action, createdBy = '', photoFileId = null, photoCaption = '' } = JSON.parse(cached);
     let savedRowIndex = existingRow;
     try {
       if (action === 'UPDATE' && existingRow > 0) {
@@ -868,6 +948,11 @@ async function handleCallback(callbackQuery) {
       return;
     }
     cache.remove('data_' + uuid);
+
+    // If this entry came from a photo, attach the photo to the saved lead
+    if (photoFileId && savedRowIndex && savedRowIndex !== -1) {
+      savePhotoForLead(chatId, photoFileId, Number(savedRowIndex), photoCaption, createdBy).catch(() => {});
+    }
 
     if (['Hot', 'Warm'].includes(parsed.lead_type) && !parsed.follow_up && savedRowIndex) {
       const fuUuid = uuidv4();

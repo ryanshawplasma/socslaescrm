@@ -16,7 +16,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=4" />
+  <link rel="stylesheet" href="style.css?v=5" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -522,8 +522,11 @@
               <div id="chat-autocomplete" class="chat-autocomplete"></div>
               <div class="chat-input-row">
                 <textarea id="chat-input" rows="2"
-                  placeholder="M277 Ramesh Industries hotmelt 500@120 hot..."
+                  placeholder="Type, speak 🎤 or snap 📷 a business card…"
                   oninput="chatInputChanged(this.value)"></textarea>
+                <button id="chat-mic-btn" onclick="chatVoiceCapture()" class="chat-icon-btn" title="Speak the lead details">🎤</button>
+                <button onclick="document.getElementById('chat-img-input').click()" class="chat-icon-btn" title="Photo of a business card, signboard or note">📷</button>
+                <input type="file" id="chat-img-input" accept="image/*" capture="environment" style="display:none" onchange="chatImageSelected(this)" />
                 <button onclick="chatSend()" class="btn-primary chat-send-btn">Send</button>
               </div>
             </div>

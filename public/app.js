@@ -3960,6 +3960,12 @@ function renderUnderstandingCard(data) {
     ? `<div class="ai-subs">Substituted: ${substitutions.map(s => `<b>${escHtml(s.from)}</b> → <b>${escHtml(s.to)}</b>`).join(', ')}</div>`
     : '';
 
+  const srcHtml = parsed._transcript
+    ? `<div class="ai-transcript">🎤 Heard: “${escHtml(String(parsed._transcript).slice(0, 300))}”</div>`
+    : parsed._image_text
+      ? `<div class="ai-transcript">📷 Read: ${escHtml(String(parsed._image_text).slice(0, 300))}</div>`
+      : '';
+
   const metaHtml = `<div class="ai-meta">${model || 'Gemini'} · ${latency ? latency + 'ms' : '—'}</div>`;
 
   let actionHtml;
@@ -3980,6 +3986,7 @@ function renderUnderstandingCard(data) {
         <span class="ai-card-title">🧠 AI Understood</span>
         <button class="btn btn-ghost btn-xs" onclick="aiClearUnderstandingCard()">↩ Ask Again</button>
       </div>
+      ${srcHtml}
       ${subsHtml}
       <table class="ai-card-table">
         ${fieldsHtml}
@@ -4106,6 +4113,116 @@ function aiClearUnderstandingCard() {
   aiSession = null;
   const input = document.getElementById('chat-input');
   if (input) { input.value = ''; input.focus(); }
+}
+
+// ── Chat: voice input (understanding mode aware) ─────────────
+let _chatRecorder = null;
+let _chatChunks   = [];
+
+async function chatVoiceCapture() {
+  const btn = document.getElementById('chat-mic-btn');
+  if (_chatRecorder && _chatRecorder.state === 'recording') { _chatRecorder.stop(); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
+               : MediaRecorder.isTypeSupported('audio/ogg')  ? 'audio/ogg' : '';
+    _chatRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    _chatChunks = [];
+    _chatRecorder.ondataavailable = e => { if (e.data.size > 0) _chatChunks.push(e.data); };
+    _chatRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      btn?.classList.remove('recording');
+      const usedMime = _chatRecorder.mimeType || mime || 'audio/webm';
+      const blob = new Blob(_chatChunks, { type: usedMime });
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const b64 = reader.result.split(',')[1];
+        setAiMode('understanding');
+        const cardArea = document.getElementById('ai-card-area');
+        if (cardArea) cardArea.innerHTML = `<div class="ai-thinking">🎤 Transcribing & understanding…</div>`;
+        try {
+          const data = await apiFetch('/api/ai/understand/voice', {
+            method: 'POST',
+            body: JSON.stringify({ audioBase64: b64, mimeType: usedMime, teamId: state.activeOrgId || null }),
+          });
+          aiSession = { originalText: data.transcript || '' };
+          const match = await findMatchForParsed(data.parsed);
+          aiSession.existingRow = match;
+          data.existingRow = match;
+          renderUnderstandingCard(data);
+        } catch (err) {
+          if (cardArea) cardArea.innerHTML = `<div class="ai-error">❌ ${escHtml(err.message)}</div>`;
+        }
+      };
+      reader.readAsDataURL(blob);
+    };
+    _chatRecorder.start();
+    btn?.classList.add('recording');
+    toast('Recording… tap 🎤 again to stop', 'success');
+  } catch (_) {
+    toast('Microphone access denied. Please allow mic in browser settings.', 'error');
+  }
+}
+
+// ── Chat: image input (business card / signboard / note) ─────
+async function chatImageSelected(input) {
+  const file = input.files && input.files[0];
+  input.value = '';
+  if (!file) return;
+  setAiMode('understanding');
+  const cardArea = document.getElementById('ai-card-area');
+  if (cardArea) cardArea.innerHTML = `<div class="ai-thinking">📷 Reading the photo…</div>`;
+  try {
+    const { base64, mimeType } = await downscaleImage(file, 1600, 0.85);
+    const caption = (document.getElementById('chat-input')?.value || '').trim();
+    const data = await apiFetch('/api/ai/understand/image', {
+      method: 'POST',
+      body: JSON.stringify({ imageBase64: base64, mimeType, caption, teamId: state.activeOrgId || null }),
+    });
+    aiSession = { originalText: data.imageText || caption || '' };
+    const match = await findMatchForParsed(data.parsed);
+    aiSession.existingRow = match;
+    data.existingRow = match;
+    renderUnderstandingCard(data);
+  } catch (err) {
+    if (cardArea) cardArea.innerHTML = `<div class="ai-error">❌ ${escHtml(err.message)}</div>`;
+  }
+}
+
+// Downscale to keep uploads fast (phone photos can be 5-10 MB)
+function downscaleImage(file, maxDim = 1600, quality = 0.85) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL('image/jpeg', quality);
+      resolve({ base64: dataUrl.split(',')[1], mimeType: 'image/jpeg' });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read the image file')); };
+    img.src = url;
+  });
+}
+
+// Match parsed fields against loaded leads (same rule as the server)
+async function findMatchForParsed(parsed) {
+  try {
+    if (!state.leads.length) await loadLeads();
+    const pNum  = String(parsed?.factory_number || '').trim().toLowerCase();
+    const pName = String(parsed?.factory_name   || '').trim().toLowerCase();
+    for (const l of state.leads) {
+      const rNum  = String(l.factory_number || '').trim().toLowerCase();
+      const rName = String(l.factory_name   || '').trim().toLowerCase();
+      if (pNum && pNum === rNum) return l.rowIndex;
+      if (!pNum && pName && pName === rName) return l.rowIndex;
+    }
+  } catch (_) {}
+  return -1;
 }
 
 // Enhanced chatSend — routes based on current AI mode

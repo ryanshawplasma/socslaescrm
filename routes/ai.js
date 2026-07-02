@@ -38,6 +38,18 @@ NOTES: Put anything that doesn't fit other fields into notes.
 
 Also include a "_confidence" key in your JSON output: an object mapping each extracted field name to a float 0.0–1.0 indicating extraction confidence. Use 0.9+ if the value appears literally in the input, 0.5–0.9 if inferred, below 0.5 if guessed or absent.
 
+PHONE NUMBERS: normalise to digits (keep +91 prefix if present), strip spaces/dashes. A 10-digit number is a contact, NOT a quantity or rate.
+
+EXAMPLES (input → key outputs):
+1. "M277 Ramesh Industries Sureshji 9876543210 hotmelt 500kg @120 aur solvent 200 ltr 80 rupay, kal follow up, surat, garam lead hai"
+   → factory_number:"M277", factory_name:"Ramesh Industries", person_in_charge:"Sureshji", contact:"9876543210",
+     items:[{"product":"Hotmelt","quantity":"500 kg","rate":"120"},{"product":"Solvent","quantity":"200 ltr","rate":"80"}],
+     follow_up:<tomorrow as dd/MM/yyyy>, area:"Surat", lead_type:"Hot"
+2. "om traders ke mehul bhai ko quotation bhej diya, next week baat karenge"
+   → factory_name:"Om Traders", person_in_charge:"Mehul bhai", stage:"Quotation", stage_number:4, follow_up:<today+7 as dd/MM/yyyy>
+3. "F12 sample pasand nahi aaya, nahi chahiye unko"
+   → factory_number:"F12", lead_type:"Cold", notes:"Did not like the sample"
+
 Return ONLY this JSON (no extra fields):
 {
   "factory_number": "",
@@ -54,73 +66,114 @@ Return ONLY this JSON (no extra fields):
   "_confidence": {}
 }`;
 
+// ── Prompt helpers ────────────────────────────────────────────
+function todayISTLabel() {
+  return new Date().toLocaleDateString('en-IN', {
+    timeZone: 'Asia/Kolkata', weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric',
+  });
+}
+
+function buildSystemPrompt(vocab = []) {
+  let prompt = CRM_SYSTEM_PROMPT +
+    `\n\nTODAY'S DATE: ${todayISTLabel()} (dd/MM/yyyy, IST timezone). Resolve ALL relative dates against this: ` +
+    `"kal"/"tomorrow" = today+1 day, "parso" = today+2, "next week" = today+7, "in 2 weeks" = today+14, ` +
+    `a weekday name = the NEXT occurrence of that weekday. Always output follow_up as dd/MM/yyyy.`;
+  if (vocab.length) {
+    prompt += '\n\nCOMPANY VOCABULARY (treat as exact synonyms during extraction):\n' +
+      vocab.map(v => `"${v.alias}" → "${v.canonical}"`).join('; ');
+  }
+  return prompt;
+}
+
+// Tolerant JSON extraction: strips code fences, falls back to the
+// first balanced {...} block if the model added prose around it.
+function parseModelJson(raw) {
+  let text = String(raw || '').trim()
+    .replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
+  try { return JSON.parse(text); } catch {}
+  const start = text.indexOf('{');
+  if (start === -1) throw new Error('No JSON in model output');
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') { depth--; if (depth === 0) return JSON.parse(text.slice(start, i + 1)); }
+  }
+  throw new Error('Unbalanced JSON in model output');
+}
+
+function normaliseItems(parsed) {
+  if (!Array.isArray(parsed.items) || !parsed.items.length) {
+    parsed.items = parsed.product
+      ? [{ product: parsed.product, quantity: parsed.quantity || '', rate: parsed.rate || '' }]
+      : [];
+  }
+  return parsed;
+}
+
 // ── GeminiProvider class ──────────────────────────────────────
 class GeminiProvider {
   constructor() {
     this.apiKey = process.env.GEMINI_API_KEY;
-    this.models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite'];
+    // Newest first; older models are automatic fallbacks on 404/429/503
+    this.models = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
+  }
+
+  async _call(model, systemPrompt, parts, maxOutputTokens) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${this.apiKey}`;
+    const generationConfig = { temperature: 0.1, maxOutputTokens, responseMimeType: 'application/json' };
+    // 2.5 models burn output tokens on internal "thinking" by default,
+    // which truncates the JSON — disable it for fast extraction.
+    if (model.startsWith('gemini-2.5')) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+    const res = await axios.post(url, {
+      system_instruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ role: 'user', parts }],
+      generationConfig,
+    }, { timeout: 45000 });
+    return res.data.candidates[0].content.parts[0].text;
+  }
+
+  async _generateWithFallback(systemPrompt, parts, maxOutputTokens, label) {
+    for (const model of this.models) {
+      const t0 = Date.now();
+      try {
+        const raw = await this._call(model, systemPrompt, parts, maxOutputTokens);
+        const parsed = normaliseItems(parseModelJson(raw));
+        return { parsed, model, latency: Date.now() - t0 };
+      } catch (err) {
+        const code = err.response?.data?.error?.code;
+        if ([400, 404, 429, 503].includes(code)) { console.warn(`⚠️ Gemini ${label} ${model} (${code})`); continue; }
+        console.error(`Gemini ${label} error:`, err.response?.data?.error?.message || err.message);
+      }
+    }
+    return null;
   }
 
   async generate(userText, vocab = []) {
-    let prompt = CRM_SYSTEM_PROMPT;
-    if (vocab.length) {
-      prompt += '\n\nCOMPANY VOCABULARY (treat as exact synonyms during extraction):\n' +
-        vocab.map(v => `"${v.alias}" → "${v.canonical}"`).join('; ');
-    }
-
-    for (const model of this.models) {
-      const t0 = Date.now();
-      try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${this.apiKey}`;
-        const res = await axios.post(url, {
-          system_instruction: { parts: [{ text: prompt }] },
-          contents: [{ role: 'user', parts: [{ text: userText }] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 900, responseMimeType: 'application/json' },
-        });
-        let raw = res.data.candidates[0].content.parts[0].text.trim()
-          .replace(/^```json\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/i,'').trim();
-        const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed.items) || !parsed.items.length) {
-          parsed.items = parsed.product ? [{ product: parsed.product, quantity: parsed.quantity || '', rate: parsed.rate || '' }] : [];
-        }
-        return { parsed, model, latency: Date.now() - t0 };
-      } catch (err) {
-        const code = err.response?.data?.error?.code;
-        if (code === 429 || code === 404 || code === 503) { console.warn(`⚠️ Gemini ${model} (${code})`); continue; }
-        console.error('Gemini error:', err.response?.data || err.message);
-      }
-    }
-    return null;
+    return this._generateWithFallback(buildSystemPrompt(vocab), [{ text: userText }], 2000, 'text');
   }
 
-  async generateFromAudio(audioBase64, mimeType = 'audio/ogg') {
-    const voicePrompt = CRM_SYSTEM_PROMPT + '\n\nThe user sent a VOICE NOTE. First transcribe the audio, then extract CRM fields. Return ONLY the JSON.';
-    for (const model of this.models) {
-      const t0 = Date.now();
-      try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${this.apiKey}`;
-        const res = await axios.post(url, {
-          system_instruction: { parts: [{ text: voicePrompt }] },
-          contents: [{
-            role: 'user',
-            parts: [
-              { inline_data: { mime_type: mimeType, data: audioBase64 } },
-              { text: 'Transcribe and extract CRM lead data as JSON.' },
-            ],
-          }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 1500, responseMimeType: 'application/json' },
-        });
-        let raw = res.data.candidates[0].content.parts[0].text.trim()
-          .replace(/^```json\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/i,'').trim();
-        const parsed = JSON.parse(raw);
-        return { parsed, model, latency: Date.now() - t0 };
-      } catch (err) {
-        const code = err.response?.data?.error?.code;
-        if (code === 429 || code === 503 || code === 400 || code === 404) { console.warn(`⚠️ Gemini voice ${model} (${code})`); continue; }
-        console.error('Gemini voice error:', err.response?.data || err.message);
-      }
-    }
-    return null;
+  async generateFromAudio(audioBase64, mimeType = 'audio/ogg', vocab = []) {
+    const voicePrompt = buildSystemPrompt(vocab) +
+      '\n\nThe user sent a VOICE NOTE — it may be in Hindi, English, or Hinglish (mixed). ' +
+      'First transcribe the audio carefully (keep product names and numbers exact), then extract CRM fields from the transcription. ' +
+      'Add a "_transcript" key to the JSON containing your exact transcription of the audio.';
+    return this._generateWithFallback(voicePrompt, [
+      { inline_data: { mime_type: mimeType, data: audioBase64 } },
+      { text: 'Transcribe and extract CRM lead data as JSON (include "_transcript").' },
+    ], 2500, 'voice');
+  }
+
+  async generateFromImage(imageBase64, mimeType = 'image/jpeg', caption = '', vocab = []) {
+    const imagePrompt = buildSystemPrompt(vocab) +
+      '\n\nThe user sent a PHOTO — it may be a business card, shop/factory signboard, letterhead, product label, ' +
+      'or a handwritten note (possibly in Hindi/Devanagari). Read ALL text in the image and extract CRM fields from it. ' +
+      'Business cards: the company name → factory_name, the person\'s name → person_in_charge, phone → contact, city → area. ' +
+      'Add a "_image_text" key to the JSON containing the raw text you could read in the image.';
+    const parts = [{ inline_data: { mime_type: mimeType, data: imageBase64 } }];
+    parts.push({ text: caption
+      ? `User's caption (extra context, may contain fields too): ${caption}\nExtract CRM lead data as JSON (include "_image_text").`
+      : 'Extract CRM lead data from this photo as JSON (include "_image_text").' });
+    return this._generateWithFallback(imagePrompt, parts, 2500, 'image');
   }
 }
 
@@ -261,22 +314,46 @@ router.post('/ai/understand/voice', authMiddleware, async (req, res, next) => {
   const { audioBase64, mimeType = 'audio/webm', teamId } = req.body || {};
   if (!audioBase64) return res.status(400).json({ error: 'audioBase64 required' });
   try {
-    const audioResult = await gemini.generateFromAudio(audioBase64, mimeType);
+    const vocab = await db.getVocab(teamId || null).catch(() => []);
+    const audioResult = await gemini.generateFromAudio(audioBase64, mimeType, vocab);
     if (!audioResult) return res.status(422).json({ error: 'Could not parse audio — try speaking more clearly or use text instead.' });
 
     const { parsed, model, latency } = audioResult;
-    if (!Array.isArray(parsed.items) || !parsed.items.length) {
-      parsed.items = parsed.product ? [{ product: parsed.product, quantity: parsed.quantity || '', rate: parsed.rate || '' }] : [];
-    }
     const confidence    = parsed._confidence || {};
     const clarification = clarificationEngine(parsed, confidence);
     const sessionId     = uuidv4();
 
-    db.logAiAction(null, 'understand_voice', 'voice', 'audio', parsed, req.user.username, teamId, {
-      sessionId, model, latency,
-    }).catch(() => {});
+    db.logAiAction(null, 'understand_voice', 'voice', parsed._transcript || 'audio', parsed, req.user.username, teamId).catch(() => {});
 
-    res.json({ sessionId, parsed, confidence, substitutions: [], model, latency, needsClarification: !!clarification, clarification });
+    res.json({
+      sessionId, parsed, confidence, substitutions: [], model, latency,
+      transcript: parsed._transcript || '',
+      needsClarification: !!clarification, clarification,
+    });
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/ai/understand/image ────────────────────────────
+router.post('/ai/understand/image', authMiddleware, async (req, res, next) => {
+  const { imageBase64, mimeType = 'image/jpeg', caption = '', teamId } = req.body || {};
+  if (!imageBase64) return res.status(400).json({ error: 'imageBase64 required' });
+  try {
+    const vocab = await db.getVocab(teamId || null).catch(() => []);
+    const imgResult = await gemini.generateFromImage(imageBase64, mimeType, String(caption).slice(0, 500), vocab);
+    if (!imgResult) return res.status(422).json({ error: 'Could not read the image — try a clearer, well-lit photo.' });
+
+    const { parsed, model, latency } = imgResult;
+    const confidence    = parsed._confidence || {};
+    const clarification = clarificationEngine(parsed, confidence);
+    const sessionId     = uuidv4();
+
+    db.logAiAction(null, 'understand_image', 'image', parsed._image_text || 'image', parsed, req.user.username, teamId).catch(() => {});
+
+    res.json({
+      sessionId, parsed, confidence, substitutions: [], model, latency,
+      imageText: parsed._image_text || '',
+      needsClarification: !!clarification, clarification,
+    });
   } catch (err) { next(err); }
 });
 
@@ -339,12 +416,10 @@ router.post('/parse/voice', authMiddleware, async (req, res, next) => {
   const { audioBase64, mimeType = 'audio/webm' } = req.body || {};
   if (!audioBase64) return res.status(400).json({ error: 'audioBase64 required' });
   try {
-    const result = await gemini.generateFromAudio(audioBase64, mimeType);
+    const vocab  = await db.getVocab(null).catch(() => []);
+    const result = await gemini.generateFromAudio(audioBase64, mimeType, vocab);
     if (!result) return res.status(422).json({ error: 'Could not parse audio — try speaking more clearly or use text instead.' });
     const { parsed } = result;
-    if (!Array.isArray(parsed.items) || !parsed.items.length) {
-      parsed.items = parsed.product ? [{ product: parsed.product, quantity: parsed.quantity || '', rate: parsed.rate || '' }] : [];
-    }
     const leads = await db.getLeads();
     const pNum  = String(parsed.factory_number || '').trim().toLowerCase();
     let existingRow = -1;

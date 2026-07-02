@@ -66,11 +66,11 @@ router.delete('/users/:id', authMiddleware, adminOnly, async (req, res, next) =>
   } catch (err) { next(err); }
 });
 
-// ── PATCH /api/users/:id (admin sets role / designation) ──────
+// ── PATCH /api/users/:id (admin sets role / designation / area) ──
 router.patch('/users/:id', authMiddleware, adminOnly, async (req, res, next) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid user id' });
-  const { role, designation } = req.body || {};
+  const { role, designation, default_area } = req.body || {};
   if (role !== undefined && !['admin', 'sales'].includes(role))
     return res.status(400).json({ error: 'Role must be admin or sales' });
   try {
@@ -89,12 +89,16 @@ router.patch('/users/:id', authMiddleware, adminOnly, async (req, res, next) => 
     if (designation !== undefined) {
       await db.setUserDesignation(id, String(designation));
     }
+    if (default_area !== undefined) {
+      await db.updateUserDefaultArea(id, String(default_area).slice(0, 60));
+    }
     res.json({ success: true });
   } catch (err) { next(err); }
 });
 
-// ── GET /api/users/names (public) ────────────────────────────
-router.get('/users/names', async (req, res, next) => {
+// ── GET /api/users/names (signed-in users only) ──────────────
+// Not public: the account list (incl. admins) is not exposed on the login page.
+router.get('/users/names', authMiddleware, async (req, res, next) => {
   try {
     const users = await db.getAllUsers();
     res.json(users.map(u => u.display_name));

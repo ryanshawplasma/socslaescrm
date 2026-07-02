@@ -146,16 +146,11 @@ function detectCredentialType(val) {
 }
 
 // ── Login / Register screen switching ────────────────────────
-async function loadLoginUserChips() {
-  try {
-    const names = await fetch('/api/users/names').then(r => r.ok ? r.json() : []);
-    const wrap  = document.getElementById('login-user-chips');
-    if (!names.length) { wrap.classList.add('hidden'); return; }
-    wrap.innerHTML = names.map(n =>
-      `<button type="button" class="user-chip" onclick="selectUserChip(${JSON.stringify(n)})">${escHtml(n)}</button>`
-    ).join('');
-    wrap.classList.remove('hidden');
-  } catch (_) {}
+// User-name chips are intentionally NOT shown on the login page — we don't
+// expose the list of accounts (incl. admins) publicly. The last-used username
+// is still remembered per device for a fast sign-in.
+function loadLoginUserChips() {
+  document.getElementById('login-user-chips')?.classList.add('hidden');
 }
 
 function selectUserChip(name) {
@@ -194,7 +189,6 @@ function showLoginPage() {
   } else {
     setTimeout(() => credEl?.focus(), 50);
   }
-  loadLoginUserChips();
   if (window.SimpleWebAuthnBrowser?.browserSupportsWebAuthn())
     document.getElementById('biometric-login-section').classList.remove('hidden');
 }
@@ -2250,6 +2244,9 @@ async function renderTeam() {
         </select>`;
       const desig = `<input type="text" class="team-desig-input" value="${escAttr(u.designation || '')}"
                        placeholder="—" maxlength="60" onchange="changeUserDesignation(${u.id}, this.value)" />`;
+      const area = `<input type="text" class="team-area-input" value="${escAttr(u.default_area || '')}"
+                       placeholder="—" maxlength="60" title="Default area — pre-fills when this salesperson adds a lead"
+                       onchange="changeUserArea(${u.id}, this.value)" />`;
       const pinBadge = u.has_password ? '' :
         `<span class="badge badge-3" title="Signs in with PIN — will be asked to set a password" style="margin-left:6px">PIN only</span>`;
       return `
@@ -2257,6 +2254,7 @@ async function renderTeam() {
         <td style="font-weight:500">${escAttr(u.display_name)}${isSelf ? ' <span style="color:var(--text-muted);font-size:11px">(you)</span>' : ''}${pinBadge}</td>
         <td>${roleSel}</td>
         <td>${desig}</td>
+        <td>${area}</td>
         <td style="color:var(--text-muted);font-size:12px">${u.created_at ? u.created_at.split(' ')[0] : '—'}</td>
         <td style="display:flex;gap:6px;align-items:center;white-space:nowrap">
           <button class="action-btn" onclick="openResetPasswordModal(${u.id}, '${nm}')">Reset Password</button>
@@ -2267,11 +2265,11 @@ async function renderTeam() {
     document.getElementById('team-table').innerHTML = header + `
       <div class="table-scroll"><table class="crm-table">
         <thead><tr>
-          <th>Name</th><th>Role</th><th>Designation</th><th>Joined</th><th>Action</th>
+          <th>Name</th><th>Role</th><th>Designation</th><th>Area</th><th>Joined</th><th>Action</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
-      <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">Salespeople can self-register via the <b>Create Account</b> link on the login page. Only admins can change roles.</p>
+      <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">Salespeople can self-register via the <b>Create Account</b> link on the login page. <b>Area</b> pre-fills when that person adds a lead; they can still change it. Only admins can change roles.</p>
       <div id="ai-vocab-container"></div>`;
     renderVocabAdmin();
   } catch (err) {
@@ -2296,6 +2294,16 @@ async function changeUserDesignation(id, value) {
   try {
     await apiFetch(`/api/users/${id}`, { method: 'PATCH', body: JSON.stringify({ designation: value }) });
     toast('Designation saved', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+    renderTeam();
+  }
+}
+
+async function changeUserArea(id, value) {
+  try {
+    await apiFetch(`/api/users/${id}`, { method: 'PATCH', body: JSON.stringify({ default_area: value }) });
+    toast('Area allocated', 'success');
   } catch (err) {
     toast(err.message, 'error');
     renderTeam();
@@ -3158,6 +3166,25 @@ async function loadMyTeams() {
     state.activeOrgId = '';
     localStorage.removeItem('crm_org_id');
   }
+  applyDefaultWorkspace();
+}
+
+// Default workspace on sign-in:
+//  • Admins land on the global "All leads" view (activeOrgId '') so they see
+//    every salesperson's data — a single team would hide leads entered elsewhere.
+//  • Salespeople who belong to a team default into it, so their new leads merge
+//    into the shared team pool. Their solo leads stay reachable under "Personal".
+function applyDefaultWorkspace() {
+  if (state.role === 'admin') {
+    state.activeOrgId = '';
+    localStorage.removeItem('crm_org_id');
+    return;
+  }
+  if (!state.activeOrgId && state.myTeams.length) {
+    state.activeOrgId = String(state.myTeams[0].id);
+    localStorage.setItem('crm_org_id', state.activeOrgId);
+    localStorage.setItem('ws_team_id', state.activeOrgId);
+  }
 }
 
 function renderOrgSwitcher() {
@@ -3165,9 +3192,11 @@ function renderOrgSwitcher() {
   if (!el) return;
   if (!state.myTeams.length) { el.classList.add('hidden'); el.innerHTML = ''; return; }
   el.classList.remove('hidden');
+  // For admins the "no team" option is the global view of everyone's leads.
+  const personalLabel = state.role === 'admin' ? '🗂 All leads (everyone)' : '👤 Personal (my leads)';
   el.innerHTML = `
     <select id="org-select" title="Switch workspace" onchange="switchOrg(this.value)">
-      <option value="">👤 Personal</option>
+      <option value="">${personalLabel}</option>
       ${state.myTeams.map(t =>
         `<option value="${t.id}" ${String(t.id) === String(state.activeOrgId) ? 'selected' : ''}>🏢 ${escHtml(t.name)}</option>`
       ).join('')}

@@ -944,7 +944,8 @@ async function updateUserPin(userId, newPin) {
 async function getAllUsers() {
   const { rows } = await pool.query(
     `SELECT id, display_name, role, telegram_user_id, created_at,
-            COALESCE(designation, '') AS designation,
+            COALESCE(designation, '')  AS designation,
+            COALESCE(default_area, '') AS default_area,
             (password_hash IS NOT NULL) AS has_password
        FROM users ORDER BY id ASC`
   );

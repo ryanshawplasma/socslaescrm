@@ -2127,13 +2127,16 @@ tr.row-cold:hover td { background: #dbeafe; }
   background: var(--card-bg); color: var(--text); cursor: pointer;
 }
 .team-role-select:disabled { opacity: .6; cursor: not-allowed; }
-.team-desig-input {
+.team-desig-input,
+.team-area-input {
   width: 100%; max-width: 180px; padding: 6px 10px; font-size: 13px;
   border-radius: 8px; border: 1px solid var(--border);
   background: var(--card-bg); color: var(--text);
 }
-.team-desig-input::placeholder { color: var(--text-muted); }
+.team-desig-input::placeholder,
+.team-area-input::placeholder { color: var(--text-muted); }
 .team-desig-input:focus,
+.team-area-input:focus,
 .team-role-select:focus {
   outline: none; border-color: var(--primary);
   box-shadow: 0 0 0 3px var(--primary-glow, rgba(99,102,241,.18));

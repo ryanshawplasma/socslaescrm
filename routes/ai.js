@@ -519,7 +519,7 @@ Rules:
 - Answer ONLY from the CRM snapshot. If the data doesn't contain the answer, say so.
 - Be concise: a short sentence or a list of at most 10 rows. Use the user's language (English or Hinglish).
 - Format with plain text, **bold** for emphasis, and "- " bullets. No tables, no HTML, no markdown headers.
-- If asked to change data, reply that they can use ⚡ Command mode (e.g. "set M277 stage to won").
+- If asked to change or add data, reply that they can use ⚡ Command mode (e.g. "add party Sharma Traders Rakeshji 98765…" or "set M277 stage to won").
 - Dates are dd/MM/yyyy.`;
 
 router.post('/ai/assistant', authMiddleware, async (req, res, next) => {
@@ -552,7 +552,8 @@ router.post('/ai/assistant', authMiddleware, async (req, res, next) => {
 const COMMAND_PROMPT =
 `You convert one natural-language CRM command (English or Hinglish) into a JSON action.
 Actions:
-- "update_stage": change a lead's stage. Map to: New Lead=1, Sample Required=2, Sample Sent=3, Quotation=4, Negotiation=5, Order Won=6 ("won"/"jeet gaye"), Repeat Customer=7, Lost=0 ("lost"/"cancel"/"nahi chahiye").
+- "create_lead": add a NEW party/lead — triggers like "add party …", "new party …", "create lead …", "nayi party …", "party add karo", or a message that is clearly introducing a brand-new customer with their details.
+- "update_stage": change an existing lead's stage. Map to: New Lead=1, Sample Required=2, Sample Sent=3, Quotation=4, Negotiation=5, Order Won=6 ("won"/"jeet gaye"), Repeat Customer=7, Lost=0 ("lost"/"cancel"/"nahi chahiye").
 - "set_followup": set follow-up date (resolve relative dates; output dd/MM/yyyy).
 - "set_lead_type": set temperature Hot/Warm/Cold ("garam"=Hot, "thanda"=Cold).
 - "add_note": append a note to the lead.
@@ -567,6 +568,10 @@ const STAGE_BY_NUM = { 0: 'Lost', 1: 'New Lead', 2: 'Sample Required', 3: 'Sampl
 router.post('/ai/command', authMiddleware, async (req, res, next) => {
   const { command, teamId } = req.body || {};
   if (!command || !String(command).trim()) return res.status(400).json({ error: 'command required' });
+  // Guests can't mutate — catch obvious add/create commands before spending AI quota
+  if (req.user.role === 'guest' && /\b(add|create|new|nayi|naya)\s+(party|lead|customer)\b/i.test(String(command))) {
+    return res.status(403).json({ error: 'demo_only', message: 'Create an account to save data' });
+  }
   try {
     const result = await gemini._generateWithFallback(
       COMMAND_PROMPT + `\nTODAY: ${todayISTLabel()} (dd/MM/yyyy, IST).`,
@@ -594,8 +599,57 @@ router.post('/ai/command', authMiddleware, async (req, res, next) => {
       });
     }
 
+    // CREATE — add a new party/lead from the command text
+    if (cmd.action === 'create_lead') {
+      if (req.user.role === 'guest') return res.status(403).json({ error: 'demo_only', message: 'Create an account to save data' });
+
+      // Reuse the full understanding pipeline (vocab, learning, CRM context)
+      const cleaned = String(command).replace(/^\s*(add|create|new|nayi|naya)\s+(party|lead|customer)\b[:,\s]*/i, '').trim();
+      const understanding = await runUnderstandingPipeline(cleaned || String(command), teamId, req.user.username, uuidv4());
+      const parsed = understanding.parsed || understanding.fallback;
+      if (!parsed || (!parsed.factory_number && !parsed.factory_name)) {
+        return res.json({ ok: false, message: 'What is the party\'s name or factory number? Try: "add party M901 Sharma Traders Rakeshji 9876543210 hotmelt 500@120 hot, surat"' });
+      }
+
+      const payload = {
+        factory_number:   parsed.factory_number   || '',
+        factory_name:     parsed.factory_name     || '',
+        person_in_charge: parsed.person_in_charge || '',
+        contact:          parsed.contact          || '',
+        stage:            parsed.stage            || 'New Lead',
+        stage_number:     parsed.stage_number != null ? parsed.stage_number : 1,
+        follow_up:        parsed.follow_up        || '',
+        area:             parsed.area             || '',
+        notes:            parsed.notes            || '',
+        lead_type:        parsed.lead_type        || '',
+        items:            Array.isArray(parsed.items) ? parsed.items : [],
+        team_id:          teamId ? parseInt(teamId, 10) : null,
+      };
+      if (payload.items.length) {
+        payload.product  = payload.items[0].product;
+        payload.quantity = payload.items[0].quantity;
+        payload.rate     = payload.items[0].rate;
+      }
+
+      const result = await db.addLead(payload, req.user.username);
+      if (result.conflict) {
+        return res.json({ ok: false, message: `⚠️ ${result.message} — that party already exists (row ${result.rowIndex}). Say "find ${payload.factory_number || payload.factory_name}" to see it.` });
+      }
+
+      db.logLeadActivity(result.rowIndex, payload.team_id, 'created',
+        `Party added via AI command by ${req.user.username}`, {}, req.user.username).catch(() => {});
+      db.logAiAction(result.rowIndex, 'command_create', 'text', String(command).slice(0, 500), parsed, req.user.username, teamId).catch(() => {});
+
+      const bits = [`✅ Party added: <b>${payload.factory_name || payload.factory_number}</b>`];
+      if (payload.person_in_charge) bits.push(`👤 ${payload.person_in_charge}`);
+      if (payload.items.length)     bits.push(`📦 ${payload.items.map(i => `${i.product} ${i.quantity}${i.rate ? '@₹' + i.rate : ''}`).join(', ')}`);
+      if (payload.lead_type)        bits.push(`🌡 ${payload.lead_type}`);
+      if (payload.follow_up)        bits.push(`📅 FU ${payload.follow_up}`);
+      return res.json({ ok: true, action: 'create_lead', message: bits.join(' · '), rowIndex: result.rowIndex });
+    }
+
     if (cmd.action === 'unsupported' || !['update_stage', 'set_followup', 'set_lead_type', 'add_note'].includes(cmd.action)) {
-      return res.json({ ok: false, message: cmd.reason || 'I can update stage, follow-up date, lead temperature, or add a note. Deleting must be done from the Leads table.' });
+      return res.json({ ok: false, message: cmd.reason || 'I can add a party, update stage, set follow-up, change temperature, or add a note. Deleting must be done from the Leads table.' });
     }
 
     // Locate the target lead among the user's visible leads

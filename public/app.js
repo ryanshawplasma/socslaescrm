@@ -1767,16 +1767,13 @@ async function renderTeam() {
         <button class="btn btn-primary" style="font-size:13px;padding:6px 14px" onclick="openAddMemberModal()">+ Add Member</button>
       </div>`;
     if (!users.length) {
-      document.getElementById('team-table').innerHTML = header + emptyState('No team members yet. Add one above or ask salespeople to use /register in the bot.');
+      document.getElementById('team-table').innerHTML = header + emptyState('No team members yet. Add one above, or ask salespeople to use Create Account on the login page.');
       return;
     }
     const rows = users.map(u => `
       <tr>
         <td style="font-weight:500">${escAttr(u.display_name)}</td>
         <td><span class="badge ${u.role === 'admin' ? 'badge-6' : 'badge-3'}">${u.role}</span></td>
-        <td style="color:${u.telegram_user_id ? 'var(--success)' : 'var(--text-muted)'}">
-          ${u.telegram_user_id ? '✓ Linked' : '— Not linked'}
-        </td>
         <td style="color:var(--text-muted);font-size:12px">${u.created_at ? u.created_at.split(' ')[0] : '—'}</td>
         <td style="display:flex;gap:6px;align-items:center">
           ${u.role !== 'admin'
@@ -1788,11 +1785,11 @@ async function renderTeam() {
     document.getElementById('team-table').innerHTML = header + `
       <div class="table-scroll"><table class="crm-table">
         <thead><tr>
-          <th>Name</th><th>Role</th><th>Telegram Bot</th><th>Joined</th><th>Action</th>
+          <th>Name</th><th>Role</th><th>Joined</th><th>Action</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
-      <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">Salespeople can also self-register via the <b>Create Account</b> link on the login page, or using <b>/register</b> in the Telegram bot.</p>
+      <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">Salespeople can self-register via the <b>Create Account</b> link on the login page.</p>
       <div id="ai-vocab-container"></div>`;
     renderVocabAdmin();
   } catch (err) {
@@ -3986,9 +3983,10 @@ const CHAT_MODE_INFO = {
     ],
   },
   command: {
-    ph: 'e.g. "set M277 stage to won" or "follow up F12 next week"',
-    hello: '⚡ <b>Command</b> — tell me what to change and I\'ll do it:<br>• <code>set M277 stage to won</code><br>• <code>follow up F12 next week</code><br>• <code>mark D2 hot</code> · <code>add note to M277: visited today</code> · <code>find surat leads</code>',
+    ph: 'e.g. "add party Sharma Traders Rakeshji 98765…" or "set M277 stage to won"',
+    hello: '⚡ <b>Command</b> — tell me what to do and I\'ll do it:<br>• <code>add party M901 Sharma Traders Rakeshji 9876543210 hotmelt 500@120 hot, surat</code><br>• <code>set M277 stage to won</code> · <code>follow up F12 next week</code><br>• <code>mark D2 hot</code> · <code>add note to M277: visited today</code> · <code>find surat leads</code>',
     chips: [
+      ['➕ Add party',   'add party '],
       ['📊 Set stage',   'set  stage to '],
       ['📅 Follow-up',   'follow up  tomorrow'],
       ['🌡 Temperature', 'mark  hot'],

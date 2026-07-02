@@ -328,9 +328,12 @@ router.post('/route/optimize', authMiddleware, async (req, res, next) => {
 });
 
 // ── Telegram notifications for sharing ───────────────────────
+// Frozen: only fire when TELEGRAM_ENABLED=true (bot code is archived).
+const TELEGRAM_ENABLED = process.env.TELEGRAM_ENABLED === 'true';
+
 async function tgSendTo(displayName, text) {
   const { TELEGRAM_TOKEN } = process.env;
-  if (!TELEGRAM_TOKEN || !displayName) return;
+  if (!TELEGRAM_ENABLED || !TELEGRAM_TOKEN || !displayName) return;
   const user = await db.getUserByName(displayName);
   if (!user?.telegram_user_id) return;
   await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
@@ -370,7 +373,7 @@ async function notifyShareDecision(request, status) {
 async function notifyOrderWon(lead, byUser) {
   try {
     const { TELEGRAM_TOKEN } = process.env;
-    if (!TELEGRAM_TOKEN) return;
+    if (!TELEGRAM_ENABLED || !TELEGRAM_TOKEN) return;
     const items = (lead.items || []).map(i => `${i.product} ${i.quantity}${i.rate ? ' @₹' + i.rate : ''}`).join(', ');
     const text = [
       `🏆 <b>Order Won!</b>`, '',

@@ -13,6 +13,7 @@ const state = {
   filterProduct: '',
   filterSalesman: '',
   filterList:  '',
+  filterGroup: '',   // '', 'active', 'won', 'lost' — set by clicking a dashboard KPI card
   myLists:     [],
   view:        'table',
   fuFilter:    'overdue',
@@ -1526,6 +1527,15 @@ function stageBadge(lead) {
   return `<span class="badge badge-${n}">${label}</span>`;
 }
 
+// Won / Lost / Active grouping — mirrors getStats() in db.js (won = stage 6/7,
+// lost = 0, active = everything else). Used by the clickable dashboard KPI cards.
+function groupOf(l) {
+  const n = String(l.stage_number || STAGE_NUMBERS[l.stage] || '');
+  if (n === '6' || n === '7') return 'won';
+  if (n === '0')              return 'lost';
+  return 'active';
+}
+
 function filteredLeads() {
   const q = state.search.toLowerCase();
   let leads = state.leads.filter(l => {
@@ -1535,11 +1545,12 @@ function filteredLeads() {
     const matchStage    = !state.filterStage    || l.stage      === state.filterStage;
     const matchProduct  = !state.filterProduct  || l.product    === state.filterProduct;
     const matchSalesman = !state.filterSalesman || l.created_by === state.filterSalesman;
+    const matchGroup    = !state.filterGroup    || groupOf(l)   === state.filterGroup;
     const matchList     = !state.filterList
       || (state.filterList === '__none__'
             ? !(l.list_ids || []).length
             : (l.list_ids || []).map(String).includes(String(state.filterList)));
-    return matchSearch && matchStage && matchProduct && matchSalesman && matchList;
+    return matchSearch && matchStage && matchProduct && matchSalesman && matchGroup && matchList;
   });
   if (state.sortKey) {
     leads = [...leads].sort((a, b) => {
@@ -1693,15 +1704,21 @@ function renderDashboard() {
     won: '<path d="M20 6 9 17l-5-5"/>',
     lost: '<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>',
   };
-  const card = (accent, key, label, value, sub) => `
-    <div class="stat-card stat-${accent}">
+  const card = (accent, key, label, value, sub) => {
+    const group = key === 'total' ? '' : key;   // total → all leads
+    return `
+    <div class="stat-card stat-${accent} stat-clickable" role="button" tabindex="0"
+         title="View ${label.toLowerCase()} in Leads"
+         onclick="dashFilter('${group}')"
+         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();dashFilter('${group}')}">
       <div class="stat-top">
         <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[key]}</svg></span>
         <span class="stat-label">${label}</span>
       </div>
       <div class="stat-value">${value}</div>
-      <div class="stat-sub">${sub}</div>
+      <div class="stat-sub">${sub} ›</div>
     </div>`;
+  };
 
   document.getElementById('stat-cards').innerHTML =
     card('blue',  'total',  'Total Leads', s.total,  'All time') +
@@ -1885,7 +1902,33 @@ function populateFilters() {
   }
 }
 
+// Jump from a dashboard KPI card into the Leads page, scoped to that group.
+function dashFilter(group) {
+  state.filterGroup = group;
+  state.filterStage = '';          // group supersedes any exact-stage filter
+  navigate('leads');
+}
+
+function clearGroupFilter() {
+  state.filterGroup = '';
+  renderLeadsView();
+}
+
+const GROUP_LABELS = { active: 'Active (in pipeline)', won: 'Won', lost: 'Lost' };
+
+function renderGroupChip() {
+  const host = document.getElementById('leads-active-filter');
+  if (!host) return;
+  if (!state.filterGroup) { host.innerHTML = ''; return; }
+  host.innerHTML = `
+    <span class="active-filter-chip">
+      Showing <b>${GROUP_LABELS[state.filterGroup] || state.filterGroup}</b>
+      <button type="button" onclick="clearGroupFilter()" aria-label="Clear filter">✕</button>
+    </span>`;
+}
+
 function renderLeadsView() {
+  renderGroupChip();
   const leads = filteredLeads();
   // Admins (and team views) see whose lead each row is
   const cols = ['factory_number','factory_name','person_in_charge','contact','product','quantity','rate','stage','lead_type','follow_up','area'];

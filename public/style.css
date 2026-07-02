@@ -3061,3 +3061,112 @@ tr.row-cold:hover td { background: #dbeafe; }
   .stat-value { font-size: 24px; }
   .stat-top { margin-bottom: 10px; }
 }
+
+/* ============================================================
+   LOGIN REDESIGN v8 — split-panel sign-in
+   ============================================================ */
+#login-box.login-split {
+  max-width: 880px;
+  padding: 0;
+  display: flex;
+  overflow: hidden;
+  border-radius: 20px;
+  box-shadow: 0 30px 80px rgba(0,0,0,.5);
+}
+
+/* ── Left: brand showcase ─────────────────────────────────── */
+.login-side {
+  flex: 1.08;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 28px;
+  padding: 38px 36px;
+  color: #fff;
+  background:
+    radial-gradient(120% 90% at 0% 0%, rgba(255,255,255,.10), transparent 55%),
+    linear-gradient(160deg, var(--primary) 0%, var(--primary-dk) 55%, #171c3f 130%);
+  position: relative;
+}
+.login-side::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: radial-gradient(60% 45% at 100% 100%, rgba(255,255,255,.07), transparent 70%);
+  pointer-events: none;
+}
+
+.login-side-brand {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 16px; font-weight: 700; letter-spacing: -.2px;
+}
+.login-side-mark {
+  width: 34px; height: 34px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 10px;
+  background: rgba(255,255,255,.16);
+  border: 1px solid rgba(255,255,255,.22);
+  font-size: 17px;
+}
+
+.login-side-title {
+  font-size: 27px; font-weight: 800; line-height: 1.2;
+  letter-spacing: -.6px; margin-bottom: 12px;
+}
+.login-side-title span {
+  background: linear-gradient(90deg, #fff, rgba(255,255,255,.65));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.login-side-sub {
+  font-size: 13.5px; line-height: 1.6;
+  color: rgba(255,255,255,.78);
+  margin-bottom: 24px;
+  max-width: 340px;
+}
+
+.login-side-feats { list-style: none; display: flex; flex-direction: column; gap: 13px; }
+.login-side-feats li { display: flex; align-items: flex-start; gap: 12px; }
+.feat-ico {
+  width: 34px; height: 34px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 10px; font-size: 16px;
+  background: rgba(255,255,255,.12);
+  border: 1px solid rgba(255,255,255,.14);
+}
+.login-side-feats b { display: block; font-size: 13px; font-weight: 600; }
+.login-side-feats small {
+  display: block; font-size: 11.5px; color: rgba(255,255,255,.62);
+  margin-top: 1px; line-height: 1.45;
+}
+
+.login-side-foot {
+  font-size: 11px; color: rgba(255,255,255,.55);
+  border-top: 1px solid rgba(255,255,255,.14);
+  padding-top: 14px;
+}
+
+/* ── Right: form panel ────────────────────────────────────── */
+.login-main {
+  flex: 1;
+  min-width: 0;
+  padding: 36px 34px;
+  background: var(--card-bg);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  max-height: 88vh;
+  overflow-y: auto;
+}
+/* brand row is redundant next to the side panel on desktop */
+.login-split .login-brand,
+.login-split .login-tagline { display: none; }
+
+/* ── Mobile: side panel collapses, brand row returns ──────── */
+@media (max-width: 820px) {
+  #login-box.login-split { max-width: 400px; border-radius: 16px; }
+  .login-side { display: none; }
+  .login-main { padding: 30px 26px; max-height: 92vh; }
+  .login-split .login-brand { display: block; }
+  .login-split .login-tagline { display: block; }
+}

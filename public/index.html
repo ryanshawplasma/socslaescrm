@@ -16,16 +16,38 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=7" />
+  <link rel="stylesheet" href="style.css?v=8" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
 
   <!-- ── LOGIN OVERLAY ─────────────────────────────────────── -->
   <div id="login-overlay" class="hidden">
-    <div id="login-box">
+    <div id="login-box" class="login-split">
+
+      <!-- Brand / showcase panel (desktop) -->
+      <aside class="login-side">
+        <div class="login-side-brand">
+          <span class="login-side-mark">◈</span>
+          <span class="login-side-name">SalesCRM</span>
+        </div>
+        <div class="login-side-body">
+          <h1 class="login-side-title">The CRM that<br><span>learns how you talk.</span></h1>
+          <p class="login-side-sub">Type it, speak it, or snap a photo — it understands your shorthand, your products, your language.</p>
+          <ul class="login-side-feats">
+            <li><span class="feat-ico">💬</span><div><b>Type naturally</b><small>"M277 Rameshji hotmelt 500@120 hot" — done.</small></div></li>
+            <li><span class="feat-ico">🎤</span><div><b>Speak in Hinglish</b><small>Voice notes become leads, transcript included.</small></div></li>
+            <li><span class="feat-ico">📷</span><div><b>Snap a business card</b><small>Cards, signboards &amp; notes turn into leads.</small></div></li>
+            <li><span class="feat-ico">📚</span><div><b>Learns your shorthand</b><small>Correct it twice — it remembers forever.</small></div></li>
+          </ul>
+        </div>
+        <div class="login-side-foot">🔒 Team workspaces · lead sharing · Telegram bot included</div>
+      </aside>
+
+      <!-- Form panel -->
+      <div class="login-main">
       <div class="login-brand">◈ SalesCRM</div>
-      <div class="login-tagline">The CRM that <b>learns how you talk</b> — type, speak or snap a photo, and it understands your shorthand, your products, your language.</div>
+      <div class="login-tagline">The CRM that <b>learns how you talk</b> — type, speak or snap a photo.</div>
 
       <!-- ── PIN Unlock screen (trusted device) ───────────── -->
       <div id="pin-unlock-screen" style="display:none">
@@ -139,6 +161,7 @@
           Already have an account? <a href="#" onclick="showLoginScreen(event)" style="color:var(--primary);text-decoration:none;font-weight:500">Sign in</a>
         </p>
       </div>
+      </div><!-- /login-main -->
     </div>
   </div>
 

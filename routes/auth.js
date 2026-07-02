@@ -29,6 +29,15 @@ const ADMIN_PASS = process.env.ADMIN_PASS || '';
 const SALES_USER = process.env.SALES_USER || '';
 const SALES_PASS = process.env.SALES_PASS || '';
 
+// Shared password strength check — min 8 chars with at least one letter and one number.
+function validatePassword(pw) {
+  const s = String(pw || '');
+  if (s.length < 8) return 'Password must be at least 8 characters';
+  if (s.length > 128) return 'Password is too long';
+  if (!/[a-zA-Z]/.test(s) || !/\d/.test(s)) return 'Password must include at least one letter and one number';
+  return null;
+}
+
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 15,
@@ -81,10 +90,21 @@ router.post(['/auth/login', '/login'], loginLimiter, async (req, res, next) => {
       return res.status(423).json({ error: `Account locked. Try again in ${mins} minute${mins !== 1 ? 's' : ''}.` });
     }
 
-    const valid = await db.verifyUserPin(user.display_name, secret);
+    // Primary credential is the account password. Accounts created before the
+    // password migration have none yet — accept their existing PIN once and flag
+    // that they must set a password (handled by the client's blocking setup step).
+    let valid = false;
+    let needsPasswordSetup = false;
+    if (user.password_hash) {
+      valid = !!(await db.verifyUserPassword(user.display_name, secret));
+    } else {
+      valid = !!(await db.verifyUserPin(user.display_name, secret));
+      needsPasswordSetup = valid;
+    }
+
     if (!valid) {
       await db.incrementFailedAttempts(user.id);
-      await db.logSecurity(user.id, 'login_failed', { reason: 'wrong_pin' }, ip, ua, null, null);
+      await db.logSecurity(user.id, 'login_failed', { reason: 'wrong_secret' }, ip, ua, null, null);
       const updated = await db.getUserByCredential(cred);
       const attempts = updated?.failed_attempts || 0;
       const attemptsLeft = Math.max(0, 5 - attempts);
@@ -124,8 +144,30 @@ router.post(['/auth/login', '/login'], loginLimiter, async (req, res, next) => {
       userId: user.id, sessionId: session.id,
       deviceId: device?.id || null,
       deviceTrusted: !!device,
-      hasPIN, teams,
+      hasPIN, teams, needsPasswordSetup,
     });
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/auth/set-password ───────────────────────────────
+// Used both by the one-time migration (legacy accounts with no password)
+// and for changing an existing password (requires the current one).
+router.post('/auth/set-password', authMiddleware, async (req, res, next) => {
+  const { password, currentPassword } = req.body || {};
+  const err = validatePassword(password);
+  if (err) return res.status(400).json({ error: err });
+  try {
+    const user = await db.getUserByName(req.user.username);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    // Changing an existing password requires proving the current one.
+    if (user.password_hash) {
+      if (!currentPassword || !(await db.verifyUserPassword(user.display_name, currentPassword))) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+      }
+    }
+    await db.setUserPassword(user.id, password);
+    await db.logSecurity(user.id, 'password_set', {}, getIP(req), req.headers['user-agent'] || '', req.user.sessionId, null);
+    res.json({ ok: true });
   } catch (err) { next(err); }
 });
 

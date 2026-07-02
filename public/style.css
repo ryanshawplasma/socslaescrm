@@ -2098,13 +2098,15 @@ tr.row-cold:hover td { background: #dbeafe; }
 .pin-switch { font-size: 13px; color: var(--text-muted); text-align: center; margin-top: 12px; }
 .pin-switch a { color: var(--primary); text-decoration: none; }
 
-/* ── PIN setup modal ──────────────────────────────────────── */
-#pin-setup-modal {
+/* ── PIN setup / Set password modals ──────────────────────── */
+#pin-setup-modal,
+#set-password-modal {
   position: fixed; inset: 0; z-index: 1100;
   display: flex; align-items: center; justify-content: center;
   background: rgba(0,0,0,.45); backdrop-filter: blur(4px);
 }
-#pin-setup-modal.hidden { display: none; }
+#pin-setup-modal.hidden,
+#set-password-modal.hidden { display: none; }
 .pin-setup-box {
   background: var(--card-bg); border: 1px solid var(--border);
   border-radius: 14px; padding: 28px; width: 340px; max-width: 94vw;
@@ -2112,6 +2114,25 @@ tr.row-cold:hover td { background: #dbeafe; }
 }
 .pin-setup-box h3 { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
 .pin-setup-box p  { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; }
+
+/* ── Manage Team inline controls ──────────────────────────── */
+.team-role-select {
+  min-width: 92px; padding: 6px 10px; font-size: 13px;
+  border-radius: 8px; border: 1px solid var(--border);
+  background: var(--card-bg); color: var(--text); cursor: pointer;
+}
+.team-role-select:disabled { opacity: .6; cursor: not-allowed; }
+.team-desig-input {
+  width: 100%; max-width: 180px; padding: 6px 10px; font-size: 13px;
+  border-radius: 8px; border: 1px solid var(--border);
+  background: var(--card-bg); color: var(--text);
+}
+.team-desig-input::placeholder { color: var(--text-muted); }
+.team-desig-input:focus,
+.team-role-select:focus {
+  outline: none; border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-glow, rgba(99,102,241,.18));
+}
 
 /* ── Password / PIN strength ──────────────────────────────── */
 .strength-bar { height: 4px; background: var(--border); border-radius: 2px; margin: 6px 0 3px; overflow: hidden; }

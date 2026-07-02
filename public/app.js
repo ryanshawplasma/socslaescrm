@@ -390,9 +390,10 @@ async function submitPinUnlock() {
 async function offerDeviceSetup(loginData) {
   const { deviceId, deviceTrusted, hasPIN, username, accessToken, refreshToken } = loginData;
   storeTokens(accessToken, refreshToken);
-  localStorage.setItem('crm_user',    username);
-  localStorage.setItem('crm_role',    loginData.role);
-  localStorage.setItem('crm_user_id', String(loginData.userId || ''));
+  localStorage.setItem('crm_user',      username);
+  localStorage.setItem('crm_last_user', username);   // remembered for next sign-in on this device
+  localStorage.setItem('crm_role',      loginData.role);
+  localStorage.setItem('crm_user_id',   String(loginData.userId || ''));
   localStorage.setItem('crm_session_id', loginData.sessionId || '');
   state.role = loginData.role;
 
@@ -404,8 +405,12 @@ async function offerDeviceSetup(loginData) {
 
   hideLoginPage();
 
-  // If trusted device and no PIN yet — offer PIN setup
-  if (deviceTrusted && !hasPIN) {
+  if (loginData.needsPasswordSetup) {
+    // Legacy account that just logged in with its PIN — force a real password
+    // before anything else. PIN setup (if any) is chained after it's done.
+    showSetPasswordModal({ migration: true, deviceId, deviceTrusted, hasPIN });
+  } else if (deviceTrusted && !hasPIN) {
+    // Trusted device with no quick-unlock PIN yet — offer to set one.
     setTimeout(() => showPinSetupModal(deviceId), 500);
   }
 
@@ -446,6 +451,74 @@ async function submitPinSetup() {
     toast('Quick-unlock PIN set! Use it next time you open the app.', 'success');
   } catch (err) {
     errEl.textContent = err.message || 'Failed to set PIN';
+  }
+}
+
+// ── Set / Change Password modal ───────────────────────────────
+// opts.migration = true  → blocking first-time setup (no current pw, no cancel)
+// opts.migration = false → voluntary change (requires current pw, cancellable)
+function showSetPasswordModal(opts = {}) {
+  const modal = document.getElementById('set-password-modal');
+  if (!modal) return;
+  const migration = !!opts.migration;
+  modal.dataset.migration    = migration ? '1' : '';
+  modal.dataset.deviceId     = opts.deviceId || '';
+  modal.dataset.deviceTrusted = opts.deviceTrusted ? '1' : '';
+  modal.dataset.hasPin       = opts.hasPIN ? '1' : '';
+
+  document.getElementById('set-pw-title').textContent = migration ? '🔑 Set Your Password' : '🔑 Change Password';
+  document.getElementById('set-pw-intro').textContent = migration
+    ? "For your security, create a password for your account. You'll use it to sign in from now on — your PIN stays as quick-unlock on trusted devices."
+    : 'Enter your current password, then choose a new one.';
+  document.getElementById('set-pw-current-wrap').style.display = migration ? 'none' : '';
+  document.getElementById('set-pw-cancel').classList.toggle('hidden', migration);
+  document.getElementById('set-pw-btn').textContent = migration ? 'Set Password' : 'Change Password';
+
+  document.getElementById('set-pw-current').value = '';
+  document.getElementById('set-pw-input').value   = '';
+  document.getElementById('set-pw-input2').value  = '';
+  document.getElementById('set-pw-error').textContent = '';
+  modal.classList.remove('hidden');
+  setTimeout(() => document.getElementById(migration ? 'set-pw-input' : 'set-pw-current')?.focus(), 100);
+}
+
+function closeSetPasswordModal() {
+  const modal = document.getElementById('set-password-modal');
+  // A blocking migration modal cannot be dismissed without setting a password.
+  if (modal?.dataset.migration === '1') return;
+  if (modal) modal.classList.add('hidden');
+}
+
+async function submitSetPassword() {
+  const modal     = document.getElementById('set-password-modal');
+  const migration = modal.dataset.migration === '1';
+  const current   = document.getElementById('set-pw-current').value;
+  const password  = document.getElementById('set-pw-input').value;
+  const password2 = document.getElementById('set-pw-input2').value;
+  const errEl     = document.getElementById('set-pw-error');
+  const btn       = document.getElementById('set-pw-btn');
+  errEl.textContent = '';
+  if (!migration && !current) { errEl.textContent = 'Enter your current password'; return; }
+  const pwErr = getPasswordError(password);
+  if (pwErr)                  { errEl.textContent = pwErr; return; }
+  if (password !== password2) { errEl.textContent = 'Passwords do not match'; return; }
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Saving…';
+  try {
+    const body = migration ? { password } : { password, currentPassword: current };
+    await apiFetch('/api/auth/set-password', { method: 'POST', body: JSON.stringify(body) });
+    modal.dataset.migration = '';        // unlock so it can close
+    modal.classList.add('hidden');
+    toast(migration ? 'Password set — use it to sign in next time.' : 'Password updated.', 'success');
+    if (migration && modal.dataset.deviceTrusted === '1' && modal.dataset.hasPin !== '1') {
+      setTimeout(() => showPinSetupModal(modal.dataset.deviceId), 400);
+    }
+  } catch (err) {
+    errEl.textContent = err.message || 'Could not set password';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
   }
 }
 
@@ -535,18 +608,41 @@ function showDemoBanner() {
   document.body.prepend(b);
 }
 
+// Password strength — mirrors validatePassword() in routes/auth.js + routes/users.js.
+function getPasswordError(pw) {
+  const s = String(pw || '');
+  if (s.length < 8)   return 'Password must be at least 8 characters';
+  if (s.length > 128) return 'Password is too long';
+  if (!/[a-zA-Z]/.test(s) || !/\d/.test(s)) return 'Password must include a letter and a number';
+  return null;
+}
+
+function onRegPasswordInput(input) {
+  const hint = document.getElementById('reg-password-hint');
+  if (!hint) return;
+  if (!input.value) {
+    hint.textContent = 'At least 8 characters, with a letter and a number';
+    hint.style.color = '';
+    return;
+  }
+  const err = getPasswordError(input.value);
+  hint.textContent = err || 'Looks good';
+  hint.style.color = err ? 'var(--danger, #e74c3c)' : '#27ae60';
+}
+
 async function handleRegister(e) {
   e.preventDefault();
   const name  = document.getElementById('reg-name').value.toLowerCase().trim();
-  const pin   = document.getElementById('reg-pin').value.trim();
-  const pin2  = document.getElementById('reg-pin2').value.trim();
+  const password  = document.getElementById('reg-password').value;
+  const password2 = document.getElementById('reg-password2').value;
   const errEl = document.getElementById('register-error');
   const btn   = document.getElementById('register-btn');
   errEl.textContent = '';
   const fmtErr = getUsernameFormatError(name);
   if (fmtErr)                    { errEl.textContent = fmtErr; return; }
-  if (!/^\d{4,6}$/.test(pin))   { errEl.textContent = 'PIN must be 4–6 digits'; return; }
-  if (pin !== pin2)              { errEl.textContent = 'PINs do not match'; return; }
+  const pwErr = getPasswordError(password);
+  if (pwErr)                     { errEl.textContent = pwErr; return; }
+  if (password !== password2)    { errEl.textContent = 'Passwords do not match'; return; }
   btn.disabled    = true;
   btn.textContent = 'Creating…';
   try {
@@ -554,7 +650,7 @@ async function handleRegister(e) {
     const regRes  = await fetch('/api/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, pin, mobile }),
+      body: JSON.stringify({ name, password, mobile }),
     });
     const regData = await regRes.json();
     if (!regRes.ok) {
@@ -576,7 +672,7 @@ async function handleRegister(e) {
     const loginRes  = await fetch('/api/auth/login', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ credential: name, password: pin, fingerprint, trustDevice: true, deviceMeta }),
+      body:    JSON.stringify({ credential: name, password, fingerprint, trustDevice: true, deviceMeta }),
     });
     const loginData = await loginRes.json();
     if (!loginRes.ok) throw new Error(loginData.error || 'Login failed after registration');
@@ -2087,40 +2183,129 @@ async function renderTeam() {
     return;
   }
   try {
-    const users = await apiFetch('/api/users');
+    const users      = await apiFetch('/api/users');
+    const myId       = parseInt(localStorage.getItem('crm_user_id') || '0', 10);
+    const adminCount = users.filter(u => u.role === 'admin').length;
     const header = `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-        <span style="font-size:15px;font-weight:600;color:var(--text)">Team Members (${users.length})</span>
+        <span style="font-size:15px;font-weight:600;color:var(--text)">Manage Team (${users.length})</span>
         <button class="btn btn-primary" style="font-size:13px;padding:6px 14px" onclick="openAddMemberModal()">+ Add Member</button>
       </div>`;
     if (!users.length) {
       document.getElementById('team-table').innerHTML = header + emptyState('No team members yet. Add one above, or ask salespeople to use Create Account on the login page.');
       return;
     }
-    const rows = users.map(u => `
+    const rows = users.map(u => {
+      const isSelf     = u.id === myId;
+      const isLastAdmin = u.role === 'admin' && adminCount <= 1;
+      const nm = escAttr(u.display_name);
+      const roleSel = `
+        <select class="team-role-select" ${isLastAdmin ? 'disabled title="Promote another admin before changing the last admin"' : ''}
+                onchange="changeUserRole(${u.id}, this.value, '${nm}')">
+          <option value="sales" ${u.role === 'sales' ? 'selected' : ''}>Sales</option>
+          <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option>
+        </select>`;
+      const desig = `<input type="text" class="team-desig-input" value="${escAttr(u.designation || '')}"
+                       placeholder="—" maxlength="60" onchange="changeUserDesignation(${u.id}, this.value)" />`;
+      const pinBadge = u.has_password ? '' :
+        `<span class="badge badge-3" title="Signs in with PIN — will be asked to set a password" style="margin-left:6px">PIN only</span>`;
+      return `
       <tr>
-        <td style="font-weight:500">${escAttr(u.display_name)}</td>
-        <td><span class="badge ${u.role === 'admin' ? 'badge-6' : 'badge-3'}">${u.role}</span></td>
+        <td style="font-weight:500">${escAttr(u.display_name)}${isSelf ? ' <span style="color:var(--text-muted);font-size:11px">(you)</span>' : ''}${pinBadge}</td>
+        <td>${roleSel}</td>
+        <td>${desig}</td>
         <td style="color:var(--text-muted);font-size:12px">${u.created_at ? u.created_at.split(' ')[0] : '—'}</td>
-        <td style="display:flex;gap:6px;align-items:center">
-          ${u.role !== 'admin'
-            ? `<button class="action-btn" onclick="openResetPinModal(${u.id}, '${escAttr(u.display_name)}')">Reset PIN</button>
-               <button class="action-btn del" onclick="removeTeamMember(${u.id}, '${escAttr(u.display_name)}')">Remove</button>`
-            : '<span style="color:var(--text-muted);font-size:12px">—</span>'}
+        <td style="display:flex;gap:6px;align-items:center;white-space:nowrap">
+          <button class="action-btn" onclick="openResetPasswordModal(${u.id}, '${nm}')">Reset Password</button>
+          ${isSelf ? '' : `<button class="action-btn del" onclick="removeTeamMember(${u.id}, '${nm}')">Remove</button>`}
         </td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
     document.getElementById('team-table').innerHTML = header + `
       <div class="table-scroll"><table class="crm-table">
         <thead><tr>
-          <th>Name</th><th>Role</th><th>Joined</th><th>Action</th>
+          <th>Name</th><th>Role</th><th>Designation</th><th>Joined</th><th>Action</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
-      <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">Salespeople can self-register via the <b>Create Account</b> link on the login page.</p>
+      <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">Salespeople can self-register via the <b>Create Account</b> link on the login page. Only admins can change roles.</p>
       <div id="ai-vocab-container"></div>`;
     renderVocabAdmin();
   } catch (err) {
     document.getElementById('team-table').innerHTML = emptyState('Failed to load team: ' + err.message);
+  }
+}
+
+async function changeUserRole(id, role, name) {
+  const label = role === 'admin' ? 'Admin' : 'Sales';
+  if (!confirm(`Change ${name}'s role to ${label}?`)) { renderTeam(); return; }
+  try {
+    await apiFetch(`/api/users/${id}`, { method: 'PATCH', body: JSON.stringify({ role }) });
+    toast(`${name} is now ${label}`, 'success');
+    renderTeam();
+  } catch (err) {
+    toast(err.message, 'error');
+    renderTeam();   // revert the dropdown to the server's truth
+  }
+}
+
+async function changeUserDesignation(id, value) {
+  try {
+    await apiFetch(`/api/users/${id}`, { method: 'PATCH', body: JSON.stringify({ designation: value }) });
+    toast('Designation saved', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+    renderTeam();
+  }
+}
+
+function openResetPasswordModal(userId, userName) {
+  let overlay = document.getElementById('reset-pw-overlay');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'reset-pw-overlay';
+  overlay.style.cssText = 'position:fixed;top:0;right:0;bottom:0;left:0;background:rgba(0,0,0,0.55);z-index:1000;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = `
+    <div style="background:var(--card-bg);border-radius:12px;padding:24px;width:340px;max-width:95vw;box-shadow:0 8px 32px rgba(0,0,0,0.4)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <h3 style="margin:0;font-size:15px;color:var(--text)">Reset Password — ${escHtml(userName)}</h3>
+        <button onclick="document.getElementById('reset-pw-overlay').remove()" class="icon-btn">✕</button>
+      </div>
+      <p style="font-size:12px;color:var(--text-muted);margin:0 0 14px;line-height:1.5">Set a temporary password and share it with ${escHtml(userName)}. They can change it from their profile after signing in.</p>
+      <div class="form-group" style="margin-bottom:12px">
+        <label>New Password <span style="font-weight:400;color:var(--text-muted)">(min 8 chars)</span></label>
+        <input id="rpw-pw" type="password" placeholder="min 8 chars, letters + numbers" style="width:100%" autofocus />
+      </div>
+      <div class="form-group" style="margin-bottom:16px">
+        <label>Confirm Password</label>
+        <input id="rpw-pw2" type="password" placeholder="Re-enter password" style="width:100%" />
+      </div>
+      <p id="rpw-error" style="color:var(--danger);font-size:13px;margin:0 0 12px;min-height:18px"></p>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-ghost" onclick="document.getElementById('reset-pw-overlay').remove()">Cancel</button>
+        <button class="btn btn-primary" id="rpw-btn" onclick="submitResetPassword(${userId}, '${escAttr(userName)}')">Set Password</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+async function submitResetPassword(userId, userName) {
+  const pw    = document.getElementById('rpw-pw').value;
+  const pw2   = document.getElementById('rpw-pw2').value;
+  const errEl = document.getElementById('rpw-error');
+  const btn   = document.getElementById('rpw-btn');
+  errEl.textContent = '';
+  const pwErr = getPasswordError(pw);
+  if (pwErr)          { errEl.textContent = pwErr; return; }
+  if (pw !== pw2)     { errEl.textContent = 'Passwords do not match'; return; }
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    await apiFetch(`/api/users/${userId}/password`, { method: 'PATCH', body: JSON.stringify({ password: pw }) });
+    document.getElementById('reset-pw-overlay').remove();
+    toast(`Password reset for ${userName}. Share it with them securely.`, 'success');
+  } catch (err) {
+    errEl.textContent = err.message;
+    btn.disabled = false; btn.textContent = 'Set Password';
   }
 }
 
@@ -2894,7 +3079,6 @@ function wireEvents() {
 
   document.getElementById('login-form').addEventListener('submit', handleLogin);
   document.getElementById('register-form').addEventListener('submit', handleRegister);
-  renderPinStrength('reg-pin', 'reg-pin-strength');
   renderPinStrength('pin-setup-input', 'pin-setup-strength');
   // Security modal ESC to close
   document.addEventListener('keydown', e => {

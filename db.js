@@ -205,9 +205,15 @@ async function initSchema() {
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT`).catch(() => {});
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile TEXT`).catch(() => {});
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS default_area TEXT DEFAULT ''`).catch(() => {});
+    // Real account password (primary credential). PIN becomes device quick-unlock,
+    // so it is no longer mandatory at the column level.
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE users ALTER COLUMN pin_hash DROP NOT NULL`).catch(() => {});
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_attempts SMALLINT DEFAULT 0`).catch(() => {});
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ`).catch(() => {});
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ`).catch(() => {});
+    // Free-text job title shown on the Team page (e.g. "Regional Manager").
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS designation TEXT DEFAULT ''`).catch(() => {});
 
     await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS uq_users_email
@@ -891,14 +897,30 @@ async function reassignFollowUp(leadId, newAssigneeName) {
 }
 
 // ── Users ─────────────────────────────────────────────────────
-async function createUser(displayName, pin, role = 'sales', telegramUserId = '') {
+async function createUser(displayName, pin, role = 'sales', telegramUserId = '', password = '') {
   const { rows: existing } = await pool.query(`SELECT id FROM users WHERE display_name ILIKE $1`, [displayName]);
   if (existing.length) return { ok: false, message: 'Name already taken. Choose another name.' };
-  const pinHash = await bcrypt.hash(String(pin), 10);
+  const pinHash      = pin      ? await bcrypt.hash(String(pin), 10)      : null;
+  const passwordHash = password ? await bcrypt.hash(String(password), 10) : null;
   await pool.query(
-    `INSERT INTO users (display_name, role, pin_hash, telegram_user_id, created_at) VALUES ($1,$2,$3,$4,$5)`,
-    [displayName, role, pinHash, telegramUserId || null, nowIST()]
+    `INSERT INTO users (display_name, role, pin_hash, password_hash, telegram_user_id, created_at) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [displayName, role, pinHash, passwordHash, telegramUserId || null, nowIST()]
   );
+  return { ok: true };
+}
+
+// Verify a real account password (primary credential).
+async function verifyUserPassword(displayName, password) {
+  const user = await getUserByName(displayName);
+  if (!user || !user.password_hash) return null;
+  const valid = await bcrypt.compare(String(password || ''), user.password_hash);
+  return valid ? user : null;
+}
+
+// Set / change a user's password.
+async function setUserPassword(userId, password) {
+  const hash = await bcrypt.hash(String(password), 10);
+  await pool.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [hash, userId]);
   return { ok: true };
 }
 
@@ -921,9 +943,31 @@ async function updateUserPin(userId, newPin) {
 
 async function getAllUsers() {
   const { rows } = await pool.query(
-    `SELECT id, display_name, role, telegram_user_id, created_at FROM users ORDER BY id ASC`
+    `SELECT id, display_name, role, telegram_user_id, created_at,
+            COALESCE(designation, '') AS designation,
+            (password_hash IS NOT NULL) AS has_password
+       FROM users ORDER BY id ASC`
   );
   return rows;
+}
+
+// Change a user's global role. Callers must guard the last-admin case.
+async function setUserRole(userId, role) {
+  const safe = ['admin', 'sales'].includes(role) ? role : 'sales';
+  await pool.query(`UPDATE users SET role = $1 WHERE id = $2`, [safe, userId]);
+  return { ok: true };
+}
+
+async function setUserDesignation(userId, designation) {
+  await pool.query(`UPDATE users SET designation = $1 WHERE id = $2`,
+    [String(designation || '').slice(0, 60), userId]);
+  return { ok: true };
+}
+
+// How many active admins exist — used to protect against demoting the last one.
+async function getAdminCount() {
+  const { rows } = await pool.query(`SELECT COUNT(*)::int AS n FROM users WHERE role = 'admin'`);
+  return rows[0]?.n || 0;
 }
 
 async function deleteUser(userId) {
@@ -1892,7 +1936,8 @@ module.exports = {
   addPhoto, getPhotos, getLeadContacts,
   grantLeadAccess, revokeLeadAccess, getLeadAccess, claimFollowUp, reassignFollowUp,
   createUser, getUserByName, getUserByTelegramId, updateUserPin, updateUserName, updateUserDefaultArea,
-  getAllUsers, deleteUser, verifyUserPin, seedAdminUser,
+  getAllUsers, deleteUser, verifyUserPin, verifyUserPassword, setUserPassword, seedAdminUser,
+  setUserRole, setUserDesignation, getAdminCount,
   saveWebAuthnCred, getWebAuthnCred, getUserByWebAuthnCredId,
   getLeadCoordinates, updateLeadCoords,
   // Team workspace

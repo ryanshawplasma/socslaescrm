@@ -17,7 +17,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=11" />
+  <link rel="stylesheet" href="style.css?v=12" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -96,11 +96,11 @@
             <span id="credential-type-label"></span>
           </div>
           <div class="form-group">
-            <label>PIN / Password</label>
+            <label>Password</label>
             <div class="pw-wrap">
-              <input id="login-password" type="password" placeholder="Enter PIN or password"
+              <input id="login-password" type="password" placeholder="Enter your password"
                 autocomplete="current-password" />
-              <button type="button" class="pw-toggle" aria-label="Show PIN" onclick="togglePw('login-password', this)">👁</button>
+              <button type="button" class="pw-toggle" aria-label="Show password" onclick="togglePw('login-password', this)">👁</button>
             </div>
           </div>
           <div class="remember-row">
@@ -108,10 +108,10 @@
               <input type="checkbox" id="remember-device" checked />
               Remember this device
             </label>
-            <a href="#" onclick="showForgotPin(event)" style="color:var(--text-muted);text-decoration:none;font-size:12px">Forgot PIN?</a>
+            <a href="#" onclick="showForgotPin(event)" style="color:var(--text-muted);text-decoration:none;font-size:12px">Forgot password?</a>
           </div>
           <div id="forgot-pin-box" style="display:none;margin-bottom:10px;padding:10px 14px;background:var(--bg);border-radius:8px;border:1px solid var(--border);font-size:13px;color:var(--text-muted);line-height:1.6">
-            Ask your <b style="color:var(--text)">admin</b> to reset your PIN from <b style="color:var(--text)">Team → Reset PIN</b>.
+            Ask your <b style="color:var(--text)">admin</b> to reset your password from <b style="color:var(--text)">Team → Reset Password</b>.
           </div>
           <p id="login-error" class="login-error"></p>
           <button type="submit" id="login-btn" class="btn btn-primary full-width">Sign In</button>
@@ -147,13 +147,19 @@
             <input id="reg-mobile" type="tel" placeholder="+91 98765 43210" autocomplete="tel" />
           </div>
           <div class="form-group">
-            <label>PIN <span style="font-weight:400;color:var(--text-muted)">(4–6 digits)</span></label>
-            <input id="reg-pin" type="password" placeholder="••••••" inputmode="numeric" maxlength="6" />
-            <div id="reg-pin-strength"></div>
+            <label>Password <span style="font-weight:400;color:var(--text-muted)">(min 8 chars)</span></label>
+            <div class="pw-wrap">
+              <input id="reg-password" type="password" placeholder="Create a password" autocomplete="new-password" oninput="onRegPasswordInput(this)" />
+              <button type="button" class="pw-toggle" aria-label="Show password" onclick="togglePw('reg-password', this)">👁</button>
+            </div>
+            <div id="reg-password-hint" class="username-hint">At least 8 characters, with a letter and a number</div>
           </div>
           <div class="form-group">
-            <label>Confirm PIN</label>
-            <input id="reg-pin2" type="password" placeholder="••••••" inputmode="numeric" maxlength="6" />
+            <label>Confirm Password</label>
+            <div class="pw-wrap">
+              <input id="reg-password2" type="password" placeholder="Re-enter password" autocomplete="new-password" />
+              <button type="button" class="pw-toggle" aria-label="Show password" onclick="togglePw('reg-password2', this)">👁</button>
+            </div>
           </div>
           <p id="register-error" class="login-error"></p>
           <button type="submit" id="register-btn" class="btn btn-primary full-width">Create Account</button>
@@ -273,6 +279,40 @@
     </div>
   </div>
 
+  <!-- ── Set Password Modal (migration + change password) ──────── -->
+  <div id="set-password-modal" class="hidden">
+    <div class="pin-setup-box">
+      <h3 id="set-pw-title">🔑 Set Your Password</h3>
+      <p id="set-pw-intro">For your security, create a password for your account. You'll use it to sign in from now on — your PIN stays as quick-unlock on trusted devices.</p>
+      <div class="form-group" id="set-pw-current-wrap" style="display:none">
+        <label>Current Password</label>
+        <div class="pw-wrap">
+          <input id="set-pw-current" type="password" placeholder="Your current password" autocomplete="current-password" />
+          <button type="button" class="pw-toggle" aria-label="Show password" onclick="togglePw('set-pw-current', this)">👁</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>New Password</label>
+        <div class="pw-wrap">
+          <input id="set-pw-input" type="password" placeholder="min 8 chars, letters + numbers" autocomplete="new-password" />
+          <button type="button" class="pw-toggle" aria-label="Show password" onclick="togglePw('set-pw-input', this)">👁</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Confirm Password</label>
+        <div class="pw-wrap">
+          <input id="set-pw-input2" type="password" placeholder="Re-enter password" autocomplete="new-password" />
+          <button type="button" class="pw-toggle" aria-label="Show password" onclick="togglePw('set-pw-input2', this)">👁</button>
+        </div>
+      </div>
+      <p id="set-pw-error" class="login-error"></p>
+      <div class="modal-footer" style="padding:0;margin-top:14px">
+        <button type="button" class="btn btn-ghost hidden" id="set-pw-cancel" onclick="closeSetPasswordModal()">Cancel</button>
+        <button type="button" class="btn btn-primary" id="set-pw-btn" onclick="submitSetPassword()">Set Password</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Security Modal (sessions / devices / log) ─────────────── -->
   <div id="security-modal" class="hidden">
     <div class="security-box">
@@ -324,6 +364,10 @@
         <div class="form-group" style="margin-bottom:16px">
           <label>Default Area <span style="font-weight:400;color:var(--text-muted)">(pre-filled when adding leads)</span></label>
           <input id="p-default-area" type="text" placeholder="e.g. Mumbai, Surat" />
+        </div>
+        <div class="form-group" style="margin-bottom:16px">
+          <label>Account Password</label>
+          <button type="button" class="btn btn-ghost full-width" onclick="showSetPasswordModal({ migration: false })" style="justify-content:center">🔑 Change Password</button>
         </div>
         <p id="profile-error" class="login-error"></p>
         <div class="modal-footer">
@@ -877,6 +921,6 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=4"></script>
+  <script src="app.js?v=5"></script>
 </body>
 </html>

@@ -12,6 +12,8 @@ const state = {
   filterStage: '',
   filterProduct: '',
   filterSalesman: '',
+  filterList:  '',
+  myLists:     [],
   view:        'table',
   fuFilter:    'overdue',
   sortKey:     '',
@@ -676,7 +678,15 @@ async function apiFetch(path, opts = {}) {
 
 function orgQuery() { return state.activeOrgId ? `?teamId=${encodeURIComponent(state.activeOrgId)}` : ''; }
 
-async function loadLeads()  { state.leads = await apiFetch('/api/leads' + orgQuery()); }
+async function loadLeads()  {
+  const [leads] = await Promise.all([ apiFetch('/api/leads' + orgQuery()), loadLists() ]);
+  state.leads = leads;
+}
+async function loadLists() {
+  try { state.myLists = await apiFetch('/api/lead-lists' + orgQuery()); }
+  catch { state.myLists = []; }
+  return state.myLists;
+}
 async function loadStats()  { state.stats = await apiFetch('/api/stats' + orgQuery()); }
 async function createLead(data) {
   if (state.activeOrgId) data.team_id = parseInt(state.activeOrgId, 10);
@@ -855,6 +865,19 @@ function importLoaded(name, aoa) {
   document.getElementById('import-step-source').classList.add('hidden');
   document.getElementById('import-step-map').classList.remove('hidden');
   loadImportAssignees();
+  populateImportListSelect();
+}
+
+async function populateImportListSelect() {
+  const row = document.getElementById('import-list-row');
+  const sel = document.getElementById('import-list-select');
+  if (!row || !sel) return;
+  await loadLists();
+  const lists = state.myLists || [];
+  if (!lists.length) { row.style.display = 'none'; return; }
+  row.style.display = '';
+  sel.innerHTML = '<option value="">— None —</option>' +
+    lists.map(l => `<option value="${l.id}">${escHtml(l.name)}</option>`).join('');
 }
 
 async function loadImportAssignees() {
@@ -964,6 +987,7 @@ async function runImport() {
         leads,
         assign_to: document.getElementById('import-assign-select').value,
         team_id: state.activeOrgId || null,
+        list_id: document.getElementById('import-list-select')?.value || null,
       }),
     });
     const skippedHtml = result.skipped.length
@@ -1415,7 +1439,11 @@ function filteredLeads() {
     const matchStage    = !state.filterStage    || l.stage      === state.filterStage;
     const matchProduct  = !state.filterProduct  || l.product    === state.filterProduct;
     const matchSalesman = !state.filterSalesman || l.created_by === state.filterSalesman;
-    return matchSearch && matchStage && matchProduct && matchSalesman;
+    const matchList     = !state.filterList
+      || (state.filterList === '__none__'
+            ? !(l.list_ids || []).length
+            : (l.list_ids || []).map(String).includes(String(state.filterList)));
+    return matchSearch && matchStage && matchProduct && matchSalesman && matchList;
   });
   if (state.sortKey) {
     leads = [...leads].sort((a, b) => {
@@ -1464,6 +1492,7 @@ function buildTable(leads, cols, actions = true) {
     last_updated:     ['Updated',    l => l.last_updated     || '—'],
     lead_type:        ['Type',       l => l.lead_type ? `${TYPE_EMOJI[l.lead_type] || ''} ${l.lead_type}` : '—'],
     created_by:       ['Added By',   l => l.created_by       || '—'],
+    lists:            ['Lists',      l => tagChips(l.lists)],
   };
 
   const heads = cols.map(c => {
@@ -1494,6 +1523,21 @@ function buildTable(leads, cols, actions = true) {
 
   const actHead = actions ? '<th>Actions</th>' : '';
   return `<div class="table-scroll"><table class="crm-table"><thead><tr>${heads}${actHead}</tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+// Fallback palette for lists created without an explicit colour
+const LIST_PALETTE = ['#6366f1','#0ea5e9','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316','#64748b'];
+function listColor(t) {
+  if (t && t.color) return t.color;
+  const id = t && t.id ? Number(t.id) : 0;
+  return LIST_PALETTE[Math.abs(id) % LIST_PALETTE.length];
+}
+function tagChips(lists) {
+  if (!lists || !lists.length) return '<span class="muted">—</span>';
+  return '<div class="tag-chips">' + lists.map(t => {
+    const c = listColor(t);
+    return `<span class="tag-chip" style="background:color-mix(in srgb, ${c} 14%, transparent);color:${c};border-color:color-mix(in srgb, ${c} 34%, transparent)">${escHtml(t.name)}</span>`;
+  }).join('') + '</div>';
 }
 
 function emptyState(msg = 'No data') {
@@ -1728,6 +1772,21 @@ function populateFilters() {
       state.filterSalesman = '';
     }
   }
+
+  // List (tag) filter — shown whenever the user has any lists
+  const listEl = document.getElementById('filter-list');
+  if (listEl) {
+    const lists = state.myLists || [];
+    const show  = lists.length > 0;
+    listEl.style.display = show ? '' : 'none';
+    if (show) {
+      listEl.innerHTML = '<option value="">All Lists</option>' +
+        lists.map(l => `<option value="${l.id}" ${String(l.id)===String(state.filterList)?'selected':''}>${escHtml(l.name)}${l.count?` (${l.count})`:''}</option>`).join('') +
+        `<option value="__none__" ${state.filterList==='__none__'?'selected':''}>— No list —</option>`;
+    } else if (state.filterList) {
+      state.filterList = '';
+    }
+  }
 }
 
 function renderLeadsView() {
@@ -1735,6 +1794,8 @@ function renderLeadsView() {
   // Admins (and team views) see whose lead each row is
   const cols = ['factory_number','factory_name','person_in_charge','contact','product','quantity','rate','stage','lead_type','follow_up','area'];
   if (state.role === 'admin' || state.activeOrgId) cols.push('created_by');
+  // Show the Lists column once any list exists (or any lead is tagged)
+  if (state.myLists.length || state.leads.some(l => (l.list_ids || []).length)) cols.push('lists');
   if (state.view === 'table') {
     document.getElementById('leads-table-wrap').classList.remove('hidden');
     document.getElementById('leads-kanban-wrap').classList.add('hidden');
@@ -2401,6 +2462,7 @@ function openAddModal() {
   }
   renderContactsEditor([]);
   renderItemsEditor([]);
+  renderLeadListsEditor([]);
   const accessSection = document.getElementById('modal-access-section');
   if (accessSection) accessSection.style.display = 'none';
   document.getElementById('modal-overlay').classList.remove('hidden');
@@ -2422,6 +2484,7 @@ function openEditModal(rowIndex) {
     ? lead.items
     : (lead.product ? [{ product: lead.product, quantity: lead.quantity, rate: lead.rate }] : []);
   renderItemsEditor(itemsToEdit);
+  renderLeadListsEditor(lead.list_ids || []);
   document.getElementById('modal-overlay').classList.remove('hidden');
 
   // Activity timeline
@@ -2478,6 +2541,117 @@ function closeModal() {
   document.getElementById('modal-overlay').classList.add('hidden');
 }
 
+// ============================================================
+//  Lead lists (tags)
+// ============================================================
+let _editorListIds = new Set();
+
+function renderLeadListsEditor(selectedIds) {
+  _editorListIds = new Set((selectedIds || []).map(String));
+  _paintLeadListsEditor();
+}
+function _paintLeadListsEditor() {
+  const box = document.getElementById('lead-lists-editor');
+  if (!box) return;
+  const lists = state.myLists || [];
+  const chips = lists.map(l => {
+    const on = _editorListIds.has(String(l.id));
+    const c  = listColor(l);
+    const style = on ? `background:color-mix(in srgb, ${c} 18%, transparent);color:${c};border-color:${c}` : '';
+    return `<button type="button" class="list-toggle ${on ? 'on' : ''}" style="${style}" onclick="toggleEditorList('${l.id}')">
+      <span class="list-dot" style="background:${c}"></span>${escHtml(l.name)}${on ? ' ✓' : ''}</button>`;
+  }).join('');
+  box.innerHTML =
+    (lists.length ? `<div class="list-toggle-wrap">${chips}</div>` : '<span class="muted" style="font-size:12px">No lists yet.</span>') +
+    `<button type="button" class="list-new-inline" onclick="newListInline()">＋ New list</button>`;
+}
+function toggleEditorList(id) {
+  id = String(id);
+  if (_editorListIds.has(id)) _editorListIds.delete(id); else _editorListIds.add(id);
+  _paintLeadListsEditor();
+}
+async function newListInline() {
+  const name = prompt('New list name:');
+  if (name == null || !name.trim()) return;
+  try {
+    const list = await apiFetch('/api/lead-lists' + orgQuery(), { method: 'POST', body: JSON.stringify({ name: name.trim() }) });
+    await loadLists();
+    _editorListIds.add(String(list.id));
+    _paintLeadListsEditor();
+    populateFilters();
+    toast(`List "${list.name}" created`);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// ── Manage Lists modal ───────────────────────────────────────
+function openListsModal() {
+  if (state.role === 'guest') { toast('Create an account to use lists', 'warning'); return; }
+  document.getElementById('lists-modal-error').textContent = '';
+  document.getElementById('new-list-name').value = '';
+  const team  = state.myTeams.find(t => String(t.id) === String(state.activeOrgId));
+  document.getElementById('lists-modal-scope').textContent =
+    team ? `Shared across ${team.name} — everyone on the team can use these` : 'Your personal lists';
+  renderListsManageBody();
+  document.getElementById('lists-modal-overlay').classList.remove('hidden');
+  loadLists().then(renderListsManageBody);
+}
+function closeListsModal() {
+  document.getElementById('lists-modal-overlay').classList.add('hidden');
+}
+function renderListsManageBody() {
+  const box = document.getElementById('lists-manage-body');
+  if (!box) return;
+  const lists = state.myLists || [];
+  if (!lists.length) { box.innerHTML = '<div class="empty-state" style="padding:22px">No lists yet — create one above.</div>'; return; }
+  box.innerHTML = lists.map(l => {
+    const c = listColor(l);
+    return `<div class="list-manage-row">
+      <span class="list-dot" style="background:${c}"></span>
+      <span class="list-manage-name">${escHtml(l.name)}</span>
+      <span class="list-manage-count">${l.count || 0} lead${l.count === 1 ? '' : 's'}</span>
+      <button class="action-btn" onclick="renameListPrompt(${l.id})">Rename</button>
+      <button class="action-btn del" onclick="deleteListConfirm(${l.id}, '${escAttr(l.name)}')">Delete</button>
+    </div>`;
+  }).join('');
+}
+async function createListFromModal() {
+  const nameEl  = document.getElementById('new-list-name');
+  const colorEl = document.getElementById('new-list-color');
+  const errEl   = document.getElementById('lists-modal-error');
+  errEl.textContent = '';
+  const name = nameEl.value.trim();
+  if (!name) { errEl.textContent = 'Enter a list name'; return; }
+  try {
+    await apiFetch('/api/lead-lists' + orgQuery(), { method: 'POST', body: JSON.stringify({ name, color: colorEl.value }) });
+    nameEl.value = '';
+    await loadLists();
+    renderListsManageBody(); populateFilters(); renderLeadsView();
+    toast(`List "${name}" created`);
+  } catch (err) { errEl.textContent = err.message; }
+}
+async function renameListPrompt(id) {
+  const list = (state.myLists || []).find(l => String(l.id) === String(id));
+  const name = prompt('Rename list:', list ? list.name : '');
+  if (name == null) return;
+  if (!name.trim()) { toast('Name cannot be empty', 'error'); return; }
+  try {
+    await apiFetch(`/api/lead-lists/${id}`, { method: 'PATCH', body: JSON.stringify({ name: name.trim() }) });
+    await loadLists();
+    renderListsManageBody(); populateFilters(); renderLeadsView();
+    toast('List renamed');
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function deleteListConfirm(id, name) {
+  if (!confirm(`Delete list "${name}"? The leads stay, but they lose this tag.`)) return;
+  try {
+    await apiFetch(`/api/lead-lists/${id}`, { method: 'DELETE' });
+    if (String(state.filterList) === String(id)) state.filterList = '';
+    await loadLists();
+    renderListsManageBody(); populateFilters(); renderLeadsView();
+    toast('List deleted');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
 async function handleFormSubmit(e) {
   e.preventDefault();
   const row  = document.getElementById('f-row').value;
@@ -2505,6 +2679,7 @@ async function handleFormSubmit(e) {
   btn.textContent = 'Saving…';
 
   try {
+    let savedRow = row ? parseInt(row) : null;
     if (row) {
       await updateLead(parseInt(row), data);
       toast('Lead updated successfully');
@@ -2514,7 +2689,15 @@ async function handleFormSubmit(e) {
         toast(`Duplicate: ${result.message}`, 'error');
         return;
       }
+      savedRow = result && result.rowIndex;
       toast('Lead added successfully');
+    }
+    // Persist list (tag) memberships for this lead
+    if (savedRow) {
+      await apiFetch(`/api/leads/${savedRow}/lists` + orgQuery(), {
+        method: 'PUT',
+        body: JSON.stringify({ list_ids: [..._editorListIds].map(Number) }),
+      }).catch(() => {});
     }
     closeModal();
     await refresh();
@@ -2649,9 +2832,20 @@ function wireEvents() {
   document.getElementById('btn-refresh').addEventListener('click', refresh);
   document.getElementById('btn-export').addEventListener('click', exportCSV);
   document.getElementById('btn-import')?.addEventListener('click', openImportModal);
+  document.getElementById('btn-manage-lists')?.addEventListener('click', openListsModal);
   document.getElementById('filter-salesman')?.addEventListener('change', e => {
     state.filterSalesman = e.target.value;
     renderLeadsView();
+  });
+  document.getElementById('filter-list')?.addEventListener('change', e => {
+    state.filterList = e.target.value;
+    renderLeadsView();
+  });
+  document.getElementById('lists-modal-overlay')?.addEventListener('click', e => {
+    if (e.target === document.getElementById('lists-modal-overlay')) closeListsModal();
+  });
+  document.getElementById('new-list-name')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); createListFromModal(); }
   });
   document.getElementById('btn-theme').addEventListener('click', toggleTheme);
   document.querySelectorAll('.palette-dot').forEach(dot => {

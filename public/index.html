@@ -17,7 +17,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=9" />
+  <link rel="stylesheet" href="style.css?v=10" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -205,6 +205,11 @@
           <select id="import-assign-select"></select>
           <span class="import-assign-hint">A mapped "Salesman" column overrides this per row</span>
         </div>
+        <div class="import-assign-row" id="import-list-row" style="display:none">
+          <label>Add all to list</label>
+          <select id="import-list-select"></select>
+          <span class="import-assign-hint">Optional — file every imported lead into this list</span>
+        </div>
         <div class="import-map-scroll">
           <table class="crm-table import-map-table">
             <thead id="import-map-head"></thead>
@@ -225,6 +230,24 @@
           <button class="btn btn-primary" onclick="closeImportModal(true)">Done</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- ── Manage Lists Modal ────────────────────────────────────── -->
+  <div id="lists-modal-overlay" class="hidden">
+    <div id="lists-modal">
+      <div class="modal-header">
+        <h2>🏷️ Lists</h2>
+        <button class="icon-btn" onclick="closeListsModal()">✕</button>
+      </div>
+      <p id="lists-modal-scope" class="lists-modal-scope"></p>
+      <div class="lists-create-row">
+        <input type="text" id="new-list-name" placeholder="New list name…" maxlength="60" />
+        <input type="color" id="new-list-color" value="#6366f1" title="List colour" />
+        <button class="btn btn-primary btn-sm" id="new-list-btn" onclick="createListFromModal()">＋ Create</button>
+      </div>
+      <p id="lists-modal-error" class="login-error" style="margin:6px 0 0"></p>
+      <div id="lists-manage-body" class="lists-manage-body"></div>
     </div>
   </div>
 
@@ -427,6 +450,10 @@
             <button class="palette-dot" data-accent="midnight" title="Midnight" style="background:#4361EE;color:#4361EE"></button>
             <button class="palette-dot" data-accent="emerald"  title="Emerald"  style="background:#059669;color:#059669"></button>
             <button class="palette-dot" data-accent="zinc"     title="Zinc"     style="background:#71717A;color:#71717A"></button>
+            <button class="palette-dot" data-accent="terracotta" title="Terracotta" style="background:#DB6A44;color:#DB6A44"></button>
+            <button class="palette-dot" data-accent="violet"     title="Violet"     style="background:#7C3AED;color:#7C3AED"></button>
+            <button class="palette-dot" data-accent="obsidian"   title="Obsidian"   style="background:#0E9B8E;color:#0E9B8E"></button>
+            <button class="palette-dot" data-accent="sapphire"   title="Sapphire"   style="background:#2A5CDB;color:#2A5CDB"></button>
           </div>
           <button id="btn-theme" class="icon-btn" title="Toggle dark mode">🌙</button>
           <button id="btn-refresh" class="icon-btn" title="Refresh">↺</button>
@@ -496,10 +523,14 @@
               <select id="filter-stage"><option value="">All Stages</option></select>
               <select id="filter-product"><option value="">All Products</option></select>
               <select id="filter-salesman" style="display:none"><option value="">All Salesmen</option></select>
+              <select id="filter-list" style="display:none"><option value="">All Lists</option></select>
             </div>
-            <div class="view-toggle">
-              <button class="toggle-btn active" data-view="table">☰ Table</button>
-              <button class="toggle-btn" data-view="kanban">⊞ Kanban</button>
+            <div class="toolbar-actions">
+              <button id="btn-manage-lists" class="btn-ghost" title="Create and manage lists">🏷️ Lists</button>
+              <div class="view-toggle">
+                <button class="toggle-btn active" data-view="table">☰ Table</button>
+                <button class="toggle-btn" data-view="kanban">⊞ Kanban</button>
+              </div>
             </div>
           </div>
 
@@ -813,6 +844,10 @@
             <label>Notes</label>
             <textarea id="f-notes" rows="3" placeholder="Any additional notes…"></textarea>
           </div>
+          <div class="form-group full-width" id="modal-lists-section">
+            <label>🏷️ Lists <span style="font-weight:400;color:var(--text-muted);font-size:12px">— file this lead into one or more lists</span></label>
+            <div id="lead-lists-editor" class="lead-lists-editor"></div>
+          </div>
           <div class="form-group full-width" id="modal-access-section" style="display:none">
             <label>🤝 Sharing <span style="font-weight:400;color:var(--text-muted);font-size:12px">— give teammates access to this lead</span></label>
             <div id="modal-access-list" style="margin-top:8px"></div>
@@ -842,6 +877,6 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

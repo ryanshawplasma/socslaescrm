@@ -444,6 +444,30 @@ async function initSchema() {
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ai_corrections_team ON ai_corrections(team_id, created_at DESC)`).catch(() => {});
 
+    // ── Lead lists (tags) — a lead can carry many lists; lists are either
+    //    personal (team_id NULL, scoped to owner) or shared across a team.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS lead_lists (
+        id         SERIAL PRIMARY KEY,
+        name       TEXT NOT NULL,
+        color      TEXT DEFAULT '',
+        team_id    INTEGER,
+        owner      TEXT DEFAULT '',
+        created_at TEXT DEFAULT ''
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_lists_team  ON lead_lists(team_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_lists_owner ON lead_lists(LOWER(owner))`).catch(() => {});
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS lead_list_items (
+        list_id INTEGER NOT NULL,
+        lead_id INTEGER NOT NULL,
+        PRIMARY KEY (list_id, lead_id)
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_list_items_lead ON lead_list_items(lead_id)`).catch(() => {});
+
     console.log('✅ PostgreSQL schema ready');
   } finally {
     client.release();
@@ -655,7 +679,7 @@ async function addLead(data, createdBy = '') {
 // ── WRITE: bulk import (Excel / Google Sheets) ───────────────
 // Loads existing factory numbers/names ONCE, then inserts row by row,
 // skipping duplicates (against the DB and within the file itself).
-async function importLeads(rows, defaultCreatedBy, teamId) {
+async function importLeads(rows, defaultCreatedBy, teamId, listId) {
   const { rows: existing } = await pool.query(`SELECT factory_number, factory_name FROM leads`);
   const nums  = new Set(existing.map(r => String(r.factory_number || '').trim().toLowerCase()).filter(Boolean));
   const names = new Set(existing.map(r => String(r.factory_name   || '').trim().toLowerCase()).filter(Boolean));
@@ -705,6 +729,13 @@ async function importLeads(rows, defaultCreatedBy, teamId) {
       await pool.query(
         `INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES ($1,$2,$3,$4)`,
         [newRow.id, String(r.product).trim(), String(r.quantity || '').trim(), String(r.rate || '').trim()]
+      ).catch(() => {});
+    }
+
+    if (listId) {
+      await pool.query(
+        `INSERT INTO lead_list_items (list_id, lead_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+        [listId, newRow.id]
       ).catch(() => {});
     }
 
@@ -1438,6 +1469,94 @@ async function getLeadsByTeam(teamId) {
   });
 }
 
+// ── Lead lists (tags) ────────────────────────────────────────
+// Context: teamId truthy → shared team lists; else personal lists for `owner`.
+async function getListsForContext(owner, teamId) {
+  const { rows } = teamId
+    ? await pool.query(
+        `SELECT id, name, color, team_id, owner, created_at
+         FROM lead_lists WHERE team_id=$1 ORDER BY LOWER(name)`, [teamId])
+    : await pool.query(
+        `SELECT id, name, color, team_id, owner, created_at
+         FROM lead_lists WHERE team_id IS NULL AND LOWER(owner)=LOWER($1) ORDER BY LOWER(name)`, [owner || '']);
+  if (!rows.length) return [];
+  const ids = rows.map(r => r.id);
+  const { rows: counts } = await pool.query(
+    `SELECT list_id, COUNT(*)::int AS n FROM lead_list_items WHERE list_id=ANY($1) GROUP BY list_id`, [ids]);
+  const cmap = {};
+  for (const c of counts) cmap[c.list_id] = c.n;
+  return rows.map(r => ({
+    id: r.id, name: r.name || '', color: r.color || '',
+    team_id: r.team_id, owner: r.owner || '', count: cmap[r.id] || 0,
+  }));
+}
+
+async function getListById(id) {
+  const { rows } = await pool.query(`SELECT * FROM lead_lists WHERE id=$1`, [id]);
+  return rows[0] || null;
+}
+
+async function createList(name, color, owner, teamId) {
+  const { rows } = await pool.query(
+    `INSERT INTO lead_lists (name, color, team_id, owner, created_at)
+     VALUES ($1,$2,$3,$4,$5) RETURNING id, name, color, team_id, owner`,
+    [String(name || '').trim().slice(0, 60), String(color || '').slice(0, 20), teamId || null, owner || '', nowIST()]
+  );
+  return { ...rows[0], count: 0 };
+}
+
+async function renameList(id, name, color) {
+  const sets = [];
+  const vals = [];
+  if (name != null)  { vals.push(String(name).trim().slice(0, 60)); sets.push(`name=$${vals.length}`); }
+  if (color != null) { vals.push(String(color).slice(0, 20));       sets.push(`color=$${vals.length}`); }
+  if (!sets.length) return getListById(id);
+  vals.push(id);
+  const { rows } = await pool.query(
+    `UPDATE lead_lists SET ${sets.join(', ')} WHERE id=$${vals.length} RETURNING id, name, color, team_id, owner`, vals);
+  return rows[0] || null;
+}
+
+async function deleteList(id) {
+  await pool.query(`DELETE FROM lead_list_items WHERE list_id=$1`, [id]);
+  await pool.query(`DELETE FROM lead_lists WHERE id=$1`, [id]);
+}
+
+// Replace a lead's memberships, but only within the given scope of list ids
+// (so tagging in the personal view can't wipe the lead's team tags, or vice-versa).
+async function setLeadListMemberships(leadId, listIds, scopeListIds) {
+  const scope = (scopeListIds || []).map(Number);
+  const wanted = (listIds || []).map(Number).filter(id => scope.includes(id));
+  if (scope.length) {
+    await pool.query(`DELETE FROM lead_list_items WHERE lead_id=$1 AND list_id=ANY($2)`, [leadId, scope]);
+  }
+  for (const listId of wanted) {
+    await pool.query(
+      `INSERT INTO lead_list_items (list_id, lead_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [listId, leadId]);
+  }
+  return wanted;
+}
+
+// leadId → [{id,name,color}] for the lists visible in the given context.
+async function getListMembershipsForLeads(leadIds, owner, teamId) {
+  if (!leadIds || !leadIds.length) return {};
+  const ids = leadIds.map(Number);
+  const { rows } = teamId
+    ? await pool.query(
+        `SELECT li.lead_id, l.id, l.name, l.color
+         FROM lead_list_items li JOIN lead_lists l ON l.id=li.list_id
+         WHERE li.lead_id=ANY($1) AND l.team_id=$2`, [ids, teamId])
+    : await pool.query(
+        `SELECT li.lead_id, l.id, l.name, l.color
+         FROM lead_list_items li JOIN lead_lists l ON l.id=li.list_id
+         WHERE li.lead_id=ANY($1) AND l.team_id IS NULL AND LOWER(l.owner)=LOWER($2)`, [ids, owner || '']);
+  const map = {};
+  for (const r of rows) {
+    (map[r.lead_id] = map[r.lead_id] || []).push({ id: r.id, name: r.name || '', color: r.color || '' });
+  }
+  return map;
+}
+
 // ── AI Vocabulary (aliases) ──────────────────────────────────
 async function getVocab(teamId) {
   const { rows } = await pool.query(
@@ -1790,6 +1909,9 @@ module.exports = {
   logSecurity, getUserSecurityLog,
   // AI Entry Mode
   getVocab, addVocab, deleteVocab, logAiAction,
+  // Lead lists (tags)
+  getListsForContext, getListById, createList, renameList, deleteList,
+  setLeadListMemberships, getListMembershipsForLeads,
   // Lead security
   getLeadById, userHasLeadAccess, getAccessibleLeadIds,
   // Lead share requests

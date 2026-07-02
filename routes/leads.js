@@ -26,6 +26,27 @@ async function resolveTeamContext(req) {
   return { teamId, user, member };
 }
 
+// Can a list be used for filing/filtering in this request's context?
+function listInContext(list, username, teamId) {
+  if (!list) return false;
+  if (teamId) return Number(list.team_id) === Number(teamId);
+  return list.team_id == null &&
+    String(list.owner || '').toLowerCase() === String(username || '').toLowerCase();
+}
+
+// Can this user rename/delete the list? Creator, team manager, or global admin.
+async function canManageList(list, req) {
+  if (!list) return false;
+  if (req.user.role === 'admin') return true;
+  if (String(list.owner || '').toLowerCase() === String(req.user.username).toLowerCase()) return true;
+  if (list.team_id) {
+    const user = await db.getUserByName(req.user.username);
+    const member = user && await db.getTeamMember(list.team_id, user.id);
+    return !!(member && member.status === 'active' && TEAM_MANAGER_ROLES.includes(member.role));
+  }
+  return false;
+}
+
 // Returns the leads visible to this request (personal or team-scoped),
 // each annotated with can_edit. Throws {status:403} if not a team member.
 async function leadsForRequest(req) {
@@ -42,16 +63,28 @@ async function leadsForRequest(req) {
     const leads   = await db.getLeadsByTeam(ctx.teamId);
     const manager = req.user.role === 'admin' || TEAM_MANAGER_ROLES.includes(ctx.member.role);
     const shared  = manager ? null : await db.getAccessibleLeadIds(req.user.username);
-    return leads.map(l => ({
+    const mapped  = leads.map(l => ({
       ...l,
       can_edit: manager || l.created_by === req.user.username || shared.has(Number(l.rowIndex)),
     }));
+    return attachLists(mapped, req.user.username, ctx.teamId);
   }
 
   const leads = req.user.role === 'admin'
     ? await db.getLeads()
     : await db.getLeadsForUser(req.user.username);
-  return leads.map(l => ({ ...l, can_edit: true }));
+  return attachLists(leads.map(l => ({ ...l, can_edit: true })), req.user.username, null);
+}
+
+// Annotate each lead with the lists (tags) visible in this context.
+async function attachLists(leads, owner, teamId) {
+  const ids = leads.map(l => Number(l.rowIndex));
+  const memberships = await db.getListMembershipsForLeads(ids, owner, teamId || null);
+  for (const l of leads) {
+    l.lists    = memberships[Number(l.rowIndex)] || [];
+    l.list_ids = l.lists.map(x => x.id);
+  }
+  return leads;
 }
 
 // ── GET /api/leads ────────────────────────────────────────────
@@ -70,6 +103,13 @@ router.post('/leads', authMiddleware, noGuest, async (req, res, next) => {
     if (result.ok) {
       db.logLeadActivity(result.rowIndex, req.body.team_id || null, 'created',
         `Lead created by ${req.user.username}`, {}, req.user.username).catch(() => {});
+      // File the new lead into any chosen lists (tags) the user can use here
+      if (Array.isArray(req.body.list_ids) && req.body.list_ids.length) {
+        const teamId = req.body.team_id ? parseInt(req.body.team_id, 10) : null;
+        const allowed = await db.getListsForContext(req.user.username, teamId);
+        const allowedIds = allowed.map(l => l.id);
+        await db.setLeadListMemberships(result.rowIndex, req.body.list_ids, allowedIds).catch(() => {});
+      }
     }
     res.json(result);
   } catch (err) { next(err); }
@@ -113,7 +153,7 @@ router.put('/leads/:row', authMiddleware, noGuest, requireLeadAccess, async (req
 
 // ── POST /api/leads/import — bulk import from Excel/Sheets ───
 router.post('/leads/import', authMiddleware, noGuest, async (req, res, next) => {
-  const { leads, assign_to, team_id } = req.body || {};
+  const { leads, assign_to, team_id, list_id } = req.body || {};
   if (!Array.isArray(leads) || !leads.length) return res.status(400).json({ error: 'No rows to import' });
   if (leads.length > 1000) return res.status(400).json({ error: 'Maximum 1000 rows per import — split the file' });
   try {
@@ -133,7 +173,14 @@ router.post('/leads/import', authMiddleware, noGuest, async (req, res, next) => 
       if (member && member.status === 'active') teamId = parseInt(team_id, 10);
     }
 
-    const result = await db.importLeads(rows, defaultCreatedBy, teamId);
+    // Optional: file all imported rows into a list the importer can use
+    let listId = null;
+    if (list_id) {
+      const list = await db.getListById(parseInt(list_id, 10));
+      if (list && listInContext(list, req.user.username, teamId)) listId = list.id;
+    }
+
+    const result = await db.importLeads(rows, defaultCreatedBy, teamId, listId);
     db.logAiAction(null, 'import', 'file', `${result.added}/${result.total} rows imported`, { skipped: result.skipped.slice(0, 50) },
       req.user.username, teamId).catch(() => {});
     res.json(result);
@@ -165,6 +212,72 @@ router.post('/import/sheet', authMiddleware, async (req, res, next) => {
 router.delete('/leads/:row', authMiddleware, adminOnly, requireLeadAccess, async (req, res, next) => {
   try {
     res.json(await db.deleteLead(parseInt(req.params.row, 10)));
+  } catch (err) { next(err); }
+});
+
+// ── Lead lists (tags) ─────────────────────────────────────────
+// GET /api/lead-lists — lists available in the current context
+router.get('/lead-lists', authMiddleware, async (req, res, next) => {
+  try {
+    if (req.user.role === 'guest') return res.json([]);
+    const ctx = await resolveTeamContext(req);
+    if (ctx?.forbidden) return res.status(403).json({ error: 'Not a member of this team' });
+    res.json(await db.getListsForContext(req.user.username, ctx?.teamId || null));
+  } catch (err) { next(err); }
+});
+
+// POST /api/lead-lists { name, color } — create a list
+router.post('/lead-lists', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const name = String((req.body || {}).name || '').trim();
+    if (!name) return res.status(400).json({ error: 'List name is required' });
+    if (name.length > 60) return res.status(400).json({ error: 'List name is too long (max 60)' });
+    const ctx = await resolveTeamContext(req);
+    if (ctx?.forbidden) return res.status(403).json({ error: 'Not a member of this team' });
+    const teamId = ctx?.teamId || null;
+    // Prevent duplicate names within the same context
+    const existing = await db.getListsForContext(req.user.username, teamId);
+    if (existing.some(l => l.name.toLowerCase() === name.toLowerCase())) {
+      return res.status(409).json({ error: 'A list with that name already exists' });
+    }
+    const list = await db.createList(name, (req.body || {}).color, req.user.username, teamId);
+    res.json(list);
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/lead-lists/:id { name?, color? }
+router.patch('/lead-lists/:id', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const list = await db.getListById(parseInt(req.params.id, 10));
+    if (!list) return res.status(404).json({ error: 'List not found' });
+    if (!(await canManageList(list, req))) return res.status(403).json({ error: 'You cannot manage this list' });
+    const { name, color } = req.body || {};
+    if (name != null && !String(name).trim()) return res.status(400).json({ error: 'List name cannot be empty' });
+    res.json(await db.renameList(list.id, name != null ? name : null, color != null ? color : null));
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/lead-lists/:id — removes the list and its memberships (leads untouched)
+router.delete('/lead-lists/:id', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const list = await db.getListById(parseInt(req.params.id, 10));
+    if (!list) return res.status(404).json({ error: 'List not found' });
+    if (!(await canManageList(list, req))) return res.status(403).json({ error: 'You cannot manage this list' });
+    await db.deleteList(list.id);
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// PUT /api/leads/:row/lists { list_ids } — set a lead's tags in this context
+router.put('/leads/:row/lists', authMiddleware, noGuest, requireLeadAccess, async (req, res, next) => {
+  try {
+    const rowId = parseInt(req.params.row, 10);
+    const ctx = await resolveTeamContext(req);
+    if (ctx?.forbidden) return res.status(403).json({ error: 'Not a member of this team' });
+    const allowed = await db.getListsForContext(req.user.username, ctx?.teamId || null);
+    const allowedIds = allowed.map(l => l.id);
+    const wanted = await db.setLeadListMemberships(rowId, req.body?.list_ids || [], allowedIds);
+    res.json({ ok: true, list_ids: wanted });
   } catch (err) { next(err); }
 });
 

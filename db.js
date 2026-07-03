@@ -941,6 +941,22 @@ async function updateLeadFields(id, fields) {
   return { ok: true };
 }
 
+// Set a lead's primary product and (optionally) replace its item rows — used by
+// the "clean up imported leads" pass to normalise products onto the catalog.
+async function setLeadProducts(id, product, items) {
+  await pool.query(`UPDATE leads SET product=$1 WHERE id=$2`, [String(product || ''), Number(id)]);
+  if (Array.isArray(items)) {
+    await pool.query(`DELETE FROM lead_items WHERE lead_id=$1`, [Number(id)]);
+    for (const it of items) {
+      if (!it || !it.product) continue;
+      await pool.query(
+        `INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES ($1,$2,$3,$4)`,
+        [Number(id), String(it.product), String(it.quantity || ''), String(it.rate || '')]);
+    }
+  }
+  return { ok: true };
+}
+
 // ── Photos ────────────────────────────────────────────────────
 async function addPhoto(leadId, filePath, caption = '', uploadedBy = '') {
   await pool.query(
@@ -2169,7 +2185,7 @@ module.exports = {
   pool,
   initSchema,
   getLeads, getLeadsForUser, getLeadsByTeam, getStats, addLead, updateLead, deleteLead, importLeads,
-  copyLeadsToWorking, moveLeadsBucket, updateLeadFields,
+  copyLeadsToWorking, moveLeadsBucket, updateLeadFields, setLeadProducts,
   addPhoto, getPhotos, getLeadContacts,
   grantLeadAccess, revokeLeadAccess, getLeadAccess, claimFollowUp, reassignFollowUp,
   createUser, getUserByName, getUserByTelegramId, updateUserPin, updateUserName, updateUserDefaultArea,

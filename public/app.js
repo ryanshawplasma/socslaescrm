@@ -2367,19 +2367,55 @@ async function moveLeadToDatabase(rowIndex) {
 }
 
 // One-time Proper-Case pass over the caller's editable working leads.
-async function tidyFormatting() {
-  if (!confirm('Proper-Case the factory name, person and area on your leads?\n\nEntries you deliberately typed in mixed case are left as-is — only ALL-CAPS / all-lowercase values are tidied.')) return;
-  const btn = document.getElementById('btn-tidy-format');
-  if (btn) { btn.disabled = true; btn.textContent = '✨ Tidying…'; }
+// One-click cleanup for already-imported leads: Proper-Case names/areas AND snap
+// every product onto the catalog — the same normalisation new imports get, but
+// applied to the leads already in your working sheet. Only touches leads you can
+// edit, and only fields that actually change.
+async function cleanupImportedLeads() {
+  if (!confirm('Clean up your leads?\n\n• Proper-Case the factory name, person and area (mixed-case you typed by hand stays)\n• Snap each product onto your Products catalog\n\nOnly the leads you can edit are changed.')) return;
+  const btn = document.getElementById('btn-cleanup');
+  if (btn) { btn.disabled = true; btn.textContent = '✨ Cleaning…'; }
   try {
-    const res = await apiFetch('/api/leads/tidy-format' + orgQuery(), { method: 'POST', body: '{}' });
+    const updates = [];
+    for (const l of state.leads) {
+      if (l.can_edit === false) continue;
+      const upd = { id: l.rowIndex };
+      let changed = false;
+
+      const fn = toProperCase(l.factory_name);     if (fn !== (l.factory_name || ''))     { upd.factory_name = fn; changed = true; }
+      const pn = toProperCase(l.person_in_charge); if (pn !== (l.person_in_charge || '')) { upd.person_in_charge = pn; changed = true; }
+      const ar = toProperCase(l.area);             if (ar !== (l.area || ''))             { upd.area = ar; changed = true; }
+
+      // Normalise every item's product against the catalog (fallback: tidied raw).
+      const items = (l.items && l.items.length)
+        ? l.items
+        : (l.product ? [{ product: l.product, quantity: l.quantity, rate: l.rate }] : []);
+      const normItems = items.map(it => ({
+        product:  normImportProduct(it.product) || tidyProductText(it.product),
+        quantity: it.quantity || '',
+        rate:     it.rate || '',
+      }));
+      const itemsChanged = normItems.some((it, i) => it.product !== (items[i].product || ''));
+      const newPrimary   = normItems.length ? normItems[0].product : (l.product || '');
+      if (itemsChanged || newPrimary !== (l.product || '')) {
+        upd.product = newPrimary;
+        upd.items   = normItems;
+        changed = true;
+      }
+      if (changed) updates.push(upd);
+    }
+
+    if (!updates.length) { toast('Everything already looks clean'); return; }
+    const res = await apiFetch('/api/leads/bulk-fix' + orgQuery(), {
+      method: 'POST', body: JSON.stringify({ updates }),
+    });
     await loadLeads();
-    if (state.page === 'leads') renderLeadsView();
-    toast(res.changed ? `Tidied ${res.changed} lead${res.changed === 1 ? '' : 's'}` : 'Everything already looks tidy');
+    if (state.page === 'leads') { populateFilters(); renderLeadsView(); }
+    toast(res.changed ? `Cleaned up ${res.changed} lead${res.changed === 1 ? '' : 's'}` : 'Everything already looks clean');
   } catch (err) {
     toast(err.message, 'error');
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '✨ Tidy'; }
+    if (btn) { btn.disabled = false; btn.textContent = '✨ Clean up'; }
   }
 }
 
@@ -3989,7 +4025,7 @@ function wireEvents() {
     renderLeadsView();
   });
   document.getElementById('btn-manage-products')?.addEventListener('click', openProductsModal);
-  document.getElementById('btn-tidy-format')?.addEventListener('click', tidyFormatting);
+  document.getElementById('btn-cleanup')?.addEventListener('click', cleanupImportedLeads);
   document.getElementById('btn-db-import')?.addEventListener('click', openImportToDatabase);
   document.getElementById('btn-db-copy-selected')?.addEventListener('click', copySelectedToWorking);
   document.getElementById('db-search')?.addEventListener('input', e => {

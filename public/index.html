@@ -17,7 +17,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=24" />
+  <link rel="stylesheet" href="style.css?v=25" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -635,9 +635,9 @@
               <select id="filter-list" style="display:none"><option value="">All Lists</option></select>
             </div>
             <div class="toolbar-actions">
-              <button id="btn-manage-products" class="btn-ghost" title="Manage your major items / products">📦 Products</button>
-              <button id="btn-manage-lists" class="btn-ghost" title="Create and manage lists">🏷️ Lists</button>
-              <button id="btn-tidy-format" class="btn-ghost" title="Proper-Case names & areas on the leads shown (ALL-CAPS you typed by hand stays)">✨ Tidy</button>
+              <button id="btn-manage-products" class="btn btn-ghost btn-sm" title="Manage your major items / products">📦 Products</button>
+              <button id="btn-manage-lists" class="btn btn-ghost btn-sm" title="Create and manage lists">🏷️ Lists</button>
+              <button id="btn-cleanup" class="btn btn-ghost btn-sm" title="Fix imported leads: Proper-Case names/areas + snap products to your catalog">✨ Clean up</button>
               <div class="view-toggle">
                 <button class="toggle-btn active" data-view="table">☰ Table</button>
                 <button class="toggle-btn" data-view="cards">▤ Cards</button>
@@ -664,7 +664,7 @@
               <input type="text" id="db-search" class="db-search" placeholder="Search the database…" />
             </div>
             <div class="toolbar-actions">
-              <button id="btn-db-import" class="btn-ghost" title="Import a sheet straight into the Database">⬆ Import to Database</button>
+              <button id="btn-db-import" class="btn btn-ghost btn-sm" title="Import a sheet straight into the Database">⬆ Import to Database</button>
               <button id="btn-db-copy-selected" class="btn btn-primary btn-sm" disabled>Copy selected → Working leads</button>
             </div>
           </div>
@@ -1023,7 +1023,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=20"></script>
+  <script src="app.js?v=21"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:4400, once:true };</script>
   <script src="dive-splash.js"></script>

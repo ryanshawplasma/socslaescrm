@@ -47,18 +47,6 @@ async function canManageList(list, req) {
   return false;
 }
 
-// Proper-Case a name/area for the "tidy formatting" pass. Only rewrites values
-// that are ALL-CAPS or all-lowercase — anything already mixed-case is assumed
-// intentional and left untouched (respects a deliberate manual edit).
-function properCase(s) {
-  const str = String(s || '').trim().replace(/\s+/g, ' ');
-  if (!str) return '';
-  const isAllCaps  = str === str.toUpperCase() && /[A-Z]/.test(str);
-  const isAllLower = str === str.toLowerCase() && /[a-z]/.test(str);
-  if (!isAllCaps && !isAllLower) return str;
-  return str.toLowerCase().replace(/(^|[\s\-/&(.])([a-z])/g, (m, p, c) => p + c.toUpperCase());
-}
-
 // Products (catalog "major items") share list-style scoping/permission rules.
 function productInContext(p, username, teamId) {
   if (!p) return false;
@@ -458,21 +446,35 @@ router.post('/leads/move-to-database', authMiddleware, noGuest, async (req, res,
   } catch (err) { next(err); }
 });
 
-// POST /api/leads/tidy-format — one-time Proper-Case pass over the caller's
-// editable working leads (factory name, person, area). Mixed-case is left as-is.
-router.post('/leads/tidy-format', authMiddleware, noGuest, async (req, res, next) => {
+// POST /api/leads/bulk-fix { updates:[{id, factory_name?, person_in_charge?,
+// area?, product?, items?}] } — apply the client-computed clean-up (Proper-Case
+// names/areas + catalog-normalised products) to the caller's EDITABLE working
+// leads. The client does the normalising; the server only applies to leads the
+// caller is actually allowed to edit.
+router.post('/leads/bulk-fix', authMiddleware, noGuest, async (req, res, next) => {
   try {
-    const leads = await leadsForRequest(req, 'working');
+    const updates = Array.isArray(req.body?.updates) ? req.body.updates : [];
+    if (!updates.length) return res.status(400).json({ error: 'No changes to apply' });
+    if (updates.length > 5000) return res.status(400).json({ error: 'Too many leads in one pass' });
+    const editable = new Set(
+      (await leadsForRequest(req, 'working')).filter(l => l.can_edit).map(l => Number(l.rowIndex)));
     let changed = 0;
-    for (const l of leads) {
-      if (!l.can_edit) continue;
+    for (const u of updates) {
+      const id = Number(u?.id);
+      if (!id || !editable.has(id)) continue;
+      let did = false;
       const fields = {};
-      const fn = properCase(l.factory_name);     if (fn !== (l.factory_name || ''))     fields.factory_name = fn;
-      const pn = properCase(l.person_in_charge); if (pn !== (l.person_in_charge || '')) fields.person_in_charge = pn;
-      const ar = properCase(l.area);             if (ar !== (l.area || ''))             fields.area = ar;
-      if (Object.keys(fields).length) { await db.updateLeadFields(l.rowIndex, fields); changed++; }
+      if (u.factory_name     != null) fields.factory_name     = String(u.factory_name);
+      if (u.person_in_charge != null) fields.person_in_charge = String(u.person_in_charge);
+      if (u.area             != null) fields.area             = String(u.area);
+      if (Object.keys(fields).length) { await db.updateLeadFields(id, fields); did = true; }
+      if (u.product != null || Array.isArray(u.items)) {
+        await db.setLeadProducts(id, u.product != null ? u.product : '', Array.isArray(u.items) ? u.items : null);
+        did = true;
+      }
+      if (did) changed++;
     }
-    res.json({ ok: true, changed, scanned: leads.length });
+    res.json({ ok: true, changed, scanned: updates.length });
   } catch (err) { next(err); }
 });
 

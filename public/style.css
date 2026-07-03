@@ -2049,6 +2049,14 @@ tr.row-cold:hover td { background: #dbeafe; }
   .ws-hero-btns { flex-direction: column; width: 100%; }
   .ws-tabs      { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .ws-tab       { white-space: nowrap; }
+  /* Toolbars: let the filters and action buttons wrap instead of overflowing
+     off the right edge of the phone. */
+  .toolbar          { flex-direction: column; align-items: stretch; gap: 10px; }
+  .toolbar .filter-group,
+  .toolbar .toolbar-actions { flex-wrap: wrap; width: 100%; }
+  .toolbar .filter-group > select { flex: 1 1 46%; min-width: 0; }
+  .toolbar-actions .btn { flex: 0 0 auto; }
+  .db-search { max-width: 100%; }
 }
 
 /* ── Credential type label ────────────────────────────────── */

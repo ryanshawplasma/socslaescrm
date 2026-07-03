@@ -1207,7 +1207,25 @@ function navigate(page) {
   document.getElementById('page-title').textContent = PAGE_TITLES[page] || page;
   // Chat page needs edge-to-edge layout (no content padding)
   document.getElementById('content')?.classList.toggle('chat-mode', page === 'chat');
+  applyChatViewport();
   renderPage(page);
+}
+
+// Keep the chat page fitted to the on-screen keyboard-aware visible height so
+// the composer + the understanding/messages scroll-area never hide behind the
+// phone keyboard. On every other page (and where visualViewport is missing) we
+// clear the override and fall back to normal full-height layout.
+function applyChatViewport() {
+  const vv   = window.visualViewport;
+  const root = document.documentElement;
+  if (!vv || state.page !== 'chat') { root.style.removeProperty('--app-vh'); return; }
+  root.style.setProperty('--app-vh', Math.round(vv.height) + 'px');
+}
+function initChatViewport() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  vv.addEventListener('resize', applyChatViewport);
+  vv.addEventListener('scroll', applyChatViewport);
 }
 
 function renderPage(page) {
@@ -3344,6 +3362,7 @@ async function initApp() {
 async function init() {
   initTheme();
   wireEvents();
+  initChatViewport();
   // Show overlay while we check auth state
   document.getElementById('login-overlay').classList.remove('hidden');
   document.getElementById('app').classList.add('hidden');
@@ -5244,22 +5263,69 @@ async function assistantSend(text) {
 }
 
 // ── Command mode: execute natural-language commands ───────────
+// server messages use <b> for emphasis — re-allow just that tag after escaping
+function cmdHtml(msg) {
+  return escHtml(String(msg || '')).replace(/&lt;b&gt;/g, '<b>').replace(/&lt;\/b&gt;/g, '</b>');
+}
+function cmdFindResults(results) {
+  if (!results || !results.length) return '';
+  return '<br>' + results.map(r =>
+    `• <b>${escHtml(r.factory_number || '—')}</b> ${escHtml(r.factory_name || '')} — ${escHtml(r.stage || '—')}${r.lead_type ? ' · ' + escHtml(r.lead_type) : ''}${r.follow_up ? ' · FU ' + escHtml(r.follow_up) : ''}`
+  ).join('<br>');
+}
+
+let _pendingCommand = null;   // command text awaiting the user's confirmation
+
+// Step 1 — preview: parse + validate on the server WITHOUT writing, then let
+// the user Confirm / Edit / Cancel before anything actually changes.
 async function commandSend(text) {
   chatAppendMessage('user', escHtml(text));
-  chatAppendMessage('bot', '⚡ Working…');
+  chatAppendMessage('bot', '⚡ Reading…');
+  try {
+    const data = await apiFetch('/api/ai/command', {
+      method: 'POST',
+      body: JSON.stringify({ command: text, teamId: state.activeOrgId || null, preview: true }),
+    });
+
+    // FIND is read-only — just show the matches, no confirmation needed.
+    if (data.action === 'find') {
+      chatReplaceLastBot(cmdHtml(data.message) + cmdFindResults(data.results));
+      return;
+    }
+
+    // A confirmable mutating action — show what it WILL do + action buttons.
+    if (data.preview) {
+      _pendingCommand = text;
+      chatReplaceLastBot(
+        `<div class="cmd-confirm-q">Confirm this?</div>${cmdHtml(data.message)}` +
+        `<div class="cmd-confirm-actions">
+           <button class="btn btn-primary" onclick="confirmCommand()">✅ Confirm</button>
+           <button class="btn btn-ghost" onclick="editCommand()">✏️ Edit</button>
+           <button class="btn btn-ghost" onclick="cancelCommand()">Cancel</button>
+         </div>`);
+      return;
+    }
+
+    // ok:false — a clarification the AI needs; nothing to confirm.
+    chatReplaceLastBot(cmdHtml(data.message) || '⚠️ Could not do that');
+  } catch (err) {
+    chatReplaceLastBot('❌ ' + escHtml(err.message || 'Command failed'));
+  }
+}
+
+// Step 2 — confirm: actually run the command.
+async function confirmCommand() {
+  const text = _pendingCommand;
+  _pendingCommand = null;
+  if (!text) return;
+  chatReplaceLastBot('⚡ Working…');
   try {
     const data = await apiFetch('/api/ai/command', {
       method: 'POST',
       body: JSON.stringify({ command: text, teamId: state.activeOrgId || null }),
     });
-    // server messages use <b> for emphasis — re-allow just that tag
-    let html = escHtml(String(data.message || (data.ok ? '✅ Done' : '⚠️ Could not do that')))
-      .replace(/&lt;b&gt;/g, '<b>').replace(/&lt;\/b&gt;/g, '</b>');
-    if (data.action === 'find' && data.results?.length) {
-      html += '<br>' + data.results.map(r =>
-        `• <b>${escHtml(r.factory_number || '—')}</b> ${escHtml(r.factory_name || '')} — ${escHtml(r.stage || '—')}${r.lead_type ? ' · ' + escHtml(r.lead_type) : ''}${r.follow_up ? ' · FU ' + escHtml(r.follow_up) : ''}`
-      ).join('<br>');
-    }
+    let html = cmdHtml(data.message || (data.ok ? '✅ Done' : '⚠️ Could not do that'));
+    if (data.action === 'find') html += cmdFindResults(data.results);
     chatReplaceLastBot(html);
     if (data.ok && data.action !== 'find') {
       await Promise.all([loadLeads(), loadStats()]).catch(() => {});
@@ -5267,6 +5333,19 @@ async function commandSend(text) {
   } catch (err) {
     chatReplaceLastBot('❌ ' + escHtml(err.message || 'Command failed'));
   }
+}
+
+function editCommand() {
+  const text = _pendingCommand;
+  _pendingCommand = null;
+  const input = document.getElementById('chat-input');
+  if (input) { input.value = text; input.focus(); chatInputChanged?.(text); }
+  chatReplaceLastBot('✏️ Edit your command above, then send it again.');
+}
+
+function cancelCommand() {
+  _pendingCommand = null;
+  chatReplaceLastBot('Okay — cancelled, nothing was changed.');
 }
 
 // Enhanced chatSend — routes based on current AI mode

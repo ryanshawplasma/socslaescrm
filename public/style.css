@@ -255,6 +255,11 @@ body {
   display: flex;
   height: 100vh;
   height: 100dvh;
+  /* On the chat page --app-vh is set to the on-screen keyboard-aware visible
+     height (window.visualViewport) so the composer and the understanding /
+     messages scroll-area always stay above the keyboard on phones. Cleared on
+     every other page, where it falls back to the normal full height. */
+  height: var(--app-vh, 100dvh);
 }
 
 /* ── Sidebar ───────────────────────────────────────────── */
@@ -1782,6 +1787,10 @@ tr.row-cold:hover td { background: #dbeafe; }
   border-bottom-left-radius: 4px;
   color: var(--text);
 }
+/* Command confirm (edit-before-run) buttons inside a bot bubble */
+.cmd-confirm-q { font-weight: 600; margin-bottom: 4px; color: var(--text-muted); font-size: 12px; }
+.cmd-confirm-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.cmd-confirm-actions .btn { padding: 6px 14px; font-size: 12px; min-height: 0; border-radius: 8px; }
 
 /* ── Chips bar ──────────────────────────────────────────── */
 .chat-chips-bar {

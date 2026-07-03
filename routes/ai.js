@@ -566,7 +566,11 @@ Return ONLY JSON:
 const STAGE_BY_NUM = { 0: 'Lost', 1: 'New Lead', 2: 'Sample Required', 3: 'Sample Sent', 4: 'Quotation', 5: 'Negotiation', 6: 'Order Won', 7: 'Repeat Customer' };
 
 router.post('/ai/command', authMiddleware, async (req, res, next) => {
-  const { command, teamId } = req.body || {};
+  const { command, teamId, preview } = req.body || {};
+  // preview:true → parse + validate + resolve the target, but DON'T write.
+  // The client shows the interpreted action for the user to Confirm or Edit,
+  // then re-sends (preview omitted) to actually execute it.
+  const isPreview = !!preview;
   if (!command || !String(command).trim()) return res.status(400).json({ error: 'command required' });
   // Guests can't mutate — catch obvious add/create commands before spending AI quota
   if (req.user.role === 'guest' && /\b(add|create|new|nayi|naya)\s+(party|lead|customer)\b/i.test(String(command))) {
@@ -636,6 +640,16 @@ router.post('/ai/command', authMiddleware, async (req, res, next) => {
         if (creator?.default_area) payload.area = creator.default_area;
       }
 
+      if (isPreview) {
+        const pv = [`Add party <b>${payload.factory_name || payload.factory_number}</b>`];
+        if (payload.person_in_charge) pv.push(`👤 ${payload.person_in_charge}`);
+        if (payload.items.length)     pv.push(`📦 ${payload.items.map(i => `${i.product} ${i.quantity}${i.rate ? '@₹' + i.rate : ''}`).join(', ')}`);
+        if (payload.lead_type)        pv.push(`🌡 ${payload.lead_type}`);
+        if (payload.follow_up)        pv.push(`📅 FU ${payload.follow_up}`);
+        if (payload.area)             pv.push(`📍 ${payload.area}`);
+        return res.json({ ok: true, preview: true, action: 'create_lead', message: pv.join(' · ') });
+      }
+
       const result = await db.addLead(payload, req.user.username);
       if (result.conflict) {
         return res.json({ ok: false, message: `⚠️ ${result.message} — that party already exists (row ${result.rowIndex}). Say "find ${payload.factory_number || payload.factory_name}" to see it.` });
@@ -690,6 +704,11 @@ router.post('/ai/command', authMiddleware, async (req, res, next) => {
       const existing = String(lead.notes || '').trim();
       update = { notes: existing ? `${existing} | ${note}` : note };
       message = `✅ Note added to ${label}`;
+    }
+
+    if (isPreview) {
+      // Strip the "done" tick — this is a proposal, not a result yet.
+      return res.json({ ok: true, preview: true, action: cmd.action, message: message.replace(/^✅\s*/, ''), rowIndex });
     }
 
     await db.updateLead(rowIndex, update);

@@ -96,7 +96,7 @@ async function startServer() {
   await db.seedAdminUser(ADMIN_USER, ADMIN_PASS);
 
   httpServer.listen(PORT, () => {
-    console.log(`\n🚀 SalesCRM running at http://localhost:${PORT}`);
+    console.log(`\n🚀 Dive running at http://localhost:${PORT}`);
     console.log(`   Database    : PostgreSQL`);
     console.log(`   Telegram    : ⏸ frozen (archived under _archive/telegram)`);
     if (!process.env.JWT_SECRET) console.warn('   ⚠️  JWT_SECRET is not set — using an insecure default. Set it in production!');

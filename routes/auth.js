@@ -395,7 +395,7 @@ router.get('/security-log', authMiddleware, async (req, res, next) => {
 // ============================================================
 //  WEBAUTHN
 // ============================================================
-const RP_NAME = 'SalesCRM';
+const RP_NAME = 'Dive';
 
 function getWebAuthnConfig(req) {
   const envOrigin = process.env.ORIGIN;

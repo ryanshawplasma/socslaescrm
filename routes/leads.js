@@ -198,36 +198,43 @@ router.post('/leads/import', authMiddleware, noGuest, async (req, res, next) => 
 // ── POST /api/import/sheet — fetch a public Google Sheet as CSV ──
 router.post('/import/sheet', authMiddleware, async (req, res, next) => {
   const url = String((req.body || {}).url || '').trim();
-  const gid = (url.match(/[#&?]gid=(\d+)/) || [])[1] || '0';
+  const gidMatch = url.match(/[#&?]gid=(\d+)/);
   // "Publish to web" links use /d/e/{token}; normal share links use /d/{id}.
   // Check the /d/e/ form first (the plain /d/ regex would otherwise capture "e").
   const pub = url.match(/spreadsheets\/d\/e\/([a-zA-Z0-9-_]+)/);
   const std = url.match(/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  let csvUrl;
-  if (pub)       csvUrl = `https://docs.google.com/spreadsheets/d/e/${pub[1]}/pub?gid=${gid}&single=true&output=csv`;
-  else if (std)  csvUrl = `https://docs.google.com/spreadsheets/d/${std[1]}/export?format=csv&gid=${gid}`;
+  let base;
+  if (pub)       base = `https://docs.google.com/spreadsheets/d/e/${pub[1]}/pub?single=true&output=csv`;
+  else if (std)  base = `https://docs.google.com/spreadsheets/d/${std[1]}/export?format=csv`;
   else return res.status(400).json({ error: 'That doesn\'t look like a Google Sheets link. Copy the URL from your browser\'s address bar — it should contain docs.google.com/spreadsheets/…' });
-  try {
-    const { data } = await axios.get(csvUrl, { timeout: 20000, maxRedirects: 5, responseType: 'text' });
-    // Google returns an HTML sign-in / error page (not CSV) when the sheet
-    // isn't publicly readable.
-    if (typeof data !== 'string' || /<(!doctype|html)/i.test(data.slice(0, 300))) {
-      return res.status(400).json({ error: 'That sheet isn\'t publicly readable. In Google Sheets: Share → General access → "Anyone with the link" → Viewer, then paste the link again.' });
-    }
-    if (!data.trim()) {
-      return res.status(400).json({ error: 'That sheet tab looks empty. Open the tab that has your data and copy its link (the URL changes for each tab).' });
-    }
-    res.json({ csv: data });
-  } catch (err) {
-    const st = err.response && err.response.status;
-    if (st === 404) return res.status(400).json({ error: 'Sheet not found — double-check the link is correct.' });
-    // Google returns 400/401/403 on the CSV export when the sheet isn't publicly
-    // readable — by far the most common cause. Give the exact fix.
-    if (st && st >= 400 && st < 500) {
-      return res.status(400).json({ error: `This sheet isn't shared publicly, so Google blocked the download. Fix it in Google Sheets: click Share (top-right) → under "General access" change "Restricted" to "Anyone with the link" → set the role to Viewer → Done. Then paste the link again. (Private sheets return error ${st}.)` });
-    }
-    return res.status(400).json({ error: `Couldn't reach Google Sheets (${err.code || 'network error'}). Please try again in a moment.` });
+
+  // A "Copy link" share URL has no gid, and a stale/wrong gid makes Google 400.
+  // So try the requested tab first (if any), then fall back to the first tab
+  // (no gid at all → Google exports the default sheet).
+  const withGid   = gidMatch ? `${base}${base.includes('?') ? '&' : '?'}gid=${gidMatch[1]}` : base;
+  const candidates = withGid === base ? [base] : [withGid, base];
+
+  const looksHtml = d => typeof d !== 'string' || /<(!doctype|html)/i.test(d.slice(0, 300));
+  let data = null, lastErr = null;
+  for (const u of candidates) {
+    try {
+      const resp = await axios.get(u, { timeout: 20000, maxRedirects: 5, responseType: 'text' });
+      if (!looksHtml(resp.data) && String(resp.data).trim()) { data = resp.data; break; }
+      lastErr = { html: true };   // private sheet returns an HTML sign-in page
+    } catch (e) { lastErr = e; }   // e.g. wrong gid → 400 → try the first tab next
   }
+
+  if (data) return res.json({ csv: data });
+
+  if (lastErr && lastErr.html) {
+    return res.status(400).json({ error: 'That sheet isn\'t publicly readable. In Google Sheets: Share → General access → "Anyone with the link" → Viewer, then paste the link again.' });
+  }
+  const st = lastErr && lastErr.response && lastErr.response.status;
+  if (st === 404) return res.status(400).json({ error: 'Sheet not found — double-check the link is correct.' });
+  if (st && st >= 400 && st < 500) {
+    return res.status(400).json({ error: `Couldn't read that sheet (Google error ${st}). Make sure it's shared "Anyone with the link → Viewer", and try copying the link again from the tab that actually has your data.` });
+  }
+  return res.status(400).json({ error: `Couldn't reach Google Sheets (${(lastErr && lastErr.code) || 'network error'}). Please try again in a moment.` });
 });
 
 // ── DELETE /api/leads/:row ────────────────────────────────────

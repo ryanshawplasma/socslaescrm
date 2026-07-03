@@ -63,10 +63,18 @@ async function leadsForRequest(req) {
     const leads   = await db.getLeadsByTeam(ctx.teamId);
     const manager = req.user.role === 'admin' || TEAM_MANAGER_ROLES.includes(ctx.member.role);
     const shared  = manager ? null : await db.getAccessibleLeadIds(req.user.username);
-    const mapped  = leads.map(l => ({
+    let mapped    = leads.map(l => ({
       ...l,
       can_edit: manager || l.created_by === req.user.username || shared.has(Number(l.rowIndex)),
     }));
+    // Hidden ('private') leads are invisible to other salespeople — but the
+    // owner, anyone they've shared with, and team managers/admins still see them.
+    if (!manager) {
+      mapped = mapped.filter(l =>
+        String(l.visibility) !== 'private' ||
+        l.created_by === req.user.username ||
+        shared.has(Number(l.rowIndex)));
+    }
     return attachLists(mapped, req.user.username, ctx.teamId);
   }
 
@@ -335,6 +343,19 @@ router.post('/leads/:id/access', authMiddleware, noGuest, requireLeadManage, asy
 router.delete('/leads/:id/access/:name', authMiddleware, noGuest, requireLeadManage, async (req, res, next) => {
   try { res.json(await db.revokeLeadAccess(parseInt(req.params.id, 10), decodeURIComponent(req.params.name))); }
   catch (err) { next(err); }
+});
+
+// ── PATCH /api/leads/:id/visibility — hide/unhide from the team ──
+// Owner or admin/manager only (requireLeadManage). Hidden ('private') leads
+// disappear for other salespeople but stay visible to the owner + managers.
+router.patch('/leads/:id/visibility', authMiddleware, noGuest, requireLeadManage, async (req, res, next) => {
+  const hidden = !!(req.body || {}).hidden;
+  try {
+    const result = await db.setLeadVisibility(parseInt(req.params.id, 10), hidden ? 'private' : 'team');
+    db.logLeadActivity(parseInt(req.params.id, 10), req.lead?.team_id || null, hidden ? 'hidden' : 'unhidden',
+      `${hidden ? 'Hidden from' : 'Made visible to'} the team by ${req.user.username}`, {}, req.user.username).catch(() => {});
+    res.json(result);
+  } catch (err) { next(err); }
 });
 
 // ── POST /api/leads/:id/request-access ───────────────────────

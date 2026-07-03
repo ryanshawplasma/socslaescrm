@@ -2122,7 +2122,7 @@ function buildCards(leads) {
       <div class="lead-card ${typeCls}" onclick="openEditModal(${l.rowIndex})" tabindex="0"
            onkeydown="if(event.key==='Enter'){openEditModal(${l.rowIndex})}">
         <div class="lead-card-head">
-          <div class="lead-card-name">${escHtml(l.factory_name || l.factory_number || '—')}</div>
+          <div class="lead-card-name">${String(l.visibility) === 'private' ? '<span title="Hidden from the team">🙈</span> ' : ''}${escHtml(l.factory_name || l.factory_number || '—')}</div>
           ${typeTag}
         </div>
         ${l.factory_number && l.factory_name ? `<div class="lead-card-num">${escHtml(l.factory_number)}</div>` : ''}
@@ -2989,6 +2989,36 @@ function openEditModal(rowIndex) {
     });
   } else if (accessSection) {
     accessSection.style.display = 'none';
+  }
+
+  // Hide-from-team toggle — same permission as sharing (owner or admin).
+  const hideSection = document.getElementById('modal-hide-section');
+  const hideToggle  = document.getElementById('f-hide-toggle');
+  if (hideSection && hideToggle) {
+    if (canShare) {
+      hideSection.style.display = '';
+      hideToggle.checked = String(lead.visibility) === 'private';
+      hideToggle.dataset.row = rowIndex;
+    } else {
+      hideSection.style.display = 'none';
+    }
+  }
+}
+
+async function toggleLeadVisibility(hidden) {
+  const toggle = document.getElementById('f-hide-toggle');
+  const row = toggle?.dataset.row;
+  if (!row) return;
+  try {
+    await apiFetch(`/api/leads/${row}/visibility`, { method: 'PATCH', body: JSON.stringify({ hidden: !!hidden }) });
+    // reflect it in local state so the badge/list update without a full reload
+    const lead = state.leads.find(l => String(l.rowIndex) === String(row));
+    if (lead) lead.visibility = hidden ? 'private' : 'team';
+    toast(hidden ? 'Hidden from the team' : 'Visible to the team', 'success');
+    renderLeadsView();
+  } catch (err) {
+    toast('Could not update: ' + err.message, 'error');
+    if (toggle) toggle.checked = !hidden;   // revert
   }
 }
 

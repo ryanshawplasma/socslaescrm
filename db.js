@@ -1692,6 +1692,14 @@ async function getLeadById(id) {
   return rows[0] || null;
 }
 
+// 'team' = visible to everyone in the team; 'private' = hidden from other
+// salespeople (still visible to the owner and team managers/admins).
+async function setLeadVisibility(rowIndex, visibility) {
+  const v = visibility === 'private' ? 'private' : 'team';
+  await pool.query(`UPDATE leads SET visibility=$1 WHERE id=$2`, [v, rowIndex]);
+  return { ok: true, visibility: v };
+}
+
 async function userHasLeadAccess(leadId, username) {
   const { rows } = await pool.query(
     `SELECT 1 FROM lead_access WHERE lead_id=$1 AND user_display_name=$2`, [leadId, username]
@@ -2011,7 +2019,7 @@ module.exports = {
   getListsForContext, getListById, createList, renameList, deleteList,
   setLeadListMemberships, getListMembershipsForLeads,
   // Lead security
-  getLeadById, userHasLeadAccess, getAccessibleLeadIds,
+  getLeadById, setLeadVisibility, userHasLeadAccess, getAccessibleLeadIds,
   // Lead share requests
   createLeadShareRequest, getLeadShareRequestById,
   getIncomingLeadRequests, getOutgoingLeadRequests, reviewLeadShareRequest,

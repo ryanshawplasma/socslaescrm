@@ -1,6 +1,6 @@
 // Service worker — makes the app installable and caches the shell
-const CACHE = 'salescrm-v3';
-const SHELL = ['/', '/app.js', '/style.css', '/manifest.json'];
+const CACHE = 'salescrm-v4';
+const SHELL = ['/', '/manifest.json'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)));

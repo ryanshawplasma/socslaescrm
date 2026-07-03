@@ -37,6 +37,17 @@ app.use((_req, res, next) => {
   next();
 });
 
+// Always revalidate the HTML shell so a new deploy's app.js?v=… / style.css?v=…
+// references are picked up immediately (the JS/CSS themselves are cache-busted
+// by their ?v= query). Without this a browser can keep serving an old index.html
+// that points at a stale bundle.
+app.use((req, res, next) => {
+  if (req.path === '/' || req.path === '/index.html' || req.path.endsWith('.html')) {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  }
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ── Health check ──────────────────────────────────────────────

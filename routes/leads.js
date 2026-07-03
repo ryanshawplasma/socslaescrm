@@ -198,21 +198,31 @@ router.post('/leads/import', authMiddleware, noGuest, async (req, res, next) => 
 // ── POST /api/import/sheet — fetch a public Google Sheet as CSV ──
 router.post('/import/sheet', authMiddleware, async (req, res, next) => {
   const url = String((req.body || {}).url || '').trim();
-  const m = url.match(/docs\.google\.com\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  if (!m) return res.status(400).json({ error: 'Paste a Google Sheets link (docs.google.com/spreadsheets/…)' });
   const gid = (url.match(/[#&?]gid=(\d+)/) || [])[1] || '0';
+  // "Publish to web" links use /d/e/{token}; normal share links use /d/{id}.
+  // Check the /d/e/ form first (the plain /d/ regex would otherwise capture "e").
+  const pub = url.match(/spreadsheets\/d\/e\/([a-zA-Z0-9-_]+)/);
+  const std = url.match(/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  let csvUrl;
+  if (pub)       csvUrl = `https://docs.google.com/spreadsheets/d/e/${pub[1]}/pub?gid=${gid}&single=true&output=csv`;
+  else if (std)  csvUrl = `https://docs.google.com/spreadsheets/d/${std[1]}/export?format=csv&gid=${gid}`;
+  else return res.status(400).json({ error: 'That doesn\'t look like a Google Sheets link. Copy the URL from your browser\'s address bar — it should contain docs.google.com/spreadsheets/…' });
   try {
-    const csvUrl = `https://docs.google.com/spreadsheets/d/${m[1]}/export?format=csv&gid=${gid}`;
     const { data } = await axios.get(csvUrl, { timeout: 20000, maxRedirects: 5, responseType: 'text' });
-    if (typeof data !== 'string' || /<html/i.test(data.slice(0, 300))) {
-      return res.status(400).json({ error: 'Could not read the sheet — make sure sharing is set to "Anyone with the link can view".' });
+    // Google returns an HTML sign-in / error page (not CSV) when the sheet
+    // isn't publicly readable.
+    if (typeof data !== 'string' || /<(!doctype|html)/i.test(data.slice(0, 300))) {
+      return res.status(400).json({ error: 'That sheet isn\'t publicly readable. In Google Sheets: Share → General access → "Anyone with the link" → Viewer, then paste the link again.' });
+    }
+    if (!data.trim()) {
+      return res.status(400).json({ error: 'That sheet tab looks empty. Open the tab that has your data and copy its link (the URL changes for each tab).' });
     }
     res.json({ csv: data });
   } catch (err) {
-    if (err.response?.status === 401 || err.response?.status === 403 || err.response?.status === 404) {
-      return res.status(400).json({ error: 'Sheet is private or not found — set sharing to "Anyone with the link can view".' });
-    }
-    next(err);
+    const st = err.response && err.response.status;
+    if (st === 401 || st === 403) return res.status(400).json({ error: 'Sheet is private. Share → "Anyone with the link" → Viewer, then try again.' });
+    if (st === 404) return res.status(400).json({ error: 'Sheet not found — double-check the link is correct.' });
+    return res.status(400).json({ error: `Could not fetch the sheet (${err.code || st || 'network error'}). Make sure it's shared "Anyone with the link can view".` });
   }
 });
 

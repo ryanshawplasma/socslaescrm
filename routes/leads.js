@@ -476,6 +476,29 @@ router.delete('/products/:id', authMiddleware, noGuest, async (req, res, next) =
   } catch (err) { next(err); }
 });
 
+// POST /api/products/bulk-delete { ids:[...] } — remove many catalog items at
+// once (used by the "clear import junk" flow). Only touches items in the
+// caller's context; shared/team items still require manager rights.
+router.post('/products/bulk-delete', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const ids = Array.isArray((req.body || {}).ids) ? (req.body || {}).ids : [];
+    if (!ids.length) return res.status(400).json({ error: 'No products selected' });
+    const ctx = await resolveTeamContext(req);
+    if (ctx?.forbidden) return res.status(403).json({ error: 'Not a member of this team' });
+    const teamId = ctx?.teamId || null;
+    // Removing shared team products is a manager/admin action.
+    if (teamId && req.user.role !== 'admin') {
+      const user   = await db.getUserByName(req.user.username);
+      const member = user && await db.getTeamMember(teamId, user.id);
+      if (!(member && member.status === 'active' && TEAM_MANAGER_ROLES.includes(member.role))) {
+        return res.status(403).json({ error: 'Only team managers can bulk-remove shared products' });
+      }
+    }
+    const deleted = await db.deleteProductsScoped(ids, req.user.username, teamId);
+    res.json({ ok: true, deleted });
+  } catch (err) { next(err); }
+});
+
 // ── Product data clean-up (admin) ────────────────────────────
 // GET /api/products/cleanup-scan — distinct product values NOT matching the
 // catalog/aliases, each with its usage count + AI-proposed fix (one Gemini call).

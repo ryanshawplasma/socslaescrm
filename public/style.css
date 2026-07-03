@@ -2056,6 +2056,10 @@ tr.row-cold:hover td { background: #dbeafe; }
   .toolbar .toolbar-actions { flex-wrap: wrap; width: 100%; }
   .toolbar .filter-group > select { flex: 1 1 46%; min-width: 0; }
   .toolbar-actions .btn { flex: 0 0 auto; }
+  /* Give the Table/Cards/Kanban toggle its own full-width row so the buttons
+     share the space evenly instead of overflowing off the right edge. */
+  .toolbar-actions .view-toggle { flex: 1 1 100%; width: 100%; }
+  .toolbar-actions .view-toggle .toggle-btn { flex: 1 1 0; min-width: 0; text-align: center; padding: 8px 6px; }
   .db-search { max-width: 100%; }
 }
 
@@ -3585,6 +3589,15 @@ tr.row-cold:hover td { background: #dbeafe; }
   padding: 22px 24px; box-shadow: 0 24px 70px rgba(0,0,0,.35);
 }
 .products-modal-hint { font-size: 12.5px; color: var(--text-muted); margin: 0 0 14px; line-height: 1.5; }
+.products-bulk-bar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 4px; margin: 6px 0 2px; border-top: 1px solid var(--border);
+}
+.products-bulk-bar.hidden { display: none; }
+.products-bulk-all { font-size: 12.5px; color: var(--text); display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.products-bulk-count { font-size: 12px; color: var(--text-muted); margin-left: auto; }
+.product-pick { width: 15px; height: 15px; cursor: pointer; flex: none; }
+.product-added { font-size: 11px; color: var(--text-muted); margin-left: 8px; white-space: nowrap; }
 .products-create-grid {
   display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center;
 }

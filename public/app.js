@@ -2609,15 +2609,23 @@ async function bulkDeleteSelected() {
   const bar = document.getElementById('leads-bulk-bar');
   if (bar) bar.querySelectorAll('button').forEach(b => b.disabled = true);
   try {
-    const res = await apiFetch('/api/leads/bulk-delete' + orgQuery(), {
-      method: 'POST', body: JSON.stringify({ lead_ids: ids }),
-    });
+    // The server caps each request at 1000, so send in batches — this lets a
+    // "select all → delete" clear the whole sheet in one click for a fresh import.
+    const CHUNK = 900;
+    let deleted = 0, denied = 0;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const res = await apiFetch('/api/leads/bulk-delete' + orgQuery(), {
+        method: 'POST', body: JSON.stringify({ lead_ids: ids.slice(i, i + CHUNK) }),
+      });
+      deleted += res.deleted || 0;
+      denied  += res.denied  || 0;
+    }
     state.selectedLeads.clear();
     await loadLeads();
     if (state.stats) { try { await loadStats(); } catch (_) {} }
     renderLeads();
-    const extra = res.denied ? ` (${res.denied} skipped — no permission)` : '';
-    toast(`Deleted ${res.deleted} lead${res.deleted === 1 ? '' : 's'}${extra}`, res.deleted ? 'success' : 'warning');
+    const extra = denied ? ` (${denied} skipped — no permission)` : '';
+    toast(`Deleted ${deleted} lead${deleted === 1 ? '' : 's'}${extra}`, deleted ? 'success' : 'warning');
   } catch (err) {
     toast(err.message, 'error');
     if (bar) bar.querySelectorAll('button').forEach(b => b.disabled = false);
@@ -3816,15 +3824,21 @@ function refreshDivisionSuggestions() {
   const dl = document.getElementById('division-suggestions');
   if (dl) dl.innerHTML = catalogDivisions().map(d => `<option value="${escAttr(d)}"></option>`).join('');
 }
+// Ids ticked in the products modal's bulk-delete selection.
+var _selectedProductIds = new Set();
 function renderProductsManageBody() {
   const box = document.getElementById('products-manage-body');
   if (!box) return;
   refreshDivisionSuggestions();
+  _selectedProductIds.clear();               // selection resets whenever the list changes
   const products = state.myProducts || [];
+  const bulkBar = document.getElementById('products-bulk-bar');
   if (!products.length) {
     box.innerHTML = '<div class="empty-state" style="padding:22px">No products yet — add your major items above.</div>';
+    if (bulkBar) bulkBar.classList.add('hidden');
     return;
   }
+  if (bulkBar) bulkBar.classList.remove('hidden');
   // Group by division for a tidy, filterable view.
   const groups = {};
   for (const p of products) (groups[p.division || 'Uncategorised'] = groups[p.division || 'Uncategorised'] || []).push(p);
@@ -3832,12 +3846,50 @@ function renderProductsManageBody() {
     <div class="product-group-title">${escHtml(div)}</div>
     ${groups[div].map(p => `
       <div class="list-manage-row">
+        <input type="checkbox" class="product-pick" data-pid="${p.id}" onclick="toggleProductPick(${p.id}, this.checked)" />
         <span class="list-manage-name">${escHtml(p.name)}</span>
         ${p.aliases ? `<span class="product-aliases" title="Alias spellings the importer reads">${escHtml(p.aliases)}</span>` : ''}
+        ${p.created_at ? `<span class="product-added" title="When this item was added">added ${escHtml(String(p.created_at).split(' ')[0])}</span>` : ''}
         <button class="action-btn" onclick="editProductPrompt(${p.id})">Edit</button>
         <button class="action-btn del" onclick="deleteProductConfirm(${p.id}, '${escAttr(p.name)}')">Delete</button>
       </div>`).join('')}
   `).join('');
+  const selAll = document.getElementById('products-select-all');
+  if (selAll) selAll.checked = false;
+  updateProductBulkBar();
+}
+function toggleProductPick(id, on) {
+  if (on) _selectedProductIds.add(String(id)); else _selectedProductIds.delete(String(id));
+  updateProductBulkBar();
+}
+function toggleSelectAllProducts(on) {
+  _selectedProductIds.clear();
+  document.querySelectorAll('#products-manage-body .product-pick').forEach(cb => {
+    cb.checked = on;
+    if (on) _selectedProductIds.add(String(cb.dataset.pid));
+  });
+  updateProductBulkBar();
+}
+function updateProductBulkBar() {
+  const n = _selectedProductIds.size;
+  const countEl = document.getElementById('products-bulk-count');
+  if (countEl) countEl.textContent = n ? `${n} selected` : 'Tick the items to remove';
+  const btn = document.querySelector('#products-bulk-bar .btn-danger');
+  if (btn) btn.disabled = !n;
+}
+async function bulkDeleteProducts() {
+  const ids = [..._selectedProductIds];
+  if (!ids.length) { toast('Tick the products you want to remove', 'warning'); return; }
+  if (!confirm(`Remove ${ids.length} product${ids.length === 1 ? '' : 's'} from your catalog? Existing leads keep their items — this only clears them from the list.`)) return;
+  try {
+    const r = await apiFetch('/api/products/bulk-delete' + orgQuery(), {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    });
+    await loadProducts();
+    renderProductsManageBody(); populateFilters(); renderLeadsView();
+    toast(`Removed ${r.deleted} product${r.deleted === 1 ? '' : 's'}`);
+  } catch (err) { toast(err.message, 'error'); }
 }
 async function createProductFromModal() {
   const nameEl = document.getElementById('new-product-name');

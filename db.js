@@ -1836,15 +1836,16 @@ async function deleteList(id) {
 async function getProductsForContext(owner, teamId) {
   const { rows } = teamId
     ? await pool.query(
-        `SELECT id, name, division, aliases, team_id, owner
+        `SELECT id, name, division, aliases, team_id, owner, created_at
          FROM products WHERE team_id=$1 ORDER BY LOWER(division), LOWER(name)`, [teamId])
     : await pool.query(
-        `SELECT id, name, division, aliases, team_id, owner
+        `SELECT id, name, division, aliases, team_id, owner, created_at
          FROM products WHERE team_id IS NULL AND LOWER(owner)=LOWER($1)
          ORDER BY LOWER(division), LOWER(name)`, [owner || '']);
   return rows.map(r => ({
     id: r.id, name: r.name || '', division: r.division || '',
     aliases: r.aliases || '', team_id: r.team_id, owner: r.owner || '',
+    created_at: r.created_at || '',
   }));
 }
 
@@ -1877,6 +1878,20 @@ async function updateProduct(id, { name, division, aliases }) {
 
 async function deleteProduct(id) {
   await pool.query(`DELETE FROM products WHERE id=$1`, [id]);
+}
+
+// Bulk-remove catalog items, but only ones inside the caller's context (their
+// own team or their personal list) so a request can never delete another team's
+// products. Returns the number of rows actually removed.
+async function deleteProductsScoped(ids, owner, teamId) {
+  const clean = [...new Set((ids || []).map(n => parseInt(n, 10)).filter(Boolean))];
+  if (!clean.length) return 0;
+  const r = teamId
+    ? await pool.query(`DELETE FROM products WHERE id = ANY($1) AND team_id=$2`, [clean, teamId])
+    : await pool.query(
+        `DELETE FROM products WHERE id = ANY($1) AND team_id IS NULL AND LOWER(owner)=LOWER($2)`,
+        [clean, owner || '']);
+  return r.rowCount || 0;
 }
 
 // ── Product aliases + AI resolution ──────────────────────────
@@ -2392,7 +2407,7 @@ module.exports = {
   // Lead lists (tags)
   getListsForContext, getListById, createList, renameList, deleteList,
   setLeadListMemberships, getListMembershipsForLeads, addLeadsToList,
-  getProductsForContext, getProductById, createProduct, updateProduct, deleteProduct,
+  getProductsForContext, getProductById, createProduct, updateProduct, deleteProduct, deleteProductsScoped,
   getAliases, saveAlias, resolveProducts, rewriteProductValue,
   upsertSuggestion, getPendingSuggestions, setSuggestionStatus, distinctProductValues,
   // Lead security

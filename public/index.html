@@ -296,6 +296,11 @@
       </div>
       <datalist id="division-suggestions"></datalist>
       <p id="products-modal-error" class="login-error" style="margin:6px 0 0"></p>
+      <div id="products-bulk-bar" class="products-bulk-bar hidden">
+        <label class="products-bulk-all"><input type="checkbox" id="products-select-all" onclick="toggleSelectAllProducts(this.checked)" /> Select all</label>
+        <span id="products-bulk-count" class="products-bulk-count"></span>
+        <button class="btn btn-danger btn-sm" onclick="bulkDeleteProducts()">🗑 Delete selected</button>
+      </div>
       <div id="products-manage-body" class="lists-manage-body"></div>
       <div class="products-cleanup-row admin-only" style="display:none">
         <button class="btn btn-ghost btn-sm" onclick="closeProductsModal(); openProductCleanup();">🧹 Fix imported product data (AI)</button>

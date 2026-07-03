@@ -828,7 +828,14 @@ async function apiFetch(path, opts = {}) {
     }
     throw new Error(body.error || 'Access denied');
   }
-  if (!res.ok) throw new Error(`${opts.method || 'GET'} ${path} → ${res.status}`);
+  if (!res.ok) {
+    // Surface the server's own error message (e.g. the Google-Sheets import's
+    // "set sharing to Anyone with the link can view") instead of a cryptic
+    // "POST /api/… → 400". Fall back to the status line if there's no body.
+    let msg = '';
+    try { const body = await res.json(); msg = body && body.error; } catch (_) {}
+    throw new Error(msg || `${opts.method || 'GET'} ${path} → ${res.status}`);
+  }
   return res.json();
 }
 

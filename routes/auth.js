@@ -93,10 +93,14 @@ router.post(['/auth/login', '/login'], loginLimiter, async (req, res, next) => {
     // Primary credential is the account password. Accounts created before the
     // password migration have none yet — accept their existing PIN once and flag
     // that they must set a password (handled by the client's blocking setup step).
+    // An admin can also force this same blocking step for an account that
+    // already has a password (must_change_password) — e.g. a mandatory
+    // security reset — without touching or invalidating their current one.
     let valid = false;
     let needsPasswordSetup = false;
     if (user.password_hash) {
       valid = !!(await db.verifyUserPassword(user.display_name, secret));
+      needsPasswordSetup = valid && !!user.must_change_password;
     } else {
       valid = !!(await db.verifyUserPin(user.display_name, secret));
       needsPasswordSetup = valid;
@@ -150,8 +154,9 @@ router.post(['/auth/login', '/login'], loginLimiter, async (req, res, next) => {
 });
 
 // ── POST /api/auth/set-password ───────────────────────────────
-// Used both by the one-time migration (legacy accounts with no password)
-// and for changing an existing password (requires the current one).
+// Used for the one-time migration (legacy accounts with no password), an
+// admin-forced reset (must_change_password), and a voluntary change of an
+// existing password (requires the current one).
 router.post('/auth/set-password', authMiddleware, async (req, res, next) => {
   const { password, currentPassword } = req.body || {};
   const err = validatePassword(password);
@@ -159,8 +164,10 @@ router.post('/auth/set-password', authMiddleware, async (req, res, next) => {
   try {
     const user = await db.getUserByName(req.user.username);
     if (!user) return res.status(404).json({ error: 'User not found' });
-    // Changing an existing password requires proving the current one.
-    if (user.password_hash) {
+    // Voluntarily changing an existing password requires proving the current
+    // one. Migration (no password yet) and an admin-forced reset both skip
+    // this — identity was already proven by the login that got them here.
+    if (user.password_hash && !user.must_change_password) {
       if (!currentPassword || !(await db.verifyUserPassword(user.display_name, currentPassword))) {
         return res.status(401).json({ error: 'Current password is incorrect' });
       }

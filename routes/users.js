@@ -66,11 +66,11 @@ router.delete('/users/:id', authMiddleware, adminOnly, async (req, res, next) =>
   } catch (err) { next(err); }
 });
 
-// ── PATCH /api/users/:id (admin sets role / designation / area) ──
+// ── PATCH /api/users/:id (admin sets role / designation / area / forced reset) ──
 router.patch('/users/:id', authMiddleware, adminOnly, async (req, res, next) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid user id' });
-  const { role, designation, default_area } = req.body || {};
+  const { role, designation, default_area, must_change_password } = req.body || {};
   if (role !== undefined && !['admin', 'sales'].includes(role))
     return res.status(400).json({ error: 'Role must be admin or sales' });
   try {
@@ -92,7 +92,26 @@ router.patch('/users/:id', authMiddleware, adminOnly, async (req, res, next) => 
     if (default_area !== undefined) {
       await db.updateUserDefaultArea(id, String(default_area).slice(0, 60));
     }
+    if (must_change_password !== undefined) {
+      await db.setMustChangePassword(id, !!must_change_password);
+    }
     res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/users/require-password-change-all (admin) ──────
+// Flags every account — admins included — so the next successful login (with
+// whatever credential each person already has) is intercepted by the
+// blocking set-password step. Nobody's existing credential is touched, so
+// nobody is locked out; this only forces them to replace it with a real,
+// self-chosen one before they can use the app again.
+router.post('/users/require-password-change-all', authMiddleware, adminOnly, async (req, res, next) => {
+  try {
+    const result = await db.setMustChangePasswordForAll();
+    const actor = await db.getUserByName(req.user.username);
+    await db.logSecurity(actor?.id || null, 'password_change_forced_all', { count: result.count },
+      req.ip || '', req.headers['user-agent'] || '', null, null);
+    res.json({ success: true, count: result.count });
   } catch (err) { next(err); }
 });
 

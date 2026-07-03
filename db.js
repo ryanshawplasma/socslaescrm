@@ -214,6 +214,11 @@ async function initSchema() {
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ`).catch(() => {});
     // Free-text job title shown on the Team page (e.g. "Regional Manager").
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS designation TEXT DEFAULT ''`).catch(() => {});
+    // Admin-forced password reset: the account keeps whatever credential it
+    // already had (password or PIN) so nobody is locked out, but the next
+    // successful login is intercepted by the same blocking "set a password"
+    // step used for legacy-PIN migration, before the app becomes usable.
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE`).catch(() => {});
 
     await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS uq_users_email
@@ -922,11 +927,27 @@ async function verifyUserPassword(displayName, password) {
   return valid ? user : null;
 }
 
-// Set / change a user's password.
+// Set / change a user's password. Successfully setting one always clears any
+// pending forced-reset flag — that's the whole point of the flow.
 async function setUserPassword(userId, password) {
   const hash = await bcrypt.hash(String(password), 10);
-  await pool.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [hash, userId]);
+  await pool.query(`UPDATE users SET password_hash = $1, must_change_password = FALSE WHERE id = $2`, [hash, userId]);
   return { ok: true };
+}
+
+// Admin-forced reset for one account: doesn't touch the existing credential,
+// just flags it so the next successful login is intercepted by the blocking
+// set-password step.
+async function setMustChangePassword(userId, value) {
+  await pool.query(`UPDATE users SET must_change_password = $1 WHERE id = $2`, [!!value, userId]);
+  return { ok: true };
+}
+
+// Bulk version — flags every account (admins included). Returns how many rows
+// were touched so the caller can confirm the scope of what just happened.
+async function setMustChangePasswordForAll() {
+  const { rowCount } = await pool.query(`UPDATE users SET must_change_password = TRUE`);
+  return { ok: true, count: rowCount };
 }
 
 async function getUserByName(displayName) {
@@ -951,7 +972,8 @@ async function getAllUsers() {
     `SELECT id, display_name, role, telegram_user_id, created_at,
             COALESCE(designation, '')  AS designation,
             COALESCE(default_area, '') AS default_area,
-            (password_hash IS NOT NULL) AS has_password
+            (password_hash IS NOT NULL) AS has_password,
+            COALESCE(must_change_password, FALSE) AS must_change_password
        FROM users ORDER BY id ASC`
   );
   return rows;
@@ -1968,6 +1990,7 @@ module.exports = {
   createUser, getUserByName, getUserByTelegramId, updateUserPin, updateUserName, updateUserDefaultArea,
   getAllUsers, deleteUser, verifyUserPin, verifyUserPassword, setUserPassword, seedAdminUser,
   setUserRole, setUserDesignation, getAdminCount,
+  setMustChangePassword, setMustChangePasswordForAll,
   saveWebAuthnCred, getWebAuthnCred, getUserByWebAuthnCredId,
   getLeadCoordinates, updateLeadCoords,
   // Team workspace

@@ -2250,9 +2250,12 @@ async function renderTeam() {
     const myId       = parseInt(localStorage.getItem('crm_user_id') || '0', 10);
     const adminCount = users.filter(u => u.role === 'admin').length;
     const header = `
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
         <span style="font-size:15px;font-weight:600;color:var(--text)">Manage Team (${users.length})</span>
-        <button class="btn btn-primary" style="font-size:13px;padding:6px 14px" onclick="openAddMemberModal()">+ Add Member</button>
+        <div style="display:flex;gap:8px">
+          <button class="action-btn" title="Force every account to set a new password on next login — existing passwords/PINs still work to sign in, they just can't skip past the new-password step" onclick="requireAllPasswordChange()">🔒 Require Password Change (All)</button>
+          <button class="btn btn-primary" style="font-size:13px;padding:6px 14px" onclick="openAddMemberModal()">+ Add Member</button>
+        </div>
       </div>`;
     if (!users.length) {
       document.getElementById('team-table').innerHTML = header + emptyState('No team members yet. Add one above, or ask salespeople to use Create Account on the login page.');
@@ -2275,15 +2278,19 @@ async function renderTeam() {
                        onchange="changeUserArea(${u.id}, this.value)" />`;
       const pinBadge = u.has_password ? '' :
         `<span class="badge badge-3" title="Signs in with PIN — will be asked to set a password" style="margin-left:6px">PIN only</span>`;
+      const pendingBadge = u.must_change_password ?
+        `<span class="badge badge-4" title="Will be asked to set a new password next time they sign in" style="margin-left:6px">⏳ Reset pending</span>` : '';
+      const requireBtn = `<button class="action-btn" onclick="toggleMustChangePassword(${u.id}, ${u.must_change_password ? 'true' : 'false'}, '${nm}')">${u.must_change_password ? 'Cancel Reset' : 'Require Reset'}</button>`;
       return `
       <tr>
-        <td style="font-weight:500">${escAttr(u.display_name)}${isSelf ? ' <span style="color:var(--text-muted);font-size:11px">(you)</span>' : ''}${pinBadge}</td>
+        <td style="font-weight:500">${escAttr(u.display_name)}${isSelf ? ' <span style="color:var(--text-muted);font-size:11px">(you)</span>' : ''}${pinBadge}${pendingBadge}</td>
         <td>${roleSel}</td>
         <td>${desig}</td>
         <td>${area}</td>
         <td style="color:var(--text-muted);font-size:12px">${u.created_at ? u.created_at.split(' ')[0] : '—'}</td>
         <td style="display:flex;gap:6px;align-items:center;white-space:nowrap">
           <button class="action-btn" onclick="openResetPasswordModal(${u.id}, '${nm}')">Reset Password</button>
+          ${requireBtn}
           ${isSelf ? '' : `<button class="action-btn del" onclick="removeTeamMember(${u.id}, '${nm}')">Remove</button>`}
         </td>
       </tr>`;
@@ -2333,6 +2340,33 @@ async function changeUserArea(id, value) {
   } catch (err) {
     toast(err.message, 'error');
     renderTeam();
+  }
+}
+
+async function toggleMustChangePassword(id, currentlyPending, name) {
+  const willRequire = !currentlyPending;
+  const msg = willRequire
+    ? `Require ${name} to set a new password next time they sign in? Their current password/PIN still works to log in — they just can't skip past the new-password step.`
+    : `Cancel the pending password reset for ${name}?`;
+  if (!confirm(msg)) return;
+  try {
+    await apiFetch(`/api/users/${id}`, { method: 'PATCH', body: JSON.stringify({ must_change_password: willRequire }) });
+    toast(willRequire ? `${name} will be asked to set a new password` : `Reset cancelled for ${name}`, 'success');
+    renderTeam();
+  } catch (err) {
+    toast(err.message, 'error');
+    renderTeam();
+  }
+}
+
+async function requireAllPasswordChange() {
+  if (!confirm('Require EVERY team member — including admins — to set a new password next time they sign in?\n\nNobody is locked out: everyone keeps their current password/PIN to log in, they just can\'t skip past the new-password step afterward.')) return;
+  try {
+    const res = await apiFetch('/api/users/require-password-change-all', { method: 'POST' });
+    toast(`Password reset required for ${res.count} account${res.count === 1 ? '' : 's'}`, 'success');
+    renderTeam();
+  } catch (err) {
+    toast(err.message, 'error');
   }
 }
 

@@ -17,7 +17,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=16" />
+  <link rel="stylesheet" href="style.css?v=17" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -839,6 +839,12 @@
       <form id="lead-form" autocomplete="off">
         <input type="hidden" id="f-row" />
         <div class="form-grid">
+          <div class="form-group full-width" id="modal-dest-section" style="display:none">
+            <label>📥 Save to <span style="font-weight:400;color:var(--text-muted);font-size:12px">— where this lead is stored (remembered for next time)</span></label>
+            <div class="dest-3d-wrap">
+              <select id="f-dest" class="dest-3d-select" onchange="onLeadDestChange(this.value)"></select>
+            </div>
+          </div>
           <div class="form-group">
             <label>Factory Number</label>
             <input id="f-factory_number" type="text" placeholder="M277" />
@@ -929,7 +935,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=10"></script>
+  <script src="app.js?v=11"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:4400, once:true };</script>
   <script src="dive-splash.js"></script>

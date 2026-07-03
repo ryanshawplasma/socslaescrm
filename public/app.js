@@ -851,8 +851,44 @@ async function loadLists() {
   return state.myLists;
 }
 async function loadStats()  { state.stats = await apiFetch('/api/stats' + orgQuery()); }
+// ── Where new leads are stored ────────────────────────────────
+// Independent of which workspace you're VIEWING: a remembered per-user
+// default so all new leads pool into your team by default (admins included),
+// without changing what anyone can see. '' = Personal (no team).
+function getLeadDest() {
+  const saved = localStorage.getItem('crm_lead_dest');
+  if (saved !== null) return saved;                 // explicit choice (may be '')
+  return state.myTeams && state.myTeams.length ? String(state.myTeams[0].id) : '';
+}
+function setLeadDest(v) { localStorage.setItem('crm_lead_dest', v == null ? '' : String(v)); }
+
+function onLeadDestChange(v) {
+  setLeadDest(v);
+  const wrap = document.querySelector('.dest-3d-wrap');
+  if (wrap) { wrap.classList.remove('dest-pop'); void wrap.offsetWidth; wrap.classList.add('dest-pop'); }
+}
+
+// Populate the "Save to" selector in the Add-Lead form. Only meaningful when
+// the user belongs to at least one team.
+function renderLeadDestSelect() {
+  const section = document.getElementById('modal-dest-section');
+  const sel     = document.getElementById('f-dest');
+  if (!section || !sel) return;
+  const teams = state.myTeams || [];
+  if (!teams.length) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  const cur = getLeadDest();
+  sel.innerHTML = `<option value="">👤 Personal (only me)</option>` +
+    teams.map(t => `<option value="${t.id}" ${String(t.id) === String(cur) ? 'selected' : ''}>🏢 ${escHtml(t.name)}</option>`).join('');
+}
+
 async function createLead(data) {
-  if (state.activeOrgId) data.team_id = parseInt(state.activeOrgId, 10);
+  // An explicit team_id (from the form's "Save to" selector) wins; otherwise
+  // fall back to the remembered default destination.
+  if (data.team_id == null) {
+    const dest = getLeadDest();
+    data.team_id = dest ? parseInt(dest, 10) : null;
+  }
   return apiFetch('/api/leads', { method: 'POST', body: JSON.stringify(data) });
 }
 async function updateLead(row, data) { return apiFetch(`/api/leads/${row}`, { method: 'PUT', body: JSON.stringify(data) }); }
@@ -1149,7 +1185,7 @@ async function runImport() {
       body: JSON.stringify({
         leads,
         assign_to: document.getElementById('import-assign-select').value,
-        team_id: state.activeOrgId || null,
+        team_id: getLeadDest() || null,   // pool imports into the default team too
         list_id: document.getElementById('import-list-select')?.value || null,
       }),
     });
@@ -2823,6 +2859,7 @@ function openAddModal() {
   renderContactsEditor([]);
   renderItemsEditor([]);
   renderLeadListsEditor([]);
+  renderLeadDestSelect();   // "Save to" — only shown when the user has a team
   const accessSection = document.getElementById('modal-access-section');
   if (accessSection) accessSection.style.display = 'none';
   document.getElementById('modal-overlay').classList.remove('hidden');
@@ -2833,6 +2870,9 @@ function openEditModal(rowIndex) {
   if (!lead) return;
   document.getElementById('modal-title').textContent = 'Edit Lead';
   document.getElementById('f-row').value = rowIndex;
+  // "Save to" is an add-time choice only — a lead's team isn't changed from here.
+  const destSection = document.getElementById('modal-dest-section');
+  if (destSection) destSection.style.display = 'none';
   FIELDS.forEach(f => {
     const el = document.getElementById('f-' + f);
     if (!el) return;

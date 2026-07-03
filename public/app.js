@@ -104,6 +104,18 @@ function tokenIsExpired() {
 // single in-flight promise — same-tab always, cross-tab via the Web Locks API
 // where supported — stops the race from happening in the first place; the
 // server also now tolerates a short race window as defense in depth.
+// Retry a few times before giving up — covers a Render free-tier cold start
+// where the first refresh hits a still-booting server (5xx/timeout). Stops
+// early if the token turns out to be genuinely invalid (401 clears it).
+async function tryRefreshWithRetries(attempts = 3) {
+  for (let i = 0; i < attempts; i++) {
+    if (await tryRefreshToken()) return true;
+    if (!localStorage.getItem('crm_refresh_token')) return false;  // 401 → token gone, no point retrying
+    if (i < attempts - 1) await new Promise(r => setTimeout(r, 1200 * (i + 1)));
+  }
+  return false;
+}
+
 let _refreshInFlight = null;
 async function tryRefreshToken() {
   if (_refreshInFlight) return _refreshInFlight;
@@ -116,13 +128,19 @@ async function tryRefreshToken() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refreshToken: rt }),
       });
-      if (!res.ok) { clearTokens(); return false; }
+      // Only a genuine auth rejection (invalid/expired/revoked token) should end
+      // the remembered session. A 5xx or timeout — e.g. Render's free tier still
+      // cold-starting when the app is opened — is TRANSIENT: keep the saved token
+      // so the very next attempt (or the "Continue" tap) succeeds. Wiping it here
+      // was why a cold open looked like the device was never remembered.
+      if (res.status === 401 || res.status === 403) { clearTokens(); return false; }
+      if (!res.ok) return false;   // transient — token preserved, try again shortly
       const data = await res.json();
       storeTokens(data.accessToken, data.refreshToken);
       if (data.username) localStorage.setItem('crm_user', data.username);
       if (data.role)     { localStorage.setItem('crm_role', data.role); state.role = data.role; }
       return true;
-    } catch { return false; }
+    } catch { return false; }   // network error / server waking — keep the token
   };
   _refreshInFlight = (async () => {
     try {
@@ -333,20 +351,23 @@ async function checkAndShowAuth() {
       showPinUnlockScreen(savedUser, true);
       return;
     }
-    const ok = await tryRefreshToken();
+    const ok = await tryRefreshWithRetries();
     if (ok) {
       state.role = localStorage.getItem('crm_role') || 'sales';
       hideLoginPage();
       await initApp();
       return;
     }
-    showPinUnlockScreen(savedUser, false);   // session expired — greet + let them continue
+    // Couldn't refresh right now. If the token is still here it was a transient
+    // failure (server waking) — greet them and let "Continue" retry, never a
+    // blank fresh login.
+    showPinUnlockScreen(savedUser, false);
     return;
   }
 
   // A refresh token but no saved username → try a silent refresh, else login.
   if (rt) {
-    const ok = await tryRefreshToken();
+    const ok = await tryRefreshWithRetries();
     if (ok) {
       state.role = localStorage.getItem('crm_role') || 'sales';
       hideLoginPage();
@@ -408,8 +429,13 @@ async function continueRemembered() {
   const label = btn.textContent;
   btn.textContent = 'Opening…';
   try {
-    const ok = await tryRefreshToken();
-    if (!ok) throw new Error('Your session has expired — please sign in with your password.');
+    const ok = await tryRefreshWithRetries(4);
+    if (!ok) {
+      // Token still present → server was just waking; otherwise it truly expired.
+      throw new Error(localStorage.getItem('crm_refresh_token')
+        ? 'Still connecting… tap continue again in a moment.'
+        : 'Your session has expired — please sign in with your password.');
+    }
     state.role = localStorage.getItem('crm_role') || 'sales';
     hideLoginPage();
     await initApp();
@@ -486,8 +512,10 @@ async function offerDeviceSetup(loginData) {
     // Legacy account that just logged in with its PIN — force a real password
     // before anything else. PIN setup (if any) is chained after it's done.
     showSetPasswordModal({ migration: true, deviceId, deviceTrusted, hasPIN });
-  } else if (deviceTrusted && !hasPIN) {
-    // Trusted device with no quick-unlock PIN yet — offer to set one.
+  } else if (deviceTrusted && !hasPIN && localStorage.getItem('crm_pin_offered') !== deviceId) {
+    // Offer a quick-unlock PIN ONCE per device. If the user set or skipped it
+    // already we never nag again — they can still add one later from the account
+    // menu. (This is what was popping up on every single login.)
     setTimeout(() => showPinSetupModal(deviceId), 500);
   }
 
@@ -500,6 +528,8 @@ function showPinSetupModal(deviceId) {
   if (!modal) return;
   modal.classList.remove('hidden');
   modal.dataset.deviceId = deviceId || '';
+  // Remember we've offered on this device so we don't nag on the next login.
+  if (deviceId) localStorage.setItem('crm_pin_offered', deviceId);
   document.getElementById('pin-setup-input').value   = '';
   document.getElementById('pin-setup-input2').value  = '';
   document.getElementById('pin-setup-error').textContent = '';
@@ -508,6 +538,24 @@ function showPinSetupModal(deviceId) {
 function closePinSetupModal() {
   const modal = document.getElementById('pin-setup-modal');
   if (modal) modal.classList.add('hidden');
+}
+
+// Let the user set (or replace) a quick-unlock PIN whenever they want, from the
+// account menu — so skipping the one-time offer isn't a dead end.
+function openPinSetupFromMenu() {
+  const deviceId = localStorage.getItem('crm_device_id') || '';
+  if (!deviceId) { toast('Sign in with “remember this device” on first, then set a PIN.', 'warning'); return; }
+  showPinSetupModal(deviceId);
+}
+
+// Hide the "Set PIN" shortcut once this device already has one.
+function updateSecurityButtons() {
+  const btn = document.getElementById('btn-set-pin');
+  if (!btn) return;
+  const hasPin  = localStorage.getItem('crm_device_has_pin') === 'true';
+  const trusted = localStorage.getItem('crm_device_id');
+  // Only offer on a remembered device that has no PIN yet, and never for guests.
+  btn.classList.toggle('hidden', !!hasPin || !trusted || state.role === 'guest');
 }
 
 async function submitPinSetup() {
@@ -525,6 +573,7 @@ async function submitPinSetup() {
     });
     localStorage.setItem('crm_device_has_pin', 'true');
     closePinSetupModal();
+    updateSecurityButtons();
     toast('Quick-unlock PIN set! Use it next time you open the app.', 'success');
   } catch (err) {
     errEl.textContent = err.message || 'Failed to set PIN';
@@ -4084,6 +4133,7 @@ async function initApp() {
     lastRefreshed = new Date();
     navigate('dashboard');
     applyRoleUI();
+    updateSecurityButtons();    // show/hide the "Set PIN" shortcut for this device
     startAutoRefresh();
     initSocket();
     maybeShowTeamsDiscover();   // nudge team-less users to join a public team

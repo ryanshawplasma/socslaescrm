@@ -17,7 +17,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=23" />
+  <link rel="stylesheet" href="style.css?v=24" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -503,6 +503,7 @@
       </nav>
 
       <div class="sidebar-footer">
+        <button id="btn-set-pin" class="btn-biometric-enable" onclick="openPinSetupFromMenu()">🔢 Set Quick-Unlock PIN</button>
         <button id="btn-enable-biometric" class="btn-biometric-enable hidden" onclick="enableBiometric()">🔐 Enable Biometric Login</button>
         <div class="user-card">
           <div class="user-avatar" id="sidebar-avatar">?</div>
@@ -1022,7 +1023,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=19"></script>
+  <script src="app.js?v=20"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:4400, once:true };</script>
   <script src="dive-splash.js"></script>

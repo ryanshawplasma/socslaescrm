@@ -318,12 +318,24 @@ async function checkAndShowAuth() {
   const devicePin   = localStorage.getItem('crm_device_has_pin') === 'true';
   const savedUser   = localStorage.getItem('crm_user');
 
-  // Remembered device → always greet the person by name and let them unlock
-  // (PIN / biometric / one-tap continue). We render this instantly from local
-  // state — no blocking network call — so the open never looks blank, and we
-  // never silently drop into the app or the raw login form.
+  // Remembered device:
+  //  • If a quick-unlock PIN was set, ask for it (the user's security choice).
+  //  • Otherwise KEEP THEM LOGGED IN — silently refresh the session and go
+  //    straight into the app, no welcome tap needed. Only if that refresh
+  //    fails do we show the greeting/continue screen as a fallback.
   if (rt && savedUser) {
-    showPinUnlockScreen(savedUser, devicePin);
+    if (devicePin) {
+      showPinUnlockScreen(savedUser, true);
+      return;
+    }
+    const ok = await tryRefreshToken();
+    if (ok) {
+      state.role = localStorage.getItem('crm_role') || 'sales';
+      hideLoginPage();
+      await initApp();
+      return;
+    }
+    showPinUnlockScreen(savedUser, false);   // session expired — greet + let them continue
     return;
   }
 

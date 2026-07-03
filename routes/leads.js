@@ -47,6 +47,18 @@ async function canManageList(list, req) {
   return false;
 }
 
+// Proper-Case a name/area for the "tidy formatting" pass. Only rewrites values
+// that are ALL-CAPS or all-lowercase — anything already mixed-case is assumed
+// intentional and left untouched (respects a deliberate manual edit).
+function properCase(s) {
+  const str = String(s || '').trim().replace(/\s+/g, ' ');
+  if (!str) return '';
+  const isAllCaps  = str === str.toUpperCase() && /[A-Z]/.test(str);
+  const isAllLower = str === str.toLowerCase() && /[a-z]/.test(str);
+  if (!isAllCaps && !isAllLower) return str;
+  return str.toLowerCase().replace(/(^|[\s\-/&(.])([a-z])/g, (m, p, c) => p + c.toUpperCase());
+}
+
 // Products (catalog "major items") share list-style scoping/permission rules.
 function productInContext(p, username, teamId) {
   if (!p) return false;
@@ -66,10 +78,20 @@ async function canManageProduct(p, req) {
   return false;
 }
 
+// Keep a lead only if it's in the requested bucket. Default 'working' isolates
+// the active sheet from the Database; 'database' shows the reference bank; 'all'
+// skips the filter (used when validating a set of ids across both).
+function bucketFilter(leads, bucket) {
+  if (bucket === 'all') return leads;
+  const want = bucket === 'database' ? 'database' : 'working';
+  return leads.filter(l => (l.bucket || 'working') === want);
+}
+
 // Returns the leads visible to this request (personal or team-scoped),
 // each annotated with can_edit. Throws {status:403} if not a team member.
-async function leadsForRequest(req) {
-  if (req.user.role === 'guest') return DEMO_LEADS.map(l => ({ ...l, can_edit: false }));
+// `bucket`: 'working' (default) | 'database' | 'all'.
+async function leadsForRequest(req, bucket = 'working') {
+  if (req.user.role === 'guest') return DEMO_LEADS.map(l => ({ ...l, can_edit: false, bucket: 'working' }));
 
   const ctx = await resolveTeamContext(req);
   if (ctx?.forbidden) {
@@ -79,7 +101,7 @@ async function leadsForRequest(req) {
   }
 
   if (ctx) {
-    const leads   = await db.getLeadsByTeam(ctx.teamId);
+    const leads   = bucketFilter(await db.getLeadsByTeam(ctx.teamId), bucket);
     const manager = req.user.role === 'admin' || TEAM_MANAGER_ROLES.includes(ctx.member.role);
     const shared  = manager ? null : await db.getAccessibleLeadIds(req.user.username);
     let mapped    = leads.map(l => ({
@@ -100,7 +122,7 @@ async function leadsForRequest(req) {
   const leads = req.user.role === 'admin'
     ? await db.getLeads()
     : await db.getLeadsForUser(req.user.username);
-  return attachLists(leads.map(l => ({ ...l, can_edit: true })), req.user.username, null);
+  return attachLists(bucketFilter(leads, bucket).map(l => ({ ...l, can_edit: true })), req.user.username, null);
 }
 
 // Annotate each lead with the lists (tags) visible in this context.
@@ -115,9 +137,11 @@ async function attachLists(leads, owner, teamId) {
 }
 
 // ── GET /api/leads ────────────────────────────────────────────
+// ?bucket=database returns the team's reference bank; default is the working sheet.
 router.get('/leads', authMiddleware, async (req, res, next) => {
   try {
-    res.json(await leadsForRequest(req));
+    const bucket = req.query.bucket === 'database' ? 'database' : 'working';
+    res.json(await leadsForRequest(req, bucket));
   } catch (err) { next(err); }
 });
 
@@ -180,7 +204,8 @@ router.put('/leads/:row', authMiddleware, noGuest, requireLeadAccess, async (req
 
 // ── POST /api/leads/import — bulk import from Excel/Sheets ───
 router.post('/leads/import', authMiddleware, noGuest, async (req, res, next) => {
-  const { leads, assign_to, team_id, list_id } = req.body || {};
+  const { leads, assign_to, team_id, list_id, bucket } = req.body || {};
+  const dest = bucket === 'database' ? 'database' : 'working';
   if (!Array.isArray(leads) || !leads.length) return res.status(400).json({ error: 'No rows to import' });
   if (leads.length > 1000) return res.status(400).json({ error: 'Maximum 1000 rows per import — split the file' });
   try {
@@ -207,8 +232,8 @@ router.post('/leads/import', authMiddleware, noGuest, async (req, res, next) => 
       if (list && listInContext(list, req.user.username, teamId)) listId = list.id;
     }
 
-    const result = await db.importLeads(rows, defaultCreatedBy, teamId, listId);
-    db.logAiAction(null, 'import', 'file', `${result.added}/${result.total} rows imported`, { skipped: result.skipped.slice(0, 50) },
+    const result = await db.importLeads(rows, defaultCreatedBy, teamId, listId, dest);
+    db.logAiAction(null, 'import', 'file', `${result.added}/${result.total} rows imported → ${dest}`, { skipped: result.skipped.slice(0, 50) },
       req.user.username, teamId).catch(() => {});
     res.json(result);
   } catch (err) { next(err); }
@@ -395,6 +420,59 @@ router.delete('/products/:id', authMiddleware, noGuest, async (req, res, next) =
     if (!(await canManageProduct(p, req))) return res.status(403).json({ error: 'You cannot manage this product' });
     await db.deleteProduct(p.id);
     res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ── Team Database (reference bank) actions ───────────────────
+// POST /api/leads/copy-to-working { lead_ids } — pull Database leads into the
+// working sheet. Originals stay in the Database (permanent reference bank).
+router.post('/leads/copy-to-working', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const ctx = await resolveTeamContext(req);
+    if (ctx?.forbidden) return res.status(403).json({ error: 'Not a member of this team' });
+    const requested = (Array.isArray(req.body?.lead_ids) ? req.body.lead_ids : []).map(Number).filter(Boolean);
+    if (!requested.length) return res.status(400).json({ error: 'No leads selected' });
+    const dbLeads = await leadsForRequest(req, 'database');
+    const allowed = new Set(dbLeads.map(l => Number(l.rowIndex)));
+    const ids = requested.filter(id => allowed.has(id));
+    if (!ids.length) return res.status(400).json({ error: 'None of those leads are in your Database' });
+    const result = await db.copyLeadsToWorking(ids, req.user.username, ctx?.teamId || null);
+    res.json({ ok: true, ...result });
+  } catch (err) { next(err); }
+});
+
+// POST /api/leads/move-to-database { lead_ids } — stash working leads into the
+// Database to declutter the working sheet (only leads you can edit).
+router.post('/leads/move-to-database', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const ctx = await resolveTeamContext(req);
+    if (ctx?.forbidden) return res.status(403).json({ error: 'Not a member of this team' });
+    const requested = (Array.isArray(req.body?.lead_ids) ? req.body.lead_ids : []).map(Number).filter(Boolean);
+    if (!requested.length) return res.status(400).json({ error: 'No leads selected' });
+    const working = await leadsForRequest(req, 'working');
+    const allowed = new Set(working.filter(l => l.can_edit).map(l => Number(l.rowIndex)));
+    const ids = requested.filter(id => allowed.has(id));
+    if (!ids.length) return res.status(400).json({ error: 'You can only move leads you can edit' });
+    const moved = await db.moveLeadsBucket(ids, 'database');
+    res.json({ ok: true, moved });
+  } catch (err) { next(err); }
+});
+
+// POST /api/leads/tidy-format — one-time Proper-Case pass over the caller's
+// editable working leads (factory name, person, area). Mixed-case is left as-is.
+router.post('/leads/tidy-format', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const leads = await leadsForRequest(req, 'working');
+    let changed = 0;
+    for (const l of leads) {
+      if (!l.can_edit) continue;
+      const fields = {};
+      const fn = properCase(l.factory_name);     if (fn !== (l.factory_name || ''))     fields.factory_name = fn;
+      const pn = properCase(l.person_in_charge); if (pn !== (l.person_in_charge || '')) fields.person_in_charge = pn;
+      const ar = properCase(l.area);             if (ar !== (l.area || ''))             fields.area = ar;
+      if (Object.keys(fields).length) { await db.updateLeadFields(l.rowIndex, fields); changed++; }
+    }
+    res.json({ ok: true, changed, scanned: leads.length });
   } catch (err) { next(err); }
 });
 

@@ -17,6 +17,9 @@ const state = {
   filterGroup: '',   // '', 'active', 'won', 'lost' — set by clicking a dashboard KPI card
   myLists:     [],
   myProducts:  [],   // catalog "major items": [{id,name,division,aliases}]
+  dbLeads:     [],   // team Database (reference bank) leads
+  dbSelected:  new Set(),
+  dbSearch:    '',
   view:        'table',
   fuFilter:    'overdue',
   sortKey:     '',
@@ -1026,10 +1029,12 @@ const IMPORT_ALIASES = {
 };
 
 let _import = null; // { name, headers, rows, mapping[] }
+let _importDefaultBucket = 'working';  // preselected import destination
 
-function openImportModal() {
+function openImportModal(defaultBucket) {
   if (state.role === 'guest') { toast('Create an account to import data', 'warning'); return; }
   _import = null;
+  _importDefaultBucket = defaultBucket === 'database' ? 'database' : 'working';
   document.getElementById('import-step-source').classList.remove('hidden');
   document.getElementById('import-step-map').classList.add('hidden');
   document.getElementById('import-step-done').classList.add('hidden');
@@ -1038,6 +1043,7 @@ function openImportModal() {
   document.getElementById('import-file-input').value = '';
   document.getElementById('import-modal-overlay').classList.remove('hidden');
 }
+function openImportToDatabase() { openImportModal('database'); }
 
 function closeImportModal(refreshAfter) {
   document.getElementById('import-modal-overlay').classList.add('hidden');
@@ -1110,6 +1116,8 @@ function importLoaded(name, aoa) {
   renderImportMap();
   document.getElementById('import-step-source').classList.add('hidden');
   document.getElementById('import-step-map').classList.remove('hidden');
+  const destSel = document.getElementById('import-dest-select');
+  if (destSel) destSel.value = _importDefaultBucket;
   loadImportAssignees();
   populateImportListSelect();
   aiRefineImportMapping();   // AI refines the column→field mapping in the background
@@ -1273,6 +1281,18 @@ function tidyProductText(raw) {
   return String(raw || '').trim().replace(/\s+/g, ' ');
 }
 
+// Proper-Case a name/area from messy imported/AI data. Only rewrites values that
+// are ALL-CAPS or all-lowercase — anything already mixed-case is left as typed
+// (so a deliberate ALL-CAPS a user enters by hand is respected elsewhere).
+function toProperCase(v) {
+  const str = String(v || '').trim().replace(/\s+/g, ' ');
+  if (!str) return '';
+  const isAllCaps  = str === str.toUpperCase() && /[A-Z]/.test(str);
+  const isAllLower = str === str.toLowerCase() && /[a-z]/.test(str);
+  if (!isAllCaps && !isAllLower) return str;
+  return str.toLowerCase().replace(/(^|[\s\-/&(.])([a-z])/g, (m, p, c) => p + c.toUpperCase());
+}
+
 // Try to recognise a raw product string against the team's own catalog first
 // (name + the comma-separated aliases the user added). Their catalog wins over
 // the built-in defaults so "add major items for it to read" actually steers it.
@@ -1344,6 +1364,9 @@ async function runImport() {
       else if (field === 'lead_type') obj.lead_type = normImportLeadType(val) || val;
       else if (field === 'stage')     Object.assign(obj, normImportStage(val));
       else if (field === 'product')   obj.product = normImportProduct(val) || tidyProductText(val);
+      // Proper-Case messy name/area data on the way in (codes & numbers untouched).
+      else if (field === 'factory_name' || field === 'person_in_charge' || field === 'area')
+        obj[field] = toProperCase(val);
       else obj[field] = val;
     });
     return obj;
@@ -1375,6 +1398,7 @@ async function runImport() {
         assign_to: document.getElementById('import-assign-select').value,
         team_id: getLeadDest() || null,   // pool imports into the default team too
         list_id: listId,
+        bucket: document.getElementById('import-dest-select')?.value || 'working',
       }),
     });
     const skippedHtml = result.skipped.length
@@ -1423,7 +1447,7 @@ function toast(msg, type = 'success') {
 //  Navigation
 // ============================================================
 const PAGE_TITLES = {
-  dashboard: 'Dashboard', leads: 'Leads',
+  dashboard: 'Dashboard', leads: 'Leads', database: 'Database',
   pipeline: 'Pipeline', followups: 'Follow-ups', reports: 'Reports', team: 'Team', map: 'Map', chat: 'Chat',
   workspace: 'Workspace',
 };
@@ -1462,6 +1486,7 @@ function initChatViewport() {
 function renderPage(page) {
   if (page === 'dashboard')  renderDashboard();
   if (page === 'leads')      renderLeads();
+  if (page === 'database')   renderDatabase();
   if (page === 'pipeline')   renderPipeline();
   if (page === 'followups')  renderFollowups();
   if (page === 'reports')    renderReports();
@@ -2177,6 +2202,136 @@ function renderLeads() {
   renderAiPanel('leads');
   populateFilters();
   renderLeadsView();
+}
+
+// ============================================================
+//  Database page (team reference bank)
+// ============================================================
+async function renderDatabase() {
+  const wrap = document.getElementById('db-table-wrap');
+  if (wrap) wrap.innerHTML = '<div class="empty-state" style="padding:26px">Loading the Database…</div>';
+  try {
+    const q = 'bucket=database' + (state.activeOrgId ? '&teamId=' + encodeURIComponent(state.activeOrgId) : '');
+    state.dbLeads = await apiFetch('/api/leads?' + q);
+  } catch (err) {
+    state.dbLeads = [];
+    if (wrap) wrap.innerHTML = emptyState('Could not load the Database: ' + escHtml(err.message));
+    return;
+  }
+  state.dbSelected = new Set();
+  renderDatabaseTable();
+}
+
+function dbFilteredLeads() {
+  const q = (state.dbSearch || '').toLowerCase();
+  if (!q) return state.dbLeads;
+  return state.dbLeads.filter(l => {
+    const hay = [l.factory_number, l.factory_name, l.person_in_charge, l.area,
+      leadProductNames(l).join(' ')].join(' ').toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+function renderDatabaseTable() {
+  const wrap = document.getElementById('db-table-wrap');
+  if (!wrap) return;
+  const leads = dbFilteredLeads();
+  if (!state.dbLeads.length) {
+    wrap.innerHTML = emptyState('Your Database is empty. Use “⬆ Import to Database”, or send working leads here from a lead’s editor.');
+    updateDbCopyBtn();
+    return;
+  }
+  if (!leads.length) { wrap.innerHTML = emptyState('No database leads match your search.'); updateDbCopyBtn(); return; }
+
+  const rows = leads.map(l => {
+    const checked = state.dbSelected.has(Number(l.rowIndex)) ? 'checked' : '';
+    const prods = leadProductNames(l);
+    const prodCell = prods.length ? escHtml(prods.slice(0, 2).join(', ')) + (prods.length > 2 ? ` <span class="more-badge">+${prods.length - 2}</span>` : '') : '—';
+    return `<tr>
+      <td class="db-check-col"><input type="checkbox" class="db-check" value="${l.rowIndex}" ${checked} onchange="toggleDbSelect(${l.rowIndex}, this.checked)"></td>
+      <td>${escHtml(l.factory_number || '—')}</td>
+      <td>${escHtml(l.factory_name || '—')}</td>
+      <td>${escHtml(l.person_in_charge || '—')}</td>
+      <td>${escHtml(l.contact || '—')}</td>
+      <td>${prodCell}</td>
+      <td>${escHtml(l.area || '—')}</td>
+      <td><button class="action-btn" onclick="copyOneToWorking(${l.rowIndex})" title="Copy into your working leads (stays here too)">→ Copy</button></td>
+    </tr>`;
+  }).join('');
+
+  const allChecked = leads.length && leads.every(l => state.dbSelected.has(Number(l.rowIndex)));
+  wrap.innerHTML = `<table class="crm-table">
+    <thead><tr>
+      <th class="db-check-col"><input type="checkbox" ${allChecked ? 'checked' : ''} onchange="toggleDbSelectAll(this.checked)"></th>
+      <th>#</th><th>Factory</th><th>Person</th><th>Contact</th><th>Product</th><th>Area</th><th></th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+  updateDbCopyBtn();
+}
+
+function toggleDbSelect(id, on) {
+  if (on) state.dbSelected.add(Number(id)); else state.dbSelected.delete(Number(id));
+  updateDbCopyBtn();
+}
+function toggleDbSelectAll(on) {
+  const leads = dbFilteredLeads();
+  if (on) leads.forEach(l => state.dbSelected.add(Number(l.rowIndex)));
+  else    leads.forEach(l => state.dbSelected.delete(Number(l.rowIndex)));
+  renderDatabaseTable();
+}
+function updateDbCopyBtn() {
+  const btn = document.getElementById('btn-db-copy-selected');
+  if (!btn) return;
+  const n = state.dbSelected.size;
+  btn.disabled = !n;
+  btn.textContent = n ? `Copy ${n} selected → Working leads` : 'Copy selected → Working leads';
+}
+
+async function copyDbLeads(ids) {
+  if (!ids.length) return;
+  try {
+    const res = await apiFetch('/api/leads/copy-to-working' + orgQuery(), {
+      method: 'POST', body: JSON.stringify({ lead_ids: ids }),
+    });
+    await loadLeads();   // working sheet now has the copies
+    toast(`Copied ${res.copied} lead${res.copied === 1 ? '' : 's'} into your working leads`);
+    state.dbSelected = new Set();
+    renderDatabaseTable();
+  } catch (err) { toast(err.message, 'error'); }
+}
+function copyOneToWorking(id) { copyDbLeads([Number(id)]); }
+function copySelectedToWorking() { copyDbLeads([...state.dbSelected]); }
+
+// Send a working lead down into the team Database (declutter the working sheet).
+async function moveLeadToDatabase(rowIndex) {
+  if (!confirm('Move this lead into the team Database (out of your working sheet)? You can copy it back anytime.')) return;
+  try {
+    await apiFetch('/api/leads/move-to-database' + orgQuery(), {
+      method: 'POST', body: JSON.stringify({ lead_ids: [Number(rowIndex)] }),
+    });
+    closeModal();
+    await loadLeads();
+    if (state.page === 'leads') renderLeadsView();
+    toast('Moved to the Database');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// One-time Proper-Case pass over the caller's editable working leads.
+async function tidyFormatting() {
+  if (!confirm('Proper-Case the factory name, person and area on your leads?\n\nEntries you deliberately typed in mixed case are left as-is — only ALL-CAPS / all-lowercase values are tidied.')) return;
+  const btn = document.getElementById('btn-tidy-format');
+  if (btn) { btn.disabled = true; btn.textContent = '✨ Tidying…'; }
+  try {
+    const res = await apiFetch('/api/leads/tidy-format' + orgQuery(), { method: 'POST', body: '{}' });
+    await loadLeads();
+    if (state.page === 'leads') renderLeadsView();
+    toast(res.changed ? `Tidied ${res.changed} lead${res.changed === 1 ? '' : 's'}` : 'Everything already looks tidy');
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '✨ Tidy'; }
+  }
 }
 
 function populateFilters() {
@@ -3149,6 +3304,8 @@ function openAddModal() {
   renderLeadDestSelect();   // "Save to" — only shown when the user has a team
   const accessSection = document.getElementById('modal-access-section');
   if (accessSection) accessSection.style.display = 'none';
+  const moveBtn = document.getElementById('btn-move-database');
+  if (moveBtn) moveBtn.style.display = 'none';   // add-mode: nothing to move yet
   document.getElementById('modal-overlay').classList.remove('hidden');
 }
 
@@ -3160,6 +3317,13 @@ function openEditModal(rowIndex) {
   // "Save to" is an add-time choice only — a lead's team isn't changed from here.
   const destSection = document.getElementById('modal-dest-section');
   if (destSection) destSection.style.display = 'none';
+  // Offer "Send to Database" only for existing working leads the user can move.
+  const moveBtn = document.getElementById('btn-move-database');
+  if (moveBtn) {
+    const canMove = lead.can_edit !== false && (lead.bucket || 'working') === 'working';
+    moveBtn.style.display = canMove ? '' : 'none';
+    moveBtn.onclick = () => moveLeadToDatabase(rowIndex);
+  }
   FIELDS.forEach(f => {
     const el = document.getElementById('f-' + f);
     if (!el) return;
@@ -3776,6 +3940,13 @@ function wireEvents() {
     renderLeadsView();
   });
   document.getElementById('btn-manage-products')?.addEventListener('click', openProductsModal);
+  document.getElementById('btn-tidy-format')?.addEventListener('click', tidyFormatting);
+  document.getElementById('btn-db-import')?.addEventListener('click', openImportToDatabase);
+  document.getElementById('btn-db-copy-selected')?.addEventListener('click', copySelectedToWorking);
+  document.getElementById('db-search')?.addEventListener('input', e => {
+    state.dbSearch = e.target.value;
+    renderDatabaseTable();
+  });
 
   document.querySelectorAll('.toggle-btn').forEach(btn => {
     btn.addEventListener('click', () => {

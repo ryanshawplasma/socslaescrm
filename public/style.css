@@ -3624,3 +3624,14 @@ tr.row-cold:hover td { background: #dbeafe; }
 }
 .import-ai-badge.loading { opacity: .8; cursor: default; }
 .import-ai-badge.done { border-style: solid; }
+
+/* ── Database page (team reference bank) ──────────────────────── */
+.db-intro { padding: 14px 16px; margin-bottom: 14px; }
+.db-intro-text { font-size: 13px; color: var(--text); line-height: 1.55; }
+.db-search {
+  padding: 9px 12px; border: 1px solid var(--border); border-radius: 9px;
+  font-size: 13px; font-family: inherit; background: var(--bg); color: var(--text);
+  min-width: 240px; width: 100%; max-width: 340px;
+}
+.db-check-col { width: 34px; text-align: center; }
+#db-table-wrap .crm-table td, #db-table-wrap .crm-table th { vertical-align: middle; }

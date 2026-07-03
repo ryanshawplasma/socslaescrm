@@ -199,6 +199,10 @@ async function initSchema() {
     await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS team_id     INTEGER REFERENCES teams(id)`).catch(() => {});
     await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS visibility  TEXT DEFAULT 'team'`).catch(() => {});
     await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS designation TEXT DEFAULT ''`).catch(() => {});
+    // bucket: 'working' = the active pipeline (working sheet); 'database' = the
+    // team's separate reference bank / staging pool, hidden from working views.
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS bucket      TEXT DEFAULT 'working'`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_leads_bucket ON leads(bucket)`).catch(() => {});
 
     // ── Auth system tables ─────────────────────────────────────
     // Extend users with email, mobile, lockout fields
@@ -516,7 +520,7 @@ async function getLeads() {
       factory_number, factory_name, person_in_charge, contact, designation,
       product, quantity, rate, stage, follow_up, notes, area,
       lead_type, created_by, assigned_to, last_updated, mapped_stage, stage_number,
-      lat, lng
+      lat, lng, COALESCE(bucket,'working') AS bucket
     FROM leads ORDER BY id ASC
   `);
 
@@ -555,7 +559,8 @@ async function getLeadsForUser(displayName) {
       id AS "rowIndex",
       factory_number, factory_name, person_in_charge, contact, designation,
       product, quantity, rate, stage, follow_up, notes, area,
-      lead_type, created_by, assigned_to, last_updated, mapped_stage, stage_number
+      lead_type, created_by, assigned_to, last_updated, mapped_stage, stage_number,
+      COALESCE(bucket,'working') AS bucket
     FROM leads
     WHERE created_by = $1
        OR id IN (SELECT lead_id FROM lead_access WHERE user_display_name = $2)
@@ -592,7 +597,8 @@ async function getLeadsForUser(displayName) {
 
 // ── READ: aggregate stats ─────────────────────────────────────
 async function getStats() {
-  const leads = await getLeads();
+  // Database (reference bank) leads are not part of the active pipeline.
+  const leads = (await getLeads()).filter(l => (l.bucket || 'working') === 'working');
   const byStage = {}, byProduct = {}, byProductRevenue = {};
   let won = 0, lost = 0;
 
@@ -629,8 +635,12 @@ async function getStats() {
 async function addLead(data, createdBy = '') {
   const pNum  = String(data.factory_number || '').trim().toLowerCase();
   const pName = String(data.factory_name   || '').trim().toLowerCase();
+  const bucket = data.bucket === 'database' ? 'database' : 'working';
 
-  const { rows: existing } = await pool.query(`SELECT id, factory_number, factory_name FROM leads`);
+  // Dedupe within the SAME bucket only — a working lead may mirror a Database
+  // entry (that's exactly what "copy to my leads" produces).
+  const { rows: existing } = await pool.query(
+    `SELECT id, factory_number, factory_name FROM leads WHERE COALESCE(bucket,'working')=$1`, [bucket]);
   for (const row of existing) {
     const rNum  = String(row.factory_number || '').trim().toLowerCase();
     const rName = String(row.factory_name   || '').trim().toLowerCase();
@@ -655,8 +665,8 @@ async function addLead(data, createdBy = '') {
     INSERT INTO leads
       (factory_number, factory_name, person_in_charge, contact, designation, product,
        quantity, rate, stage, follow_up, notes, area, lead_type, created_by,
-       last_updated, mapped_stage, stage_number, team_id)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+       last_updated, mapped_stage, stage_number, team_id, bucket)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
     RETURNING id
   `, [
     data.factory_number || '',
@@ -677,6 +687,7 @@ async function addLead(data, createdBy = '') {
     data.stage          || '',
     data.stage_number != null ? String(data.stage_number) : '',
     data.team_id        || null,
+    bucket,
   ]);
 
   const leadId = newRow.id;
@@ -713,8 +724,12 @@ async function addLead(data, createdBy = '') {
 // ── WRITE: bulk import (Excel / Google Sheets) ───────────────
 // Loads existing factory numbers/names ONCE, then inserts row by row,
 // skipping duplicates (against the DB and within the file itself).
-async function importLeads(rows, defaultCreatedBy, teamId, listId) {
-  const { rows: existing } = await pool.query(`SELECT factory_number, factory_name FROM leads`);
+async function importLeads(rows, defaultCreatedBy, teamId, listId, bucket = 'working') {
+  const dest = bucket === 'database' ? 'database' : 'working';
+  // Dedupe only within the destination bucket — importing into the Database
+  // never collides with the working sheet and vice-versa.
+  const { rows: existing } = await pool.query(
+    `SELECT factory_number, factory_name FROM leads WHERE COALESCE(bucket,'working')=$1`, [dest]);
   const nums  = new Set(existing.map(r => String(r.factory_number || '').trim().toLowerCase()).filter(Boolean));
   const names = new Set(existing.map(r => String(r.factory_name   || '').trim().toLowerCase()).filter(Boolean));
 
@@ -737,8 +752,8 @@ async function importLeads(rows, defaultCreatedBy, teamId, listId) {
       INSERT INTO leads
         (factory_number, factory_name, person_in_charge, contact, designation, product,
          quantity, rate, stage, follow_up, notes, area, lead_type, created_by,
-         last_updated, mapped_stage, stage_number, team_id)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+         last_updated, mapped_stage, stage_number, team_id, bucket)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
       RETURNING id
     `, [
       num, name,
@@ -757,6 +772,7 @@ async function importLeads(rows, defaultCreatedBy, teamId, listId) {
       String(r.stage || '').trim(),
       r.stage_number != null && r.stage_number !== '' ? String(r.stage_number) : '',
       teamId || null,
+      dest,
     ]);
 
     if (r.product) {
@@ -854,6 +870,74 @@ async function deleteLead(rowIndex) {
   await pool.query(`DELETE FROM lead_photos   WHERE lead_id = $1`, [rowIndex]);
   await pool.query(`DELETE FROM lead_access   WHERE lead_id = $1`, [rowIndex]);
   await pool.query(`DELETE FROM leads WHERE id = $1`, [rowIndex]);
+  return { ok: true };
+}
+
+// ── Database bucket: copy / move / light field update ─────────
+// Copy Database (reference) leads into the working sheet. Originals stay put —
+// the Database is a permanent reference bank. Each copy carries the items and
+// contacts, and is owned by whoever pulled it in.
+async function copyLeadsToWorking(leadIds, createdBy, teamId) {
+  const ids = [...new Set((leadIds || []).map(Number).filter(Boolean))];
+  if (!ids.length) return { copied: 0, ids: [] };
+  const now = nowIST();
+  const newIds = [];
+  for (const id of ids) {
+    const { rows: [src] } = await pool.query(
+      `SELECT * FROM leads WHERE id=$1 AND COALESCE(bucket,'working')='database'`, [id]);
+    if (!src) continue;
+    const { rows: [nw] } = await pool.query(`
+      INSERT INTO leads
+        (factory_number, factory_name, person_in_charge, contact, designation, product,
+         quantity, rate, stage, follow_up, notes, area, lead_type, created_by,
+         last_updated, mapped_stage, stage_number, team_id, bucket)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'working')
+      RETURNING id
+    `, [
+      src.factory_number || '', src.factory_name || '', src.person_in_charge || '',
+      src.contact || '', src.designation || '', src.product || '', src.quantity || '',
+      src.rate || '', src.stage || '', src.follow_up || '', src.notes || '', src.area || '',
+      src.lead_type || '', createdBy || src.created_by || '', now,
+      src.mapped_stage || src.stage || '', src.stage_number || '', teamId || src.team_id || null,
+    ]);
+    const { rows: items } = await pool.query(
+      `SELECT product, quantity, rate FROM lead_items WHERE lead_id=$1`, [id]);
+    for (const it of items) {
+      await pool.query(`INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES ($1,$2,$3,$4)`,
+        [nw.id, it.product || '', it.quantity || '', it.rate || '']).catch(() => {});
+    }
+    const { rows: contacts } = await pool.query(
+      `SELECT person_name, contact, designation FROM lead_contacts WHERE lead_id=$1`, [id]);
+    for (const c of contacts) {
+      await pool.query(`INSERT INTO lead_contacts (lead_id, person_name, contact, designation) VALUES ($1,$2,$3,$4)`,
+        [nw.id, c.person_name || '', c.contact || '', c.designation || '']).catch(() => {});
+    }
+    newIds.push(nw.id);
+  }
+  return { copied: newIds.length, ids: newIds };
+}
+
+// Flip leads between the working sheet and the Database (declutter / stash).
+async function moveLeadsBucket(leadIds, bucket) {
+  const dest = bucket === 'database' ? 'database' : 'working';
+  const ids  = [...new Set((leadIds || []).map(Number).filter(Boolean))];
+  if (!ids.length) return 0;
+  const { rowCount } = await pool.query(
+    `UPDATE leads SET bucket=$1 WHERE id=ANY($2)`, [dest, ids]);
+  return rowCount || 0;
+}
+
+// Update only the name/area text fields (used by the "Tidy formatting" pass),
+// without disturbing items, contacts or history.
+async function updateLeadFields(id, fields) {
+  const allowed = ['factory_name', 'person_in_charge', 'area'];
+  const sets = [], vals = [];
+  for (const k of allowed) {
+    if (fields[k] != null) { vals.push(String(fields[k])); sets.push(`${k}=$${vals.length}`); }
+  }
+  if (!sets.length) return { ok: false };
+  vals.push(Number(id));
+  await pool.query(`UPDATE leads SET ${sets.join(', ')} WHERE id=$${vals.length}`, vals);
   return { ok: true };
 }
 
@@ -1571,7 +1655,7 @@ async function getLeadsByTeam(teamId) {
     SELECT id AS "rowIndex", factory_number, factory_name, person_in_charge, contact, designation,
       product, quantity, rate, stage, follow_up, notes, area,
       lead_type, created_by, assigned_to, last_updated, mapped_stage, stage_number,
-      lat, lng, team_id, visibility
+      lat, lng, team_id, visibility, COALESCE(bucket,'working') AS bucket
     FROM leads WHERE team_id=$1 ORDER BY id ASC`, [teamId]
   );
   if (!rows.length) return [];
@@ -2085,6 +2169,7 @@ module.exports = {
   pool,
   initSchema,
   getLeads, getLeadsForUser, getLeadsByTeam, getStats, addLead, updateLead, deleteLead, importLeads,
+  copyLeadsToWorking, moveLeadsBucket, updateLeadFields,
   addPhoto, getPhotos, getLeadContacts,
   grantLeadAccess, revokeLeadAccess, getLeadAccess, claimFollowUp, reassignFollowUp,
   createUser, getUserByName, getUserByTelegramId, updateUserPin, updateUserName, updateUserDefaultArea,

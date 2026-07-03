@@ -17,7 +17,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=22" />
+  <link rel="stylesheet" href="style.css?v=23" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -212,6 +212,13 @@
         <div class="import-meta-row">
           <span id="import-file-label" class="import-file-label">file.xlsx · 0 rows</span>
           <button class="btn btn-ghost btn-sm" onclick="importReset()">← Different file</button>
+        </div>
+        <div class="import-assign-row" id="import-dest-row">
+          <label>Add these to</label>
+          <select id="import-dest-select">
+            <option value="working">Working leads (active pipeline)</option>
+            <option value="database">Database (reference bank — keep out of the working sheet)</option>
+          </select>
         </div>
         <div class="import-assign-row" id="import-assign-row">
           <label>Assign leads to</label>
@@ -454,6 +461,10 @@
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           <span class="nav-label">Leads</span>
         </a>
+        <a class="nav-item" data-page="database">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6a8 3 0 0 0 16 0V5"/><path d="M4 11v6a8 3 0 0 0 16 0v-6"/></svg>
+          <span class="nav-label">Database</span>
+        </a>
         <a class="nav-item" data-page="pipeline">
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
           <span class="nav-label">Pipeline</span>
@@ -625,6 +636,7 @@
             <div class="toolbar-actions">
               <button id="btn-manage-products" class="btn-ghost" title="Manage your major items / products">📦 Products</button>
               <button id="btn-manage-lists" class="btn-ghost" title="Create and manage lists">🏷️ Lists</button>
+              <button id="btn-tidy-format" class="btn-ghost" title="Proper-Case names & areas on the leads shown (ALL-CAPS you typed by hand stays)">✨ Tidy</button>
               <div class="view-toggle">
                 <button class="toggle-btn active" data-view="table">☰ Table</button>
                 <button class="toggle-btn" data-view="cards">▤ Cards</button>
@@ -637,6 +649,25 @@
           <div id="leads-table-wrap" class="card"></div>
           <div id="leads-cards-wrap" class="hidden"></div>
           <div id="leads-kanban-wrap" class="kanban-board hidden"></div>
+        </section>
+
+        <!-- ── DATABASE (team reference bank) ─────────────── -->
+        <section id="page-database" class="page">
+          <div class="db-intro card">
+            <div class="db-intro-text">
+              <b>🗄 Team Database</b> — a separate reference bank. Leads here stay out of your working sheet, dashboard &amp; pipeline. Browse them for intel, then <b>copy</b> the ones you want into your working leads (the original stays here).
+            </div>
+          </div>
+          <div class="toolbar">
+            <div class="filter-group">
+              <input type="text" id="db-search" class="db-search" placeholder="Search the database…" />
+            </div>
+            <div class="toolbar-actions">
+              <button id="btn-db-import" class="btn-ghost" title="Import a sheet straight into the Database">⬆ Import to Database</button>
+              <button id="btn-db-copy-selected" class="btn btn-primary btn-sm" disabled>Copy selected → Working leads</button>
+            </div>
+          </div>
+          <div id="db-table-wrap" class="card"></div>
         </section>
 
         <!-- ── PIPELINE ───────────────────────────────────── -->
@@ -978,6 +1009,7 @@
           </div>
         </div>
         <div class="modal-footer">
+          <button type="button" id="btn-move-database" class="btn btn-ghost" style="display:none;margin-right:auto" title="Move this lead into the team Database (out of the working sheet)">🗄 Send to Database</button>
           <button type="button" id="btn-cancel-modal" class="btn btn-ghost">Cancel</button>
           <button type="submit" class="btn btn-primary" id="btn-save-lead">Save Lead</button>
         </div>
@@ -990,7 +1022,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=18"></script>
+  <script src="app.js?v=19"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:4400, once:true };</script>
   <script src="dive-splash.js"></script>

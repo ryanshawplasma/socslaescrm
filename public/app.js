@@ -3462,7 +3462,7 @@ function applyDefaultWorkspace() {
 function renderOrgSwitcher() {
   const el = document.getElementById('org-switcher');
   if (!el) return;
-  if (!state.myTeams.length) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+  if (state.role === 'guest') { el.classList.add('hidden'); el.innerHTML = ''; return; }
   el.classList.remove('hidden');
   // For admins the "no team" option is the global view of everyone's leads.
   const personalLabel = state.role === 'admin' ? '🗂 All leads (everyone)' : '👤 Personal (my leads)';
@@ -3472,10 +3472,13 @@ function renderOrgSwitcher() {
       ${state.myTeams.map(t =>
         `<option value="${t.id}" ${String(t.id) === String(state.activeOrgId) ? 'selected' : ''}>🏢 ${escHtml(t.name)}</option>`
       ).join('')}
+      <option value="__discover__">🔍 Find / create a team…</option>
     </select>`;
 }
 
 async function switchOrg(id) {
+  // Not a real workspace — open the "find / create a team" prompt instead.
+  if (id === '__discover__') { renderOrgSwitcher(); openTeamsDiscover(); return; }
   state.activeOrgId = id || '';
   if (id) { localStorage.setItem('crm_org_id', id); localStorage.setItem('ws_team_id', id); }
   else    { localStorage.removeItem('crm_org_id'); }
@@ -3508,6 +3511,7 @@ async function initApp() {
     applyRoleUI();
     startAutoRefresh();
     initSocket();
+    maybeShowTeamsDiscover();   // nudge team-less users to join a public team
   } catch (err) {
     if (err.message.includes('401') || err.message.includes('Session expired')) {
       showLoginPage();
@@ -4277,6 +4281,73 @@ async function wsRequestJoin(teamId, teamName) {
       toast(`Join request sent to ${teamName}. Waiting for approval.`);
     }
   } catch (err) { toast(err.message, 'error'); }
+}
+
+// ── Discover Teams: prompt new users to join a public team ────
+function dismissTeamsDiscover() {
+  document.getElementById('teams-discover-overlay')?.classList.add('hidden');
+  sessionStorage.setItem('crm_teams_prompt_shown', '1');
+}
+
+async function openTeamsDiscover() {
+  const overlay = document.getElementById('teams-discover-overlay');
+  const list    = document.getElementById('td-list');
+  if (!overlay || !list) return;
+  overlay.classList.remove('hidden');
+  list.innerHTML = '<div class="td-empty">Loading teams…</div>';
+  try {
+    const teams = await apiFetch('/api/teams/public');
+    const mine  = new Set((state.myTeams || []).map(t => String(t.id)));
+    const joinable = (teams || []).filter(t => !mine.has(String(t.id)));
+    if (!joinable.length) {
+      list.innerHTML = '<div class="td-empty">No public teams to join yet — create your own below.</div>';
+      return;
+    }
+    list.innerHTML = joinable.map(t => `
+      <div class="td-team">
+        <div class="td-avatar">${escHtml((t.name || '?')[0].toUpperCase())}</div>
+        <div class="td-info">
+          <div class="td-name">${escHtml(t.name)}</div>
+          <div class="td-meta">@${escHtml(t.handle)} · ${t.member_count} member${t.member_count === 1 ? '' : 's'}${t.owner_name ? ' · ' + escHtml(t.owner_name) : ''}</div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="discoverRequestJoin(${t.id}, '${escAttr(t.name)}', this)">${t.auto_approve ? 'Join' : 'Request'}</button>
+      </div>`).join('');
+  } catch (e) {
+    list.innerHTML = `<div class="td-empty" style="color:var(--danger)">${escHtml(e.message)}</div>`;
+  }
+}
+
+async function discoverRequestJoin(teamId, name, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    const { auto_approved } = await apiFetch(`/api/teams/${teamId}/request`, { method: 'POST', body: JSON.stringify({ message: '' }) });
+    if (auto_approved) {
+      toast(`Joined ${name}! New leads will save here.`, 'success');
+      dismissTeamsDiscover();
+      await loadMyTeams();
+      renderOrgSwitcher();
+      await switchOrg(String(teamId));      // view it + make it the Save-to default
+    } else {
+      toast(`Request sent to ${name} — waiting for the admin to approve.`, 'success');
+      if (btn) btn.textContent = 'Requested ✓';
+    }
+  } catch (e) {
+    toast(e.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Request'; }
+  }
+}
+
+// Auto-prompt a signed-in user who isn't in any team yet, once per session,
+// but only if there are public teams they could actually join.
+async function maybeShowTeamsDiscover() {
+  if (state.role === 'guest') return;
+  if ((state.myTeams || []).length) return;
+  if (sessionStorage.getItem('crm_teams_prompt_shown')) return;
+  try {
+    const teams = await apiFetch('/api/teams/public');
+    if (teams && teams.length) openTeamsDiscover();
+  } catch (_) {}
+  sessionStorage.setItem('crm_teams_prompt_shown', '1');
 }
 
 // ── Create ────────────────────────────────────────────────────

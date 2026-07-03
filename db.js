@@ -1427,6 +1427,18 @@ async function searchTeams(query) {
   return rows;
 }
 
+// List public (discoverable) teams — for the new-user "join a team" prompt.
+async function getPublicTeams(limit = 12) {
+  const { rows } = await pool.query(
+    `SELECT t.id, t.name, t.handle, t.team_code, t.auto_approve, u.display_name AS owner_name,
+       (SELECT COUNT(*) FROM team_members WHERE team_id=t.id AND status='active')::int AS member_count
+     FROM teams t LEFT JOIN users u ON t.owner_id=u.id
+     WHERE t.public_search=true
+     ORDER BY member_count DESC, t.id ASC LIMIT $1`, [Math.min(parseInt(limit, 10) || 12, 50)]
+  );
+  return rows;
+}
+
 async function updateTeam(id, { name, handle, publicSearch, autoApprove }) {
   const sets = []; const vals = []; let i = 1;
   if (name         !== undefined) { sets.push(`name=$${i++}`);          vals.push(name); }
@@ -2002,7 +2014,7 @@ module.exports = {
   saveWebAuthnCred, getWebAuthnCred, getUserByWebAuthnCredId,
   getLeadCoordinates, updateLeadCoords,
   // Team workspace
-  createTeam, getTeamById, getTeamByHandle, getTeamByInviteCode, searchTeams,
+  createTeam, getTeamById, getTeamByHandle, getTeamByInviteCode, searchTeams, getPublicTeams,
   updateTeam, regenerateInviteCode,
   getTeamMembers, getTeamMember, addTeamMember, updateTeamMember, removeTeamMember, getUserTeams,
   createJoinRequest, getJoinRequests, updateJoinRequest, getJoinRequestByUserTeam,

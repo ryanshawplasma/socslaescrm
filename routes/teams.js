@@ -43,6 +43,12 @@ router.get('/teams/search', authMiddleware, async (req, res, next) => {
   catch (err) { next(err); }
 });
 
+// ── GET /api/teams/public — discoverable teams (no query needed) ──
+router.get('/teams/public', authMiddleware, async (req, res, next) => {
+  try { res.json(await db.getPublicTeams(req.query.limit || 12)); }
+  catch (err) { next(err); }
+});
+
 // ── GET /api/teams/:id ────────────────────────────────────────
 router.get('/teams/:id', authMiddleware, async (req, res, next) => {
   try {

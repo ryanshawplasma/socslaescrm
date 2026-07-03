@@ -17,7 +17,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=19" />
+  <link rel="stylesheet" href="style.css?v=20" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -317,6 +317,22 @@
       <div class="modal-footer" style="padding:0;margin-top:14px">
         <button type="button" class="btn btn-ghost hidden" id="set-pw-cancel" onclick="closeSetPasswordModal()">Cancel</button>
         <button type="button" class="btn btn-primary" id="set-pw-btn" onclick="submitSetPassword()">Set Password</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Discover Teams Modal (join a public team / create one) ── -->
+  <div id="teams-discover-overlay" class="hidden">
+    <div id="teams-discover-modal">
+      <div class="modal-header">
+        <h2>🏢 Join a team</h2>
+        <button class="icon-btn" onclick="dismissTeamsDiscover()">✕</button>
+      </div>
+      <p class="td-sub">Teams share leads across your company or area. Join one below, or create your own.</p>
+      <div id="td-list" class="td-list"></div>
+      <div class="modal-footer" style="padding:14px 0 0">
+        <button class="btn btn-ghost" onclick="dismissTeamsDiscover()">Maybe later</button>
+        <button class="btn btn-primary" onclick="dismissTeamsDiscover(); navigate('workspace');">＋ Create a team</button>
       </div>
     </div>
   </div>
@@ -944,7 +960,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=14"></script>
+  <script src="app.js?v=15"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:4400, once:true };</script>
   <script src="dive-splash.js"></script>

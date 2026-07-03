@@ -484,6 +484,24 @@ async function initSchema() {
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_list_items_lead ON lead_list_items(lead_id)`).catch(() => {});
 
+    // ── Products catalog ("major items") — the canonical product list the team
+    //    curates. Each product belongs to a division (category, e.g. Adhesives)
+    //    and may carry extra alias spellings the importer/AI reads. Scoped like
+    //    lead_lists: team-shared when team_id is set, else personal to owner.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS products (
+        id         SERIAL PRIMARY KEY,
+        name       TEXT NOT NULL,
+        division   TEXT DEFAULT '',
+        aliases    TEXT DEFAULT '',
+        team_id    INTEGER,
+        owner      TEXT DEFAULT '',
+        created_at TEXT DEFAULT ''
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_products_team  ON products(team_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_products_owner ON products(LOWER(owner))`).catch(() => {});
+
     console.log('✅ PostgreSQL schema ready');
   } finally {
     client.release();
@@ -1630,6 +1648,54 @@ async function deleteList(id) {
   await pool.query(`DELETE FROM lead_lists WHERE id=$1`, [id]);
 }
 
+// ── Products catalog ("major items") ─────────────────────────
+// Scoped like lead_lists: team-shared when teamId is set, else personal.
+async function getProductsForContext(owner, teamId) {
+  const { rows } = teamId
+    ? await pool.query(
+        `SELECT id, name, division, aliases, team_id, owner
+         FROM products WHERE team_id=$1 ORDER BY LOWER(division), LOWER(name)`, [teamId])
+    : await pool.query(
+        `SELECT id, name, division, aliases, team_id, owner
+         FROM products WHERE team_id IS NULL AND LOWER(owner)=LOWER($1)
+         ORDER BY LOWER(division), LOWER(name)`, [owner || '']);
+  return rows.map(r => ({
+    id: r.id, name: r.name || '', division: r.division || '',
+    aliases: r.aliases || '', team_id: r.team_id, owner: r.owner || '',
+  }));
+}
+
+async function getProductById(id) {
+  const { rows } = await pool.query(`SELECT * FROM products WHERE id=$1`, [id]);
+  return rows[0] || null;
+}
+
+async function createProduct(name, division, aliases, owner, teamId) {
+  const { rows } = await pool.query(
+    `INSERT INTO products (name, division, aliases, team_id, owner, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, name, division, aliases, team_id, owner`,
+    [String(name || '').trim().slice(0, 80), String(division || '').trim().slice(0, 60),
+     String(aliases || '').trim().slice(0, 400), teamId || null, owner || '', nowIST()]);
+  return rows[0];
+}
+
+async function updateProduct(id, { name, division, aliases }) {
+  const sets = [], vals = [];
+  if (name != null)     { vals.push(String(name).trim().slice(0, 80));     sets.push(`name=$${vals.length}`); }
+  if (division != null) { vals.push(String(division).trim().slice(0, 60)); sets.push(`division=$${vals.length}`); }
+  if (aliases != null)  { vals.push(String(aliases).trim().slice(0, 400)); sets.push(`aliases=$${vals.length}`); }
+  if (!sets.length) return getProductById(id);
+  vals.push(id);
+  const { rows } = await pool.query(
+    `UPDATE products SET ${sets.join(', ')} WHERE id=$${vals.length}
+     RETURNING id, name, division, aliases, team_id, owner`, vals);
+  return rows[0] || null;
+}
+
+async function deleteProduct(id) {
+  await pool.query(`DELETE FROM products WHERE id=$1`, [id]);
+}
+
 // Replace a lead's memberships, but only within the given scope of list ids
 // (so tagging in the personal view can't wipe the lead's team tags, or vice-versa).
 async function setLeadListMemberships(leadId, listIds, scopeListIds) {
@@ -2044,6 +2110,7 @@ module.exports = {
   // Lead lists (tags)
   getListsForContext, getListById, createList, renameList, deleteList,
   setLeadListMemberships, getListMembershipsForLeads, addLeadsToList,
+  getProductsForContext, getProductById, createProduct, updateProduct, deleteProduct,
   // Lead security
   getLeadById, setLeadVisibility, userHasLeadAccess, getAccessibleLeadIds,
   // Lead share requests

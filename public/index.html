@@ -17,7 +17,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=21" />
+  <link rel="stylesheet" href="style.css?v=22" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -224,6 +224,7 @@
           <input type="text" id="import-new-list-name" placeholder="New list name…" maxlength="60" style="display:none" />
           <span class="import-assign-hint">Optional — file every imported lead into an existing or new list</span>
         </div>
+        <div id="import-ai-badge" class="import-ai-badge" style="display:none" onclick="aiRefineImportMapping()" title="Let AI re-read your columns"></div>
         <div class="import-map-scroll">
           <table class="crm-table import-map-table">
             <thead id="import-map-head"></thead>
@@ -268,6 +269,27 @@
       </div>
       <p id="lists-modal-error" class="login-error" style="margin:6px 0 0"></p>
       <div id="lists-manage-body" class="lists-manage-body"></div>
+    </div>
+  </div>
+
+  <!-- ── Manage Products (major items) Modal ──────────────────── -->
+  <div id="products-modal-overlay" class="hidden">
+    <div id="products-modal">
+      <div class="modal-header">
+        <h2>📦 Products</h2>
+        <button class="icon-btn" onclick="closeProductsModal()">✕</button>
+      </div>
+      <p id="products-modal-scope" class="lists-modal-scope"></p>
+      <p class="products-modal-hint">Add your major items so the app recognises them on import and lets you filter by division. Put alternate spellings in <b>Aliases</b> (comma-separated) — the importer &amp; AI read those too.</p>
+      <div class="products-create-grid">
+        <input type="text" id="new-product-name"     placeholder="Item name (e.g. Hotmelt)" maxlength="80" />
+        <input type="text" id="new-product-division" placeholder="Division (e.g. Adhesives)" maxlength="60" list="division-suggestions" />
+        <input type="text" id="new-product-aliases"  placeholder="Aliases: hot melt, HM, hotmolt" maxlength="400" />
+        <button class="btn btn-primary btn-sm" id="new-product-btn" onclick="createProductFromModal()">＋ Add</button>
+      </div>
+      <datalist id="division-suggestions"></datalist>
+      <p id="products-modal-error" class="login-error" style="margin:6px 0 0"></p>
+      <div id="products-manage-body" class="lists-manage-body"></div>
     </div>
   </div>
 
@@ -595,11 +617,13 @@
           <div class="toolbar">
             <div class="filter-group">
               <select id="filter-stage"><option value="">All Stages</option></select>
+              <select id="filter-division" style="display:none"><option value="">All Divisions</option></select>
               <select id="filter-product"><option value="">All Products</option></select>
               <select id="filter-salesman" style="display:none"><option value="">All Salesmen</option></select>
               <select id="filter-list" style="display:none"><option value="">All Lists</option></select>
             </div>
             <div class="toolbar-actions">
+              <button id="btn-manage-products" class="btn-ghost" title="Manage your major items / products">📦 Products</button>
               <button id="btn-manage-lists" class="btn-ghost" title="Create and manage lists">🏷️ Lists</button>
               <div class="view-toggle">
                 <button class="toggle-btn active" data-view="table">☰ Table</button>
@@ -966,7 +990,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=17"></script>
+  <script src="app.js?v=18"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:4400, once:true };</script>
   <script src="dive-splash.js"></script>

@@ -47,6 +47,25 @@ async function canManageList(list, req) {
   return false;
 }
 
+// Products (catalog "major items") share list-style scoping/permission rules.
+function productInContext(p, username, teamId) {
+  if (!p) return false;
+  if (teamId) return Number(p.team_id) === Number(teamId);
+  return p.team_id == null &&
+    String(p.owner || '').toLowerCase() === String(username || '').toLowerCase();
+}
+async function canManageProduct(p, req) {
+  if (!p) return false;
+  if (req.user.role === 'admin') return true;
+  if (String(p.owner || '').toLowerCase() === String(req.user.username).toLowerCase()) return true;
+  if (p.team_id) {
+    const user = await db.getUserByName(req.user.username);
+    const member = user && await db.getTeamMember(p.team_id, user.id);
+    return !!(member && member.status === 'active' && TEAM_MANAGER_ROLES.includes(member.role));
+  }
+  return false;
+}
+
 // Returns the leads visible to this request (personal or team-scoped),
 // each annotated with can_edit. Throws {status:403} if not a team member.
 async function leadsForRequest(req) {
@@ -320,6 +339,62 @@ router.post('/lead-lists/:id/add-leads', authMiddleware, noGuest, async (req, re
     if (!toAdd.length) return res.status(400).json({ error: 'None of those leads are available here' });
     const added = await db.addLeadsToList(list.id, toAdd);
     res.json({ ok: true, added, matched: toAdd.length, requested: requested.length });
+  } catch (err) { next(err); }
+});
+
+// ── Products catalog ("major items") ─────────────────────────
+// GET /api/products — the catalog available in the current context
+router.get('/products', authMiddleware, async (req, res, next) => {
+  try {
+    if (req.user.role === 'guest') return res.json([]);
+    const ctx = await resolveTeamContext(req);
+    if (ctx?.forbidden) return res.status(403).json({ error: 'Not a member of this team' });
+    res.json(await db.getProductsForContext(req.user.username, ctx?.teamId || null));
+  } catch (err) { next(err); }
+});
+
+// POST /api/products { name, division, aliases } — add a major item
+router.post('/products', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const name = String((req.body || {}).name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Product name is required' });
+    if (name.length > 80) return res.status(400).json({ error: 'Product name is too long (max 80)' });
+    const ctx = await resolveTeamContext(req);
+    if (ctx?.forbidden) return res.status(403).json({ error: 'Not a member of this team' });
+    const teamId = ctx?.teamId || null;
+    const existing = await db.getProductsForContext(req.user.username, teamId);
+    if (existing.some(p => p.name.toLowerCase() === name.toLowerCase())) {
+      return res.status(409).json({ error: 'A product with that name already exists' });
+    }
+    const p = await db.createProduct(name, (req.body || {}).division, (req.body || {}).aliases, req.user.username, teamId);
+    res.json(p);
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/products/:id { name?, division?, aliases? }
+router.patch('/products/:id', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const p = await db.getProductById(parseInt(req.params.id, 10));
+    if (!p) return res.status(404).json({ error: 'Product not found' });
+    if (!(await canManageProduct(p, req))) return res.status(403).json({ error: 'You cannot manage this product' });
+    const { name, division, aliases } = req.body || {};
+    if (name != null && !String(name).trim()) return res.status(400).json({ error: 'Product name cannot be empty' });
+    res.json(await db.updateProduct(p.id, {
+      name:     name     != null ? name     : null,
+      division: division != null ? division : null,
+      aliases:  aliases  != null ? aliases  : null,
+    }));
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/products/:id
+router.delete('/products/:id', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const p = await db.getProductById(parseInt(req.params.id, 10));
+    if (!p) return res.status(404).json({ error: 'Product not found' });
+    if (!(await canManageProduct(p, req))) return res.status(403).json({ error: 'You cannot manage this product' });
+    await db.deleteProduct(p.id);
+    res.json({ ok: true });
   } catch (err) { next(err); }
 });
 

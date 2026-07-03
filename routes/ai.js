@@ -235,6 +235,56 @@ class GeminiProvider {
       : 'Extract CRM lead data from this photo as JSON (include "_image_text").' });
     return this._generateWithFallback(imagePrompt, parts, 2500, 'image');
   }
+
+  // Map spreadsheet columns → CRM fields for the importer. Returns
+  // { mapping:[fieldOrEmpty per column], model } or null on failure.
+  async mapImport(headers, sampleRows, products = []) {
+    const sys = `You map spreadsheet columns to a CRM's fields for an adhesive sales team in India. Output ONLY a single raw JSON object — no markdown, no code fences.
+
+CRM FIELDS and their meaning:
+- factory_number: a short alphanumeric party/lead code (e.g. M277, F12, D5).
+- factory_name: the company / business / party / firm name.
+- person_in_charge: the contact person's name (proprietor/owner/concerned person).
+- contact: a phone / mobile / whatsapp number.
+- product: the product / item / material being sold.
+- quantity: amount with unit (e.g. "500 kg").
+- rate: price per unit (a number).
+- stage: the sales stage / status / deal stage.
+- follow_up: a date (next visit / follow-up).
+- area: city / region / district / location / zone.
+- notes: remarks / comments / description / anything else.
+- lead_type: the temperature / priority (Hot, Warm, Cold).
+- created_by: the salesman / salesperson / executive name (ONLY if a column clearly lists staff who own the lead).
+
+RULES:
+- For EACH input column, choose the single best-fitting CRM field, or "" if it fits none.
+- Do NOT map two different columns to the same field — if two compete, keep the stronger one and set the other to "".
+- Use the sample values (not just the header text) to decide. A column of phone numbers is "contact" even if titled oddly.
+- Return exactly one entry per column, in the same order.
+
+Return ONLY: {"mapping": ["field-or-empty", ...], "notes": ""}`;
+
+    const productHint = products && products.length
+      ? `\n\nKNOWN PRODUCTS (helps recognise a product column): ${products.slice(0, 60).join(', ')}.`
+      : '';
+    const sample = (sampleRows || []).slice(0, 5)
+      .map(r => headers.map((h, i) => `${h}=${String(r[i] ?? '').slice(0, 30)}`).join(' | '))
+      .join('\n');
+    const user = `COLUMNS (in order):\n${headers.map((h, i) => `[${i}] "${h}"`).join('\n')}${productHint}\n\nSAMPLE ROWS:\n${sample}\n\nReturn the JSON with a "mapping" array of exactly ${headers.length} entries.`;
+
+    for (const model of this.models) {
+      try {
+        const raw = await this._call(model, sys, [{ text: user }], { maxOutputTokens: 900 });
+        const parsed = parseModelJson(raw);
+        if (Array.isArray(parsed.mapping)) return { mapping: parsed.mapping, model };
+      } catch (err) {
+        const code = err.response?.data?.error?.code;
+        if ([400, 404, 429, 503].includes(code)) { console.warn(`⚠️ Gemini import-map ${model} (${code})`); continue; }
+        console.error('Gemini import-map error:', err.response?.data?.error?.message || err.message);
+      }
+    }
+    return null;
+  }
 }
 
 const gemini = new GeminiProvider();
@@ -424,6 +474,40 @@ router.post('/ai/understand/image', authMiddleware, async (req, res, next) => {
       imageText: parsed._image_text || '',
       needsClarification: !!clarification, clarification,
     });
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/import/ai-map — AI maps spreadsheet columns → CRM fields ──
+const IMPORT_MAP_FIELDS = new Set([
+  'factory_number', 'factory_name', 'person_in_charge', 'contact', 'product',
+  'quantity', 'rate', 'stage', 'follow_up', 'area', 'notes', 'lead_type', 'created_by',
+]);
+router.post('/import/ai-map', authMiddleware, async (req, res, next) => {
+  const headers = Array.isArray(req.body?.headers) ? req.body.headers.map(h => String(h || '')) : [];
+  const rows    = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  if (!headers.length) return res.status(400).json({ error: 'headers required' });
+  if (headers.length > 60) return res.status(400).json({ error: 'Too many columns for AI mapping' });
+  try {
+    // Products in the caller's context help the AI recognise a product column.
+    let products = [];
+    try {
+      const teamId = parseInt(req.body?.teamId, 10) || null;
+      products = (await db.getProductsForContext(req.user.username, teamId)).map(p => p.name);
+    } catch (_) {}
+
+    const result = await gemini.mapImport(headers, rows, products);
+    if (!result) return res.status(502).json({ error: 'AI mapping is unavailable right now — map the columns manually.' });
+
+    // Only accept known field names, and never let two columns claim the same field.
+    const used = new Set();
+    const mapping = headers.map((_, i) => {
+      const f = String(result.mapping[i] || '').trim();
+      if (!IMPORT_MAP_FIELDS.has(f) || used.has(f)) return '';
+      used.add(f);
+      return f;
+    });
+    db.logAiAction(null, 'import_map', 'file', headers.join(', '), { mapping }, req.user.username, null).catch(() => {});
+    res.json({ mapping, model: result.model });
   } catch (err) { next(err); }
 });
 

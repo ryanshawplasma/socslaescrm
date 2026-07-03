@@ -11,10 +11,12 @@ const state = {
   search:      '',
   filterStage: '',
   filterProduct: '',
+  filterDivision: '',
   filterSalesman: '',
   filterList:  '',
   filterGroup: '',   // '', 'active', 'won', 'lost' — set by clicking a dashboard KPI card
   myLists:     [],
+  myProducts:  [],   // catalog "major items": [{id,name,division,aliases}]
   view:        'table',
   fuFilter:    'overdue',
   sortKey:     '',
@@ -854,13 +856,46 @@ async function apiFetch(path, opts = {}) {
 function orgQuery() { return state.activeOrgId ? `?teamId=${encodeURIComponent(state.activeOrgId)}` : ''; }
 
 async function loadLeads()  {
-  const [leads] = await Promise.all([ apiFetch('/api/leads' + orgQuery()), loadLists() ]);
+  const [leads] = await Promise.all([ apiFetch('/api/leads' + orgQuery()), loadLists(), loadProducts() ]);
   state.leads = leads;
 }
 async function loadLists() {
   try { state.myLists = await apiFetch('/api/lead-lists' + orgQuery()); }
   catch { state.myLists = []; }
   return state.myLists;
+}
+async function loadProducts() {
+  try { state.myProducts = await apiFetch('/api/products' + orgQuery()); }
+  catch { state.myProducts = []; }
+  return state.myProducts;
+}
+
+// Product name → division, built from the team's catalog (case-insensitive).
+function productDivisionMap() {
+  const m = {};
+  for (const p of (state.myProducts || [])) {
+    if (p.name) m[p.name.toLowerCase()] = p.division || '';
+  }
+  return m;
+}
+// Distinct divisions defined in the catalog, sorted.
+function catalogDivisions() {
+  return [...new Set((state.myProducts || []).map(p => p.division).filter(Boolean))].sort();
+}
+// Every product name a lead touches (all its items + the primary field).
+function leadProductNames(l) {
+  const names = (l.items || []).map(i => i.product).filter(Boolean);
+  if (l.product) names.push(l.product);
+  return [...new Set(names)];
+}
+// Readable "product · qty @₹rate" lines for every item on a lead (raw text —
+// escape at the call site). Falls back to the primary product/qty/rate.
+function leadItemLines(l) {
+  const items = (l.items && l.items.length)
+    ? l.items
+    : (l.product ? [{ product: l.product, quantity: l.quantity, rate: l.rate }] : []);
+  return items.filter(i => i.product).map(i =>
+    `${i.product}${i.quantity ? ' · ' + i.quantity : ''}${i.rate ? ' @₹' + i.rate : ''}`);
 }
 async function loadStats()  { state.stats = await apiFetch('/api/stats' + orgQuery()); }
 // ── Where new leads are stored ────────────────────────────────
@@ -1077,6 +1112,43 @@ function importLoaded(name, aoa) {
   document.getElementById('import-step-map').classList.remove('hidden');
   loadImportAssignees();
   populateImportListSelect();
+  aiRefineImportMapping();   // AI refines the column→field mapping in the background
+}
+
+// Ask the AI to map the spreadsheet's columns to CRM fields, then merge its
+// picks over the alias auto-map (AI first, alias map fills any gaps). Runs
+// right after load; also re-runnable by clicking the badge.
+async function aiRefineImportMapping() {
+  if (!_import) return;
+  const badge = document.getElementById('import-ai-badge');
+  const { headers, rows } = _import;
+  if (badge) { badge.style.display = ''; badge.className = 'import-ai-badge loading'; badge.textContent = '✨ AI is reading your columns…'; }
+  try {
+    const body = { headers, rows: rows.slice(0, 8) };
+    if (getLeadDest()) body.teamId = getLeadDest();
+    const res = await apiFetch('/api/import/ai-map', { method: 'POST', body: JSON.stringify(body) });
+    if (!_import || !Array.isArray(res.mapping) || res.mapping.length !== headers.length) {
+      if (badge) badge.style.display = 'none';
+      return;
+    }
+    const used = new Set();
+    const merged = headers.map(() => '');
+    headers.forEach((_, i) => {                       // 1) take the AI's picks
+      const ai = String(res.mapping[i] || '');
+      if (ai && !used.has(ai)) { merged[i] = ai; used.add(ai); }
+    });
+    headers.forEach((_, i) => {                        // 2) fill blanks from the alias map
+      if (merged[i]) return;
+      const prev = String(_import.mapping[i] || '');
+      if (prev && !used.has(prev)) { merged[i] = prev; used.add(prev); }
+    });
+    _import.mapping  = merged;
+    _import.aiMapped = true;
+    renderImportMap();
+    if (badge) { badge.className = 'import-ai-badge done'; badge.textContent = '✨ AI mapped your columns — review & tweak below'; }
+  } catch (err) {
+    if (badge) { badge.className = 'import-ai-badge'; badge.textContent = '↻ Map with AI'; badge.style.display = ''; }
+  }
 }
 
 async function populateImportListSelect() {
@@ -1201,9 +1273,36 @@ function tidyProductText(raw) {
   return String(raw || '').trim().replace(/\s+/g, ' ');
 }
 
+// Try to recognise a raw product string against the team's own catalog first
+// (name + the comma-separated aliases the user added). Their catalog wins over
+// the built-in defaults so "add major items for it to read" actually steers it.
+function catalogProductMatch(raw) {
+  const catalog = state.myProducts || [];
+  if (!catalog.length) return '';
+  const key    = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const tokens = raw.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const formsOf = p => [p.name, ...String(p.aliases || '').split(',')].map(s => s.trim()).filter(Boolean);
+  // exact / token match
+  for (const p of catalog) {
+    for (const f of formsOf(p)) {
+      const fk = f.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (fk && fk === key) return p.name;
+      if (tokens.includes(f.toLowerCase())) return p.name;
+    }
+  }
+  // longer forms embedded in a description
+  for (const p of catalog) {
+    const fks = formsOf(p).map(f => f.toLowerCase().replace(/[^a-z0-9]/g, '')).filter(Boolean);
+    if (fks.some(fk => fk.length >= 4 && key.includes(fk))) return p.name;
+  }
+  return '';
+}
+
 function normImportProduct(v) {
   const raw = tidyProductText(v);
   if (!raw) return '';
+  const fromCatalog = catalogProductMatch(raw);
+  if (fromCatalog) return fromCatalog;
   const key = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
 
   // 1) whole-string exact match on a canonical name or one of its aliases
@@ -1749,17 +1848,22 @@ function filteredLeads() {
   const q = state.search.toLowerCase();
   let leads = state.leads.filter(l => {
     const allContactText = (l.contacts || []).map(c => `${c.person_name} ${c.contact}`).join(' ');
-    const matchSearch = !q || [l.factory_number, l.factory_name, l.product, allContactText]
+    const prodNames = leadProductNames(l);
+    const matchSearch = !q || [l.factory_number, l.factory_name, prodNames.join(' '), allContactText]
       .some(v => String(v).toLowerCase().includes(q));
     const matchStage    = !state.filterStage    || l.stage      === state.filterStage;
-    const matchProduct  = !state.filterProduct  || l.product    === state.filterProduct;
+    // Product/division match ANY item on the lead — multi-product friendly.
+    const matchProduct  = !state.filterProduct  || prodNames.includes(state.filterProduct);
+    const divMap        = state.filterDivision ? productDivisionMap() : null;
+    const matchDivision = !state.filterDivision ||
+      prodNames.some(n => (divMap[n.toLowerCase()] || '') === state.filterDivision);
     const matchSalesman = !state.filterSalesman || l.created_by === state.filterSalesman;
     const matchGroup    = !state.filterGroup    || groupOf(l)   === state.filterGroup;
     const matchList     = !state.filterList
       || (state.filterList === '__none__'
             ? !(l.list_ids || []).length
             : (l.list_ids || []).map(String).includes(String(state.filterList)));
-    return matchSearch && matchStage && matchProduct && matchSalesman && matchGroup && matchList;
+    return matchSearch && matchStage && matchProduct && matchDivision && matchSalesman && matchGroup && matchList;
   });
   if (state.sortKey) {
     leads = [...leads].sort((a, b) => {
@@ -1798,7 +1902,9 @@ function buildTable(leads, cols, actions = true) {
     factory_name:     ['Factory',    l => l.factory_name     || '—'],
     person_in_charge: ['Person',     l => l.person_in_charge || '—'],
     contact:          ['Contact',    l => l.contact          || '—'],
-    product:          ['Product',    l => l.product          || '—'],
+    product:          ['Product',    l => { const n = leadProductNames(l); if (!n.length) return '—';
+                                            const shown = escHtml(n.slice(0, 2).join(', '));
+                                            return n.length > 2 ? `${shown} <span class="more-badge" title="${escAttr(n.join(', '))}">+${n.length - 2}</span>` : shown; }],
     quantity:         ['Qty',        l => l.quantity         || '—'],
     rate:             ['Rate',       l => l.rate             || '—'],
     stage:            ['Stage',      l => stageBadge(l)],
@@ -2077,9 +2183,27 @@ function populateFilters() {
   const stageEl   = document.getElementById('filter-stage');
   const productEl = document.getElementById('filter-product');
   const stages    = uniqueValues('stage');
-  const products  = uniqueValues('product');
+  // Products come from every item on every lead PLUS the curated catalog, so the
+  // filter covers multi-product leads and products you've defined but not used yet.
+  const products  = [...new Set([
+    ...state.leads.flatMap(leadProductNames),
+    ...(state.myProducts || []).map(p => p.name),
+  ].filter(Boolean))].sort();
   stageEl.innerHTML   = '<option value="">All Stages</option>'   + stages.map(s => `<option ${s===state.filterStage?'selected':''}>${s}</option>`).join('');
-  productEl.innerHTML = '<option value="">All Products</option>' + products.map(p => `<option ${p===state.filterProduct?'selected':''}>${p}</option>`).join('');
+  productEl.innerHTML = '<option value="">All Products</option>' + products.map(p => `<option ${p===state.filterProduct?'selected':''}>${escHtml(p)}</option>`).join('');
+
+  // Division filter — only shown once the catalog defines divisions.
+  const divEl = document.getElementById('filter-division');
+  if (divEl) {
+    const divisions = catalogDivisions();
+    divEl.style.display = divisions.length ? '' : 'none';
+    if (divisions.length) {
+      divEl.innerHTML = '<option value="">All Divisions</option>' +
+        divisions.map(d => `<option ${d===state.filterDivision?'selected':''}>${escHtml(d)}</option>`).join('');
+    } else if (state.filterDivision) {
+      state.filterDivision = '';
+    }
+  }
 
   // Salesman filter — for admins, or team views with multiple owners
   const salesEl  = document.getElementById('filter-salesman');
@@ -2177,7 +2301,11 @@ function buildCards(leads) {
     const stageCol = STAGE_COLORS[l.stage] || '#64748b';
     const c        = (l.contacts && l.contacts[0]) || { person_name: l.person_in_charge, contact: l.contact };
     const person   = [c.person_name, c.contact].filter(Boolean).map(escHtml).join(' · ');
-    const prod     = l.product ? `${escHtml(l.product)}${l.quantity ? ' · ' + escHtml(l.quantity) : ''}${l.rate ? ' @₹' + escHtml(l.rate) : ''}` : '';
+    // All items on the lead, one chip per product (multi-product friendly).
+    const itemLines = leadItemLines(l);
+    const prod = itemLines.length
+      ? itemLines.map(t => `<span class="lead-item-chip">${escHtml(t)}</span>`).join('')
+      : '';
     const line = (icon, val) => val ? `<div class="lead-card-line"><span>${icon}</span> ${val}</div>` : '';
     return `
       <div class="lead-card ${typeCls}" onclick="openEditModal(${l.rowIndex})" tabindex="0"
@@ -2235,7 +2363,7 @@ function buildKanban(leads, draggable = false) {
                ${draggable ? `draggable="true" ondragstart="dragStart(event,${l.rowIndex})"` : ''}
                onclick="openEditModal(${l.rowIndex})">
             <div class="kanban-card-name">${l.factory_name || l.factory_number || '—'} ${typeTag}</div>
-            <div class="kanban-card-meta">${l.product || ''} ${l.quantity ? '· ' + l.quantity : ''}</div>
+            <div class="kanban-card-meta">${(() => { const n = leadProductNames(l); return n.length ? escHtml(n.slice(0,2).join(', ')) + (n.length > 2 ? ` +${n.length-2}` : '') : ''; })()}</div>
             ${l.follow_up ? `<div class="kanban-card-meta" style="margin-top:4px">📅 ${l.follow_up}</div>` : ''}
             ${l.area ? `<div class="kanban-card-meta">📍 ${l.area}</div>` : ''}
           </div>`;
@@ -2925,9 +3053,34 @@ function collectContacts() {
 const PRODUCT_OPTIONS = ['Hotmelt','Rubber Adhesive','Solvent','Latex','BC','Toluene','R6','MEK','PU Adhesive','Silicon','Other'];
 
 function productSelect(selected = '') {
+  const catalog = state.myProducts || [];
+  // Options come from the team's catalog when it exists; otherwise the built-in
+  // defaults. Always keep the row's current value selectable (legacy/imported
+  // products that aren't in the catalog).
+  let names = catalog.length ? [...new Set([...catalog.map(p => p.name), 'Other'])] : PRODUCT_OPTIONS.slice();
+  if (selected && !names.some(n => n.toLowerCase() === selected.toLowerCase())) names = [selected, ...names];
+
+  // Group by division when the catalog defines them, so long lists stay navigable.
+  if (catalog.length && catalogDivisions().length) {
+    const byDiv = {}, loose = [];
+    for (const n of names) {
+      const p = catalog.find(x => x.name === n);
+      if (p && p.division) (byDiv[p.division] = byDiv[p.division] || []).push(n);
+      else loose.push(n);
+    }
+    let html = '<option value="">Select…</option>';
+    for (const div of Object.keys(byDiv).sort()) {
+      html += `<optgroup label="${escAttr(div)}">` +
+        byDiv[div].map(n => `<option${n === selected ? ' selected' : ''}>${escHtml(n)}</option>`).join('') +
+        '</optgroup>';
+    }
+    if (loose.length) html += loose.map(n => `<option${n === selected ? ' selected' : ''}>${escHtml(n)}</option>`).join('');
+    return `<select class="i-product">${html}</select>`;
+  }
+
   return `<select class="i-product">
     <option value="">Select…</option>
-    ${PRODUCT_OPTIONS.map(p => `<option${p === selected ? ' selected' : ''}>${p}</option>`).join('')}
+    ${names.map(p => `<option${p === selected ? ' selected' : ''}>${escHtml(p)}</option>`).join('')}
   </select>`;
 }
 
@@ -3299,6 +3452,100 @@ async function deleteListConfirm(id, name) {
   } catch (err) { toast(err.message, 'error'); }
 }
 
+// ── Products catalog ("major items") manager ──────────────────
+function openProductsModal() {
+  if (state.role === 'guest') { toast('Create an account to manage products', 'warning'); return; }
+  document.getElementById('products-modal-error').textContent = '';
+  ['new-product-name', 'new-product-division', 'new-product-aliases'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  const team = state.myTeams.find(t => String(t.id) === String(state.activeOrgId));
+  document.getElementById('products-modal-scope').textContent =
+    team ? `Shared across ${team.name} — everyone on the team uses these items` : 'Your personal product list';
+  renderProductsManageBody();
+  document.getElementById('products-modal-overlay').classList.remove('hidden');
+  loadProducts().then(renderProductsManageBody);
+}
+function closeProductsModal() {
+  document.getElementById('products-modal-overlay').classList.add('hidden');
+}
+function refreshDivisionSuggestions() {
+  const dl = document.getElementById('division-suggestions');
+  if (dl) dl.innerHTML = catalogDivisions().map(d => `<option value="${escAttr(d)}"></option>`).join('');
+}
+function renderProductsManageBody() {
+  const box = document.getElementById('products-manage-body');
+  if (!box) return;
+  refreshDivisionSuggestions();
+  const products = state.myProducts || [];
+  if (!products.length) {
+    box.innerHTML = '<div class="empty-state" style="padding:22px">No products yet — add your major items above.</div>';
+    return;
+  }
+  // Group by division for a tidy, filterable view.
+  const groups = {};
+  for (const p of products) (groups[p.division || 'Uncategorised'] = groups[p.division || 'Uncategorised'] || []).push(p);
+  box.innerHTML = Object.keys(groups).sort().map(div => `
+    <div class="product-group-title">${escHtml(div)}</div>
+    ${groups[div].map(p => `
+      <div class="list-manage-row">
+        <span class="list-manage-name">${escHtml(p.name)}</span>
+        ${p.aliases ? `<span class="product-aliases" title="Alias spellings the importer reads">${escHtml(p.aliases)}</span>` : ''}
+        <button class="action-btn" onclick="editProductPrompt(${p.id})">Edit</button>
+        <button class="action-btn del" onclick="deleteProductConfirm(${p.id}, '${escAttr(p.name)}')">Delete</button>
+      </div>`).join('')}
+  `).join('');
+}
+async function createProductFromModal() {
+  const nameEl = document.getElementById('new-product-name');
+  const divEl  = document.getElementById('new-product-division');
+  const aliEl  = document.getElementById('new-product-aliases');
+  const errEl  = document.getElementById('products-modal-error');
+  errEl.textContent = '';
+  const name = nameEl.value.trim();
+  if (!name) { errEl.textContent = 'Enter an item name'; return; }
+  try {
+    await apiFetch('/api/products' + orgQuery(), {
+      method: 'POST',
+      body: JSON.stringify({ name, division: divEl.value.trim(), aliases: aliEl.value.trim() }),
+    });
+    nameEl.value = ''; aliEl.value = '';   // keep division for fast multi-add in the same division
+    await loadProducts();
+    renderProductsManageBody(); populateFilters(); renderLeadsView();
+    toast(`Added "${name}"`);
+    nameEl.focus();
+  } catch (err) { errEl.textContent = err.message; }
+}
+async function editProductPrompt(id) {
+  const p = (state.myProducts || []).find(x => String(x.id) === String(id));
+  if (!p) return;
+  const name = prompt('Item name:', p.name);
+  if (name == null) return;
+  if (!name.trim()) { toast('Name cannot be empty', 'error'); return; }
+  const division = prompt('Division (category):', p.division || '');
+  if (division == null) return;
+  const aliases = prompt('Aliases (comma-separated spellings the importer reads):', p.aliases || '');
+  if (aliases == null) return;
+  try {
+    await apiFetch(`/api/products/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: name.trim(), division: division.trim(), aliases: aliases.trim() }),
+    });
+    await loadProducts();
+    renderProductsManageBody(); populateFilters(); renderLeadsView();
+    toast('Product updated');
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function deleteProductConfirm(id, name) {
+  if (!confirm(`Remove "${name}" from your product list? Existing leads keep their items — this only removes it from the catalog.`)) return;
+  try {
+    await apiFetch(`/api/products/${id}`, { method: 'DELETE' });
+    await loadProducts();
+    renderProductsManageBody(); populateFilters(); renderLeadsView();
+    toast('Product removed');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
 async function handleFormSubmit(e) {
   e.preventDefault();
   const row  = document.getElementById('f-row').value;
@@ -3494,6 +3741,14 @@ function wireEvents() {
   document.getElementById('new-list-name')?.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); createListFromModal(); }
   });
+  document.getElementById('products-modal-overlay')?.addEventListener('click', e => {
+    if (e.target === document.getElementById('products-modal-overlay')) closeProductsModal();
+  });
+  ['new-product-name', 'new-product-aliases']?.forEach(id => {
+    document.getElementById(id)?.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); createProductFromModal(); }
+    });
+  });
   document.getElementById('btn-theme').addEventListener('click', toggleTheme);
   document.querySelectorAll('.palette-dot').forEach(dot => {
     dot.addEventListener('click', () => applyAccent(dot.dataset.accent));
@@ -3516,6 +3771,11 @@ function wireEvents() {
     state.filterProduct = e.target.value;
     renderLeadsView();
   });
+  document.getElementById('filter-division')?.addEventListener('change', e => {
+    state.filterDivision = e.target.value;
+    renderLeadsView();
+  });
+  document.getElementById('btn-manage-products')?.addEventListener('click', openProductsModal);
 
   document.querySelectorAll('.toggle-btn').forEach(btn => {
     btn.addEventListener('click', () => {

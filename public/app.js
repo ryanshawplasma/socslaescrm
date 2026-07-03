@@ -1178,6 +1178,54 @@ function normImportStage(v) {
   return { stage: s, stage_number: '' };
 }
 
+// Snap a raw product string from an import onto one of our canonical products
+// (PRODUCT_OPTIONS), so filtering/organising works instead of every spelling
+// variant becoming its own "product type". Handles spacing, case, common short
+// codes and misspellings. Returns '' when nothing recognisable — the caller then
+// keeps a tidied version of the original so no data is silently lost.
+const PRODUCT_ALIASES = {
+  'Hotmelt':         ['hotmelt','hm','hotmeltadhesive','hotmeltglue','hotmeltgum','hotmelts','hmadhesive'],
+  'Rubber Adhesive': ['rubber','rubberadhesive','rubberbase','rubberbased','rb','sbr','rubbergum','rubbersolution','rubbercement','rubberadh'],
+  'Solvent':         ['solvent','solventadhesive','solventbase','solventbased','sol','solventglue','solvant'],
+  'Latex':           ['latex','latexadhesive','ltx','latexgum','latexadh'],
+  'BC':              ['bc','bondingcompound','bondingcoat'],
+  'Toluene':         ['toluene','toluol','tol','tolune','tuolene','tolueen','tolwene','tulene'],
+  'R6':              ['r6'],
+  'MEK':             ['mek','methylethylketone','methylethylketon'],
+  'PU Adhesive':     ['pu','puadhesive','polyurethane','puadh','puglue','pubase','puadhesives'],
+  'Silicon':         ['silicon','silicone','siliconadhesive','siliconesealant','siliconsealant','siliconeadhesive'],
+};
+
+function tidyProductText(raw) {
+  // Collapse whitespace so "hot  melt " and "Hot Melt" don't count as two types.
+  return String(raw || '').trim().replace(/\s+/g, ' ');
+}
+
+function normImportProduct(v) {
+  const raw = tidyProductText(v);
+  if (!raw) return '';
+  const key = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  // 1) whole-string exact match on a canonical name or one of its aliases
+  for (const [canon, aliases] of Object.entries(PRODUCT_ALIASES)) {
+    if (canon.toLowerCase().replace(/[^a-z0-9]/g, '') === key) return canon;
+    if (aliases.includes(key)) return canon;
+  }
+  // 2) token match — short codes (pu, bc, r6, mek…) only when they stand alone,
+  //    so "adhesive" (contains "si") can't be mistaken for Silicon.
+  const tokens = raw.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  for (const [canon, aliases] of Object.entries(PRODUCT_ALIASES)) {
+    const set = new Set([canon.toLowerCase().replace(/[^a-z0-9]/g, ''), ...aliases]);
+    if (tokens.some(t => set.has(t))) return canon;
+  }
+  // 3) longer aliases embedded in a description ("hot melt adhesive – white").
+  //    Guard with length ≥ 5 to avoid short-code false positives.
+  for (const [canon, aliases] of Object.entries(PRODUCT_ALIASES)) {
+    if (aliases.some(a => a.length >= 5 && key.includes(a))) return canon;
+  }
+  return '';
+}
+
 async function runImport() {
   const { headers, rows, mapping } = _import;
   const errEl = document.getElementById('import-map-error');
@@ -1196,6 +1244,7 @@ async function runImport() {
       if (field === 'follow_up')      obj.follow_up = normImportDate(val);
       else if (field === 'lead_type') obj.lead_type = normImportLeadType(val) || val;
       else if (field === 'stage')     Object.assign(obj, normImportStage(val));
+      else if (field === 'product')   obj.product = normImportProduct(val) || tidyProductText(val);
       else obj[field] = val;
     });
     return obj;
@@ -3107,12 +3156,95 @@ function openListsModal() {
   document.getElementById('lists-modal-scope').textContent =
     team ? `Shared across ${team.name} — everyone on the team can use these` : 'Your personal lists';
   renderListsManageBody();
+  renderListsBulkRow();
   document.getElementById('lists-modal-overlay').classList.remove('hidden');
-  loadLists().then(renderListsManageBody);
+  loadLists().then(() => { renderListsManageBody(); renderListsBulkRow(); });
 }
 function closeListsModal() {
   document.getElementById('lists-modal-overlay').classList.add('hidden');
 }
+
+// The "Add all shown leads to a list" quick-file row inside the Lists modal.
+// Lets you retroactively file leads (e.g. a batch you imported without picking a
+// list) into one — it acts on exactly the leads currently shown on the Leads
+// page, so any active filter narrows the batch.
+function renderListsBulkRow() {
+  const row     = document.getElementById('lists-bulk-row');
+  const sel     = document.getElementById('lists-bulk-select');
+  const label   = document.getElementById('lists-bulk-label');
+  const nameInp = document.getElementById('lists-bulk-newname');
+  if (!row || !sel || !label) return;
+
+  const shown = (state.page === 'leads') ? filteredLeads() : [];
+  if (!shown.length) { row.style.display = 'none'; return; }
+  row.style.display = '';
+
+  const filtered = !!(state.search || state.filterStage || state.filterProduct ||
+                      state.filterSalesman || state.filterGroup || state.filterList);
+  const n = shown.length;
+  label.textContent = filtered
+    ? `Add the ${n} lead${n === 1 ? '' : 's'} shown now to a list`
+    : `Add all ${n} lead${n === 1 ? '' : 's'} to a list`;
+
+  const lists = state.myLists || [];
+  const prev  = sel.value;
+  sel.innerHTML = lists.map(l => `<option value="${l.id}">${escHtml(l.name)}</option>`).join('') +
+    '<option value="__new__">＋ New list…</option>';
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+  if (nameInp) { nameInp.style.display = sel.value === '__new__' ? '' : 'none'; }
+}
+
+function onListsBulkChange(v) {
+  const inp = document.getElementById('lists-bulk-newname');
+  if (!inp) return;
+  const isNew = v === '__new__';
+  inp.style.display = isNew ? '' : 'none';
+  if (isNew) setTimeout(() => inp.focus(), 0);
+}
+
+async function assignShownToList() {
+  const sel   = document.getElementById('lists-bulk-select');
+  const errEl = document.getElementById('lists-modal-error');
+  const btn   = document.getElementById('lists-bulk-btn');
+  if (!sel) return;
+  errEl.textContent = '';
+
+  const shown   = (state.page === 'leads') ? filteredLeads() : [];
+  const leadIds = shown.map(l => l.rowIndex).filter(v => v != null);
+  if (!leadIds.length) { errEl.textContent = 'No leads shown to add'; return; }
+
+  const isNew   = sel.value === '__new__';
+  const newName = (document.getElementById('lists-bulk-newname')?.value || '').trim();
+  if (!sel.value)          { errEl.textContent = 'Choose a list'; return; }
+  if (isNew && !newName)   { errEl.textContent = 'Enter a name for the new list'; return; }
+
+  btn.disabled = true; btn.textContent = 'Adding…';
+  try {
+    let listId = sel.value;
+    if (isNew) {
+      const created = await apiFetch('/api/lead-lists' + orgQuery(), {
+        method: 'POST', body: JSON.stringify({ name: newName }),
+      });
+      listId = created?.id;
+    }
+    const res = await apiFetch(`/api/lead-lists/${listId}/add-leads` + orgQuery(), {
+      method: 'POST', body: JSON.stringify({ lead_ids: leadIds }),
+    });
+    await loadLeads();                 // refresh tags + list counts
+    renderListsManageBody();
+    renderListsBulkRow();
+    populateFilters();
+    renderLeadsView();
+    toast(res.added
+      ? `Filed ${res.added} lead${res.added === 1 ? '' : 's'} into the list`
+      : 'Those leads were already in the list', res.added ? 'success' : 'warning');
+  } catch (err) {
+    errEl.textContent = err.message;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Add all';
+  }
+}
+
 function renderListsManageBody() {
   const box = document.getElementById('lists-manage-body');
   if (!box) return;

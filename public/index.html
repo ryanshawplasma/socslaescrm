@@ -17,7 +17,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=20" />
+  <link rel="stylesheet" href="style.css?v=21" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -259,6 +259,12 @@
         <input type="text" id="new-list-name" placeholder="New list name…" maxlength="60" />
         <input type="color" id="new-list-color" value="#6366f1" title="List colour" />
         <button class="btn btn-primary btn-sm" id="new-list-btn" onclick="createListFromModal()">＋ Create</button>
+      </div>
+      <div id="lists-bulk-row" class="lists-bulk-row" style="display:none">
+        <span id="lists-bulk-label" class="lists-bulk-label"></span>
+        <select id="lists-bulk-select" onchange="onListsBulkChange(this.value)"></select>
+        <input type="text" id="lists-bulk-newname" placeholder="New list name…" maxlength="60" style="display:none" />
+        <button class="btn btn-sm" id="lists-bulk-btn" onclick="assignShownToList()">Add all</button>
       </div>
       <p id="lists-modal-error" class="login-error" style="margin:6px 0 0"></p>
       <div id="lists-manage-body" class="lists-manage-body"></div>
@@ -960,7 +966,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=16"></script>
+  <script src="app.js?v=17"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:4400, once:true };</script>
   <script src="dive-splash.js"></script>

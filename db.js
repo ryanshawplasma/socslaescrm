@@ -1645,6 +1645,20 @@ async function setLeadListMemberships(leadId, listIds, scopeListIds) {
   return wanted;
 }
 
+// Additively file many leads into one list (used by "assign all shown to a
+// list"). Never removes existing memberships. Returns how many rows were newly
+// added (duplicates are ignored via the primary key).
+async function addLeadsToList(listId, leadIds) {
+  const ids = [...new Set((leadIds || []).map(Number).filter(Boolean))];
+  if (!ids.length) return 0;
+  const { rowCount } = await pool.query(
+    `INSERT INTO lead_list_items (list_id, lead_id)
+       SELECT $1, x FROM unnest($2::int[]) AS x
+       ON CONFLICT DO NOTHING`,
+    [Number(listId), ids]);
+  return rowCount || 0;
+}
+
 // leadId → [{id,name,color}] for the lists visible in the given context.
 async function getListMembershipsForLeads(leadIds, owner, teamId) {
   if (!leadIds || !leadIds.length) return {};
@@ -2029,7 +2043,7 @@ module.exports = {
   getVocab, addVocab, deleteVocab, logAiAction,
   // Lead lists (tags)
   getListsForContext, getListById, createList, renameList, deleteList,
-  setLeadListMemberships, getListMembershipsForLeads,
+  setLeadListMemberships, getListMembershipsForLeads, addLeadsToList,
   // Lead security
   getLeadById, setLeadVisibility, userHasLeadAccess, getAccessibleLeadIds,
   // Lead share requests

@@ -297,6 +297,32 @@ router.delete('/lead-lists/:id', authMiddleware, noGuest, async (req, res, next)
   } catch (err) { next(err); }
 });
 
+// POST /api/lead-lists/:id/add-leads { lead_ids } — additively file many leads
+// into one list ("assign all shown to a list"). Only adds leads the caller can
+// actually see, and only into a list that lives in the caller's current context.
+router.post('/lead-lists/:id/add-leads', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const list = await db.getListById(parseInt(req.params.id, 10));
+    if (!list) return res.status(404).json({ error: 'List not found' });
+    const ctx = await resolveTeamContext(req);
+    if (ctx?.forbidden) return res.status(403).json({ error: 'Not a member of this team' });
+    if (!listInContext(list, req.user.username, ctx?.teamId || null)) {
+      return res.status(403).json({ error: 'That list is not available in this view' });
+    }
+    const requested = (Array.isArray(req.body?.lead_ids) ? req.body.lead_ids : [])
+      .map(Number).filter(Boolean);
+    if (!requested.length) return res.status(400).json({ error: 'No leads to add' });
+    // Restrict to leads visible to this caller in this context (no tagging what
+    // you can't see).
+    const visible = await leadsForRequest(req);
+    const allowed = new Set(visible.map(l => Number(l.rowIndex)));
+    const toAdd   = requested.filter(id => allowed.has(id));
+    if (!toAdd.length) return res.status(400).json({ error: 'None of those leads are available here' });
+    const added = await db.addLeadsToList(list.id, toAdd);
+    res.json({ ok: true, added, matched: toAdd.length, requested: requested.length });
+  } catch (err) { next(err); }
+});
+
 // PUT /api/leads/:row/lists { list_ids } — set a lead's tags in this context
 router.put('/leads/:row/lists', authMiddleware, noGuest, requireLeadAccess, async (req, res, next) => {
   try {

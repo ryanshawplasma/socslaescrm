@@ -2055,15 +2055,60 @@ function renderLeadsView() {
   if (state.role === 'admin' || state.activeOrgId) cols.push('created_by');
   // Show the Lists column once any list exists (or any lead is tagged)
   if (state.myLists.length || state.leads.some(l => (l.list_ids || []).length)) cols.push('lists');
-  if (state.view === 'table') {
-    document.getElementById('leads-table-wrap').classList.remove('hidden');
-    document.getElementById('leads-kanban-wrap').classList.add('hidden');
-    document.getElementById('leads-table-wrap').innerHTML = buildTable(leads, cols, true);
+  const tableWrap  = document.getElementById('leads-table-wrap');
+  const cardsWrap  = document.getElementById('leads-cards-wrap');
+  const kanbanWrap = document.getElementById('leads-kanban-wrap');
+  tableWrap.classList.add('hidden');
+  cardsWrap.classList.add('hidden');
+  kanbanWrap.classList.add('hidden');
+  // keep the view toggle in sync (state.view can be set programmatically)
+  document.querySelectorAll('.view-toggle .toggle-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.view === state.view));
+
+  if (state.view === 'cards') {
+    cardsWrap.classList.remove('hidden');
+    cardsWrap.innerHTML = buildCards(leads);
+  } else if (state.view === 'kanban') {
+    kanbanWrap.classList.remove('hidden');
+    kanbanWrap.innerHTML = buildKanban(leads, true);
   } else {
-    document.getElementById('leads-table-wrap').classList.add('hidden');
-    document.getElementById('leads-kanban-wrap').classList.remove('hidden');
-    document.getElementById('leads-kanban-wrap').innerHTML = buildKanban(leads, true);
+    tableWrap.classList.remove('hidden');
+    tableWrap.innerHTML = buildTable(leads, cols, true);
   }
+}
+
+// A readable, stacked card per lead — far easier than the wide side-by-side
+// table on a phone/tablet. Tap a card to edit.
+function buildCards(leads) {
+  if (!leads.length) return emptyState('No leads match your filters.');
+  const showOwner = state.role === 'admin' || !!state.activeOrgId;
+  const cards = leads.map(l => {
+    const typeCls  = TYPE_CARD_CLASS[l.lead_type] || '';
+    const typeTag  = l.lead_type ? `<span class="lead-card-type">${TYPE_EMOJI[l.lead_type] || ''} ${escHtml(l.lead_type)}</span>` : '';
+    const stageCol = STAGE_COLORS[l.stage] || '#64748b';
+    const c        = (l.contacts && l.contacts[0]) || { person_name: l.person_in_charge, contact: l.contact };
+    const person   = [c.person_name, c.contact].filter(Boolean).map(escHtml).join(' · ');
+    const prod     = l.product ? `${escHtml(l.product)}${l.quantity ? ' · ' + escHtml(l.quantity) : ''}${l.rate ? ' @₹' + escHtml(l.rate) : ''}` : '';
+    const line = (icon, val) => val ? `<div class="lead-card-line"><span>${icon}</span> ${val}</div>` : '';
+    return `
+      <div class="lead-card ${typeCls}" onclick="openEditModal(${l.rowIndex})" tabindex="0"
+           onkeydown="if(event.key==='Enter'){openEditModal(${l.rowIndex})}">
+        <div class="lead-card-head">
+          <div class="lead-card-name">${escHtml(l.factory_name || l.factory_number || '—')}</div>
+          ${typeTag}
+        </div>
+        ${l.factory_number && l.factory_name ? `<div class="lead-card-num">${escHtml(l.factory_number)}</div>` : ''}
+        ${line('👤', person)}
+        ${line('📦', prod)}
+        ${line('📍', escHtml(l.area || ''))}
+        ${line('📅', l.follow_up ? escHtml(l.follow_up) : '')}
+        ${showOwner ? line('🙋', escHtml(l.created_by || '')) : ''}
+        <div class="lead-card-foot">
+          <span class="lead-card-stage" style="--stg:${stageCol}">${escHtml(l.stage || '—')}</span>
+        </div>
+      </div>`;
+  }).join('');
+  return `<div class="lead-cards">${cards}</div>`;
 }
 
 // ============================================================
@@ -3273,11 +3318,16 @@ function wireEvents() {
   document.querySelectorAll('.toggle-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       state.view = btn.dataset.view;
+      localStorage.setItem('crm_leads_view', state.view);   // remember the choice
       document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       renderLeadsView();
     });
   });
+  // Default to the readable Cards view on phones (wide table is hard to scan);
+  // respect a saved preference on any device.
+  const savedView = localStorage.getItem('crm_leads_view');
+  state.view = savedView || (window.innerWidth < 700 ? 'cards' : 'table');
 
   document.querySelectorAll('.pill[data-fu]').forEach(pill => {
     pill.addEventListener('click', () => {
@@ -3371,8 +3421,12 @@ async function switchOrg(id) {
   state.activeOrgId = id || '';
   if (id) { localStorage.setItem('crm_org_id', id); localStorage.setItem('ws_team_id', id); }
   else    { localStorage.removeItem('crm_org_id'); }
+  // Entering a team makes it your default "Save to" for new leads. Switching to
+  // Personal/All-leads leaves the last team destination intact (so an admin can
+  // view everything while new leads still pool into their team).
+  if (id) setLeadDest(id);
   const team = state.myTeams.find(t => String(t.id) === String(id));
-  toast(team ? `Workspace: ${team.name}` : 'Personal workspace');
+  toast(team ? `Workspace: ${team.name} · new leads save here` : 'Personal workspace');
   try {
     await Promise.all([loadLeads(), loadStats()]);
     lastRefreshed = new Date();
@@ -4729,7 +4783,9 @@ async function aiConfirmFromCard(uuid) {
       await apiFetch(`/api/leads/${existingRow}`, { method: 'PUT', body: JSON.stringify(payload) });
       savedId = existingRow;
     } else {
-      const result = await apiFetch('/api/leads', { method: 'POST', body: JSON.stringify(payload) });
+      // Route through createLead so AI-saved leads land in the same "Save to"
+      // team as everything else, instead of always Personal.
+      const result = await createLead(payload);
       savedId = result?.rowIndex;
     }
 
@@ -5331,7 +5387,7 @@ async function commandSend(text) {
   try {
     const data = await apiFetch('/api/ai/command', {
       method: 'POST',
-      body: JSON.stringify({ command: text, teamId: state.activeOrgId || null, preview: true }),
+      body: JSON.stringify({ command: text, teamId: state.activeOrgId || null, destTeamId: getLeadDest() || null, preview: true }),
     });
 
     // FIND is read-only — just show the matches, no confirmation needed.
@@ -5369,7 +5425,7 @@ async function confirmCommand() {
   try {
     const data = await apiFetch('/api/ai/command', {
       method: 'POST',
-      body: JSON.stringify({ command: text, teamId: state.activeOrgId || null }),
+      body: JSON.stringify({ command: text, teamId: state.activeOrgId || null, destTeamId: getLeadDest() || null }),
     });
     let html = cmdHtml(data.message || (data.ok ? '✅ Done' : '⚠️ Could not do that'));
     if (data.action === 'find') html += cmdFindResults(data.results);

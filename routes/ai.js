@@ -566,7 +566,7 @@ Return ONLY JSON:
 const STAGE_BY_NUM = { 0: 'Lost', 1: 'New Lead', 2: 'Sample Required', 3: 'Sample Sent', 4: 'Quotation', 5: 'Negotiation', 6: 'Order Won', 7: 'Repeat Customer' };
 
 router.post('/ai/command', authMiddleware, async (req, res, next) => {
-  const { command, teamId, preview } = req.body || {};
+  const { command, teamId, preview, destTeamId } = req.body || {};
   // preview:true → parse + validate + resolve the target, but DON'T write.
   // The client shows the interpreted action for the user to Confirm or Edit,
   // then re-sends (preview omitted) to actually execute it.
@@ -629,6 +629,13 @@ router.post('/ai/command', authMiddleware, async (req, res, next) => {
         items:            Array.isArray(parsed.items) ? parsed.items : [],
         team_id:          teamId ? parseInt(teamId, 10) : null,
       };
+      // Honor the user's "Save to" default for where the new lead is stored,
+      // but only if they're actually an active member of that team.
+      if (destTeamId) {
+        const actor  = await db.getUserByName(req.user.username).catch(() => null);
+        const member = actor && await db.getTeamMember(parseInt(destTeamId, 10), actor.id).catch(() => null);
+        if (member && member.status === 'active') payload.team_id = parseInt(destTeamId, 10);
+      }
       if (payload.items.length) {
         payload.product  = payload.items[0].product;
         payload.quantity = payload.items[0].quantity;

@@ -220,9 +220,13 @@ router.post('/import/sheet', authMiddleware, async (req, res, next) => {
     res.json({ csv: data });
   } catch (err) {
     const st = err.response && err.response.status;
-    if (st === 401 || st === 403) return res.status(400).json({ error: 'Sheet is private. Share → "Anyone with the link" → Viewer, then try again.' });
     if (st === 404) return res.status(400).json({ error: 'Sheet not found — double-check the link is correct.' });
-    return res.status(400).json({ error: `Could not fetch the sheet (${err.code || st || 'network error'}). Make sure it's shared "Anyone with the link can view".` });
+    // Google returns 400/401/403 on the CSV export when the sheet isn't publicly
+    // readable — by far the most common cause. Give the exact fix.
+    if (st && st >= 400 && st < 500) {
+      return res.status(400).json({ error: `This sheet isn't shared publicly, so Google blocked the download. Fix it in Google Sheets: click Share (top-right) → under "General access" change "Restricted" to "Anyone with the link" → set the role to Viewer → Done. Then paste the link again. (Private sheets return error ${st}.)` });
+    }
+    return res.status(400).json({ error: `Couldn't reach Google Sheets (${err.code || 'network error'}). Please try again in a moment.` });
   }
 });
 

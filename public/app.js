@@ -1073,10 +1073,22 @@ async function populateImportListSelect() {
   if (!row || !sel) return;
   await loadLists();
   const lists = state.myLists || [];
-  if (!lists.length) { row.style.display = 'none'; return; }
+  // Always available now — even with no lists yet, you can create one on import.
   row.style.display = '';
   sel.innerHTML = '<option value="">— None —</option>' +
-    lists.map(l => `<option value="${l.id}">${escHtml(l.name)}</option>`).join('');
+    lists.map(l => `<option value="${l.id}">${escHtml(l.name)}</option>`).join('') +
+    '<option value="__new__">＋ New list…</option>';
+  const inp = document.getElementById('import-new-list-name');
+  if (inp) { inp.style.display = 'none'; inp.value = ''; }
+}
+
+// Reveal the "new list name" box when "＋ New list…" is chosen.
+function onImportListChange(v) {
+  const inp = document.getElementById('import-new-list-name');
+  if (!inp) return;
+  const isNew = v === '__new__';
+  inp.style.display = isNew ? '' : 'none';
+  if (isNew) setTimeout(() => inp.focus(), 0);
 }
 
 async function loadImportAssignees() {
@@ -1180,13 +1192,29 @@ async function runImport() {
   const btn = document.getElementById('import-run-btn');
   btn.disabled = true; btn.textContent = 'Importing…';
   try {
+    // Resolve the target list: an existing one, or create a new one by name.
+    // Create it in the SAME team context the leads are imported into, so the
+    // server accepts it (list + leads share a context).
+    const listSel = document.getElementById('import-list-select');
+    let listId = null;
+    if (listSel && listSel.value === '__new__') {
+      const newName = (document.getElementById('import-new-list-name')?.value || '').trim();
+      if (newName) {
+        const q = getLeadDest() ? ('?teamId=' + encodeURIComponent(getLeadDest())) : '';
+        const created = await apiFetch('/api/lead-lists' + q, { method: 'POST', body: JSON.stringify({ name: newName }) });
+        listId = created?.id || null;
+      }
+    } else if (listSel && listSel.value) {
+      listId = listSel.value;
+    }
+
     const result = await apiFetch('/api/leads/import', {
       method: 'POST',
       body: JSON.stringify({
         leads,
         assign_to: document.getElementById('import-assign-select').value,
         team_id: getLeadDest() || null,   // pool imports into the default team too
-        list_id: document.getElementById('import-list-select')?.value || null,
+        list_id: listId,
       }),
     });
     const skippedHtml = result.skipped.length

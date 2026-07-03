@@ -3,7 +3,6 @@
 const express  = require('express');
 const crypto   = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const { pool } = require('../db');
 const db       = require('../db');
 const rateLimit = require('express-rate-limit');
 const {
@@ -14,7 +13,7 @@ const {
 } = require('@simplewebauthn/server');
 const cache    = require('../cache');
 const {
-  signAccessToken, signToken,
+  signAccessToken, signToken, signGuestToken,
   authMiddleware,
   parseBrowser, parseOS, parseDeviceName, getIP,
 } = require('../middleware/auth');
@@ -180,14 +179,7 @@ router.post('/auth/set-password', authMiddleware, async (req, res, next) => {
 
 // ── POST /api/auth/guest ──────────────────────────────────────
 router.post('/auth/guest', (req, res) => {
-  const JWT_SECRET = process.env.JWT_SECRET || 'crm_default_secret_change_me';
-  const jwt = require('jsonwebtoken');
-  const token = jwt.sign(
-    { sub: 'guest', username: 'Guest', role: 'guest', jti: uuidv4() },
-    JWT_SECRET,
-    { expiresIn: '4h' }
-  );
-  res.json({ accessToken: token, username: 'Guest', role: 'guest' });
+  res.json({ accessToken: signGuestToken(), username: 'Guest', role: 'guest' });
 });
 
 // ── POST /api/auth/refresh ────────────────────────────────────
@@ -198,7 +190,7 @@ router.post('/auth/refresh', async (req, res, next) => {
     const { sessionId, newRaw } = await db.rotateRefreshToken(refreshToken);
     const session = await db.getSessionById(sessionId);
     if (!session || session.revoked) return res.status(401).json({ error: 'Session revoked' });
-    const { rows: [u] } = await pool.query('SELECT * FROM users WHERE id=$1', [session.user_id]);
+    const u = await db.getUserById(session.user_id);
     if (!u) return res.status(401).json({ error: 'User not found' });
     const accessToken = signAccessToken(u.id, u.display_name, u.role, sessionId);
     res.json({ accessToken, refreshToken: newRaw, username: u.display_name, role: u.role });
@@ -244,18 +236,23 @@ router.post('/auth/pin-setup', authMiddleware, async (req, res, next) => {
 });
 
 // ── POST /api/auth/pin-unlock ─────────────────────────────────
-router.post('/auth/pin-unlock', async (req, res, next) => {
+router.post('/auth/pin-unlock', loginLimiter, async (req, res, next) => {
   const { refreshToken, pin, deviceId } = req.body || {};
   if (!refreshToken || !pin || !deviceId) return res.status(400).json({ error: 'refreshToken, pin, and deviceId required' });
   try {
     const { sessionId, newRaw } = await db.rotateRefreshToken(refreshToken);
     const session = await db.getSessionById(sessionId);
     if (!session || session.revoked) return res.status(401).json({ error: 'Session invalid' });
-    const { rows: [u] } = await pool.query('SELECT * FROM users WHERE id=$1', [session.user_id]);
+    const u = await db.getUserById(session.user_id);
     if (!u) return res.status(401).json({ error: 'User not found' });
     const result = await db.verifyDevicePin(u.id, deviceId, pin);
     if (!result.ok) {
-      if (result.reason === 'locked') return res.status(423).json({ error: 'PIN locked. Use password to log in.' });
+      if (result.reason === 'locked') {
+        const mins = result.lockMinutes;
+        return res.status(423).json({ error: mins
+          ? `Too many wrong PINs — locked for ${mins} minutes. Use your password to log in.`
+          : 'PIN locked. Use your password to log in.' });
+      }
       if (result.reason === 'no_pin') return res.status(404).json({ error: 'No PIN set for this device' });
       await db.logSecurity(u.id, 'pin_failed', { attemptsLeft: result.attemptsLeft },
         getIP(req), req.headers['user-agent'] || '', sessionId, deviceId);
@@ -272,15 +269,10 @@ router.post('/auth/pin-check', async (req, res) => {
   const { refreshToken, deviceId } = req.body || {};
   if (!refreshToken || !deviceId) return res.json({ hasPIN: false });
   try {
-    const hash = crypto.createHash('sha256').update(refreshToken).digest('hex');
-    const { rows: [rt] } = await pool.query(
-      `SELECT rt.session_id, s.user_id FROM refresh_tokens rt
-       JOIN sessions s ON s.id = rt.session_id
-       WHERE rt.token_hash=$1 AND NOT rt.used AND rt.expires_at > NOW() AND NOT s.revoked`, [hash]
-    );
+    const rt = await db.getActiveRefreshSession(refreshToken);
     if (!rt) return res.json({ hasPIN: false });
     const hasPIN = await db.hasDevicePin(rt.user_id, deviceId);
-    const { rows: [u] } = await pool.query('SELECT display_name FROM users WHERE id=$1', [rt.user_id]);
+    const u = await db.getUserById(rt.user_id);
     res.json({ hasPIN, username: u?.display_name || '' });
   } catch {
     res.json({ hasPIN: false });
@@ -294,7 +286,7 @@ router.delete('/auth/pin', authMiddleware, async (req, res, next) => {
   try {
     const user = await db.getUserByName(req.user.username);
     if (!user) return res.status(404).json({ error: 'User not found' });
-    await pool.query(`DELETE FROM device_pins WHERE user_id=$1 AND device_id=$2`, [user.id, deviceId]);
+    await db.deleteDevicePin(user.id, deviceId);
     res.json({ success: true });
   } catch (err) { next(err); }
 });
@@ -375,7 +367,7 @@ router.delete('/devices/:id', authMiddleware, async (req, res, next) => {
     const user = await db.getUserByName(req.user.username);
     if (!user) return res.status(404).json({ error: 'Not found' });
     await db.removeDevice(req.params.id, user.id);
-    await pool.query(`UPDATE sessions SET revoked=TRUE WHERE device_id=$1 AND user_id=$2`, [req.params.id, user.id]);
+    await db.revokeSessionsForDevice(req.params.id, user.id);
     await db.logSecurity(user.id, 'device_removed', { deviceId: req.params.id },
       getIP(req), req.headers['user-agent'] || '', req.user.sessionId, req.params.id);
     res.json({ success: true });
@@ -401,6 +393,12 @@ function getWebAuthnConfig(req) {
   const envOrigin = process.env.ORIGIN;
   const envRpId   = process.env.RP_ID;
   if (envOrigin && envRpId) return { origin: envOrigin, rpId: envRpId };
+
+  // In production, prefer explicit config — inferring RP_ID/ORIGIN from request
+  // headers is a dev convenience and can be spoofed. Warn so it gets set.
+  if (process.env.NODE_ENV === 'production') {
+    console.warn('⚠️  RP_ID/ORIGIN not set — inferring WebAuthn config from request headers. Set RP_ID and ORIGIN env vars for reliable biometric login in production.');
+  }
 
   let reqOrigin = (req.headers.origin || '').replace(/\/$/, '');
   if (!reqOrigin && req.headers.referer) {

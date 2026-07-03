@@ -5,7 +5,10 @@ const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const db     = require('../db');
 
-const JWT_SECRET  = process.env.JWT_SECRET || 'crm_default_secret_change_me';
+// In production JWT_SECRET is mandatory (index.js exits at startup if it's
+// missing), so this dev-only fallback never signs a real production token.
+const JWT_SECRET  = process.env.JWT_SECRET ||
+  (process.env.NODE_ENV === 'production' ? '' : 'dev_only_insecure_secret_change_me');
 const ACCESS_TTL  = '15m';
 
 // ── Token helpers ─────────────────────────────────────────────
@@ -19,6 +22,16 @@ function signAccessToken(userId, username, role, sessionId) {
 
 function signToken(username, role) {
   return signAccessToken(0, username, role, null);
+}
+
+// Guest/demo token — longer-lived, no session. Uses the same secret so we don't
+// duplicate the fallback string across files.
+function signGuestToken() {
+  return jwt.sign(
+    { sub: 'guest', username: 'Guest', role: 'guest', jti: uuidv4() },
+    JWT_SECRET,
+    { expiresIn: '4h' }
+  );
 }
 
 function verifyLegacyToken(token) {
@@ -125,7 +138,7 @@ function teamAdminMiddleware(req, res, next) {
 // ── Security fix: validate lead ownership before mutations ────
 async function requireLeadAccess(req, res, next) {
   const leadId = parseInt(req.params.row || req.params.id, 10);
-  if (!leadId) return next();
+  if (!leadId) return res.status(400).json({ error: 'A valid lead id is required' });
   try {
     const lead = await db.getLeadById(leadId);
     if (!lead) return res.status(404).json({ error: 'Lead not found' });
@@ -192,7 +205,7 @@ function requirePermission(code) {
 }
 
 module.exports = {
-  signAccessToken, signToken, verifyAccessToken,
+  signAccessToken, signToken, signGuestToken, verifyAccessToken,
   parseBrowser, parseOS, parseDeviceName, getIP,
   authMiddleware, adminOnly, noGuest,
   teamMemberMiddleware, teamAdminMiddleware,

@@ -5,6 +5,11 @@ const axios    = require('axios');
 const db       = require('../db');
 const { authMiddleware, adminOnly, noGuest, requireLeadAccess } = require('../middleware/auth');
 
+// Lazy accessor for the shared Gemini provider. Required lazily (not at module
+// load) because ai.js already requires THIS module (leadsForRequest) — a static
+// top-level require here would create a load-time cycle and undefine that.
+const getGemini = () => require('./ai').gemini;
+
 const router = express.Router();
 
 const DEMO_LEADS = [
@@ -220,12 +225,72 @@ router.post('/leads/import', authMiddleware, noGuest, async (req, res, next) => 
       if (list && listInContext(list, req.user.username, teamId)) listId = list.id;
     }
 
+    // AI product normalisation: rewrite messy product strings to catalog names
+    // (saving learned aliases), and stash anything still unknown for admin review.
+    // Never blocks the import — on any failure we import the raw strings as-is.
+    let normalized = 0, unmatched = [];
+    try {
+      ({ normalized, unmatched } = await normalizeImportProducts(rows, req.user.username, teamId));
+    } catch (e) { console.warn('[leads] product normalisation skipped:', e && e.message); }
+
     const result = await db.importLeads(rows, defaultCreatedBy, teamId, listId, dest);
-    db.logAiAction(null, 'import', 'file', `${result.added}/${result.total} rows imported → ${dest}`, { skipped: result.skipped.slice(0, 50) },
-      req.user.username, teamId).catch(() => {});
-    res.json(result);
+    db.logAiAction(null, 'import', 'file', `${result.added}/${result.total} rows imported → ${dest}`,
+      { skipped: result.skipped.slice(0, 50), normalized, unmatched },
+      req.user.username, teamId).catch(e => console.warn('[leads] import log failed:', e && e.message));
+    res.json({ ...result, normalized, unmatched });
   } catch (err) { next(err); }
 });
+
+// Resolve rows[].product against the catalog + alias table, then one Gemini call
+// for whatever's left; mutates rows to canonical names in place. Returns
+// { normalized, unmatched:[strings] }. Accepts ONLY catalog names from the AI;
+// truly-unknown strings are kept as-is and saved for admin review.
+async function normalizeImportProducts(rows, username, teamId) {
+  const raws = [...new Set(rows.map(r => String(r.product || '').trim()).filter(Boolean))];
+  if (!raws.length) return { normalized: 0, unmatched: [] };
+
+  const catalog = await db.getProductsForContext(username, teamId);
+  const nameToId = {};
+  for (const p of catalog) nameToId[p.name.toLowerCase()] = p.id;
+  const catalogNames = catalog.map(p => p.name);
+
+  const { resolved, unresolved } = await db.resolveProducts(raws, username, teamId);
+
+  if (unresolved.length && catalogNames.length >= 0) {
+    let ai = null;
+    try { ai = await getGemini().resolveProducts(catalogNames, unresolved); } catch (_) { ai = null; }
+    if (ai && Array.isArray(ai.results)) {
+      const byRaw = {};
+      for (const r of ai.results) if (r && r.raw != null) byRaw[String(r.raw).toLowerCase()] = r;
+      for (const raw of unresolved) {
+        const r = byRaw[raw.toLowerCase()];
+        const map = r && r.map ? String(r.map) : 'unknown';
+        const pid = nameToId[map.toLowerCase()];
+        if (map !== 'unknown' && pid) {                 // AI picked a REAL catalog product
+          const canonical = catalog.find(p => p.id === pid).name;
+          resolved[raw] = canonical;
+          await db.saveAlias(raw, pid, 'ai').catch(e => console.warn('[leads] saveAlias failed:', e && e.message));
+        } else {                                        // still unknown → stash for review
+          await db.upsertSuggestion(raw, (r && r.suggestions) || [], 1)
+            .catch(e => console.warn('[leads] upsertSuggestion failed:', e && e.message));
+        }
+      }
+    }
+  }
+
+  // Rewrite rows to canonical names (case-insensitive), counting real changes.
+  const resolvedLower = {};
+  for (const [raw, canon] of Object.entries(resolved)) resolvedLower[raw.toLowerCase()] = canon;
+  let normalized = 0;
+  for (const r of rows) {
+    const raw = String(r.product || '').trim();
+    if (!raw) continue;
+    const canon = resolvedLower[raw.toLowerCase()];
+    if (canon && canon !== raw) { r.product = canon; normalized++; }
+  }
+  const unmatched = raws.filter(x => !resolvedLower[x.toLowerCase()]);
+  return { normalized, unmatched };
+}
 
 // ── POST /api/import/sheet — fetch a public Google Sheet as CSV ──
 router.post('/import/sheet', authMiddleware, async (req, res, next) => {
@@ -411,6 +476,91 @@ router.delete('/products/:id', authMiddleware, noGuest, async (req, res, next) =
   } catch (err) { next(err); }
 });
 
+// ── Product data clean-up (admin) ────────────────────────────
+// GET /api/products/cleanup-scan — distinct product values NOT matching the
+// catalog/aliases, each with its usage count + AI-proposed fix (one Gemini call).
+router.get('/products/cleanup-scan', authMiddleware, adminOnly, async (req, res, next) => {
+  try {
+    const ctx = await resolveTeamContext(req);
+    if (ctx?.forbidden) return res.status(403).json({ error: 'Not a member of this team' });
+    const teamId = ctx?.teamId || null;
+    const username = req.user.username;
+
+    const distinct = await db.distinctProductValues();                 // [{value, n}]
+    const countByLower = {};
+    for (const d of distinct) countByLower[String(d.value).toLowerCase()] = d.n;
+    const values = distinct.map(d => d.value);
+
+    const { unresolved } = await db.resolveProducts(values, username, teamId);
+    if (!unresolved.length) return res.json({ items: [], model: null });
+
+    const catalog = await db.getProductsForContext(username, teamId);
+    const catalogNames = catalog.map(p => p.name);
+    const nameSet = new Set(catalogNames.map(n => n.toLowerCase()));
+
+    let model = null, byRaw = {};
+    try {
+      const ai = await getGemini().resolveProducts(catalogNames, unresolved);
+      if (ai && Array.isArray(ai.results)) { model = ai.model; for (const r of ai.results) if (r && r.raw != null) byRaw[String(r.raw).toLowerCase()] = r; }
+    } catch (e) { console.warn('[products] cleanup-scan AI failed:', e && e.message); }
+
+    const items = [];
+    for (const raw of unresolved) {
+      const r = byRaw[raw.toLowerCase()] || {};
+      const aiMap = (r.map && r.map !== 'unknown' && nameSet.has(String(r.map).toLowerCase())) ? r.map : null;
+      const suggestions = Array.isArray(r.suggestions) ? r.suggestions.slice(0, 3) : [];
+      await db.upsertSuggestion(raw, suggestions, 0).catch(e => console.warn('[products] upsertSuggestion failed:', e && e.message));
+      items.push({ raw, count: countByLower[raw.toLowerCase()] || 0, aiMap, suggestions });
+    }
+    items.sort((a, b) => b.count - a.count);
+    res.json({ items, model });
+  } catch (err) { next(err); }
+});
+
+// POST /api/products/cleanup-apply { decisions:[{raw, action, productId?, name?, division?}] }
+// action: 'map' (existing product), 'create' (new product), 'keep' (keep raw).
+router.post('/products/cleanup-apply', authMiddleware, adminOnly, async (req, res, next) => {
+  try {
+    const ctx = await resolveTeamContext(req);
+    if (ctx?.forbidden) return res.status(403).json({ error: 'Not a member of this team' });
+    const teamId = ctx?.teamId || null;
+    const username = req.user.username;
+    const decisions = Array.isArray(req.body?.decisions) ? req.body.decisions : [];
+    if (!decisions.length) return res.status(400).json({ error: 'No decisions to apply' });
+
+    let mapped = 0, kept = 0, createdCount = 0, rowsChanged = 0;
+    for (const d of decisions) {
+      const raw = String(d?.raw || '').trim();
+      if (!raw) continue;
+      if (d.action === 'keep') {
+        await db.saveAlias(raw, null, 'keep-original');
+        await db.setSuggestionStatus(raw, 'resolved');
+        kept++;
+      } else if (d.action === 'map') {
+        const p = await db.getProductById(parseInt(d.productId, 10));
+        if (!p) continue;
+        await db.saveAlias(raw, p.id, 'manual');
+        rowsChanged += await db.rewriteProductValue(raw, p.name);
+        await db.setSuggestionStatus(raw, 'resolved');
+        mapped++;
+      } else if (d.action === 'create') {
+        const name = String(d.name || '').trim();
+        if (!name) continue;
+        // reuse an existing catalog product of the same name, else create it
+        const existing = (await db.getProductsForContext(username, teamId)).find(p => p.name.toLowerCase() === name.toLowerCase());
+        const prod = existing || await db.createProduct(name, d.division || '', '', username, teamId);
+        await db.saveAlias(raw, prod.id, 'manual');
+        rowsChanged += await db.rewriteProductValue(raw, prod.name || name);
+        await db.setSuggestionStatus(raw, 'resolved');
+        createdCount++;
+      }
+    }
+    db.logAiAction(null, 'product_cleanup', 'admin', `mapped ${mapped}, created ${createdCount}, kept ${kept}, rows ${rowsChanged}`, {},
+      username, teamId).catch(e => console.warn('[products] cleanup log failed:', e && e.message));
+    res.json({ ok: true, applied: mapped + createdCount + kept, mapped, created: createdCount, kept, rowsChanged });
+  } catch (err) { next(err); }
+});
+
 // ── Team Database (reference bank) actions ───────────────────
 // POST /api/leads/copy-to-working { lead_ids } — pull Database leads into the
 // working sheet. Originals stay in the Database (permanent reference bank).
@@ -475,6 +625,34 @@ router.post('/leads/bulk-fix', authMiddleware, noGuest, async (req, res, next) =
       if (did) changed++;
     }
     res.json({ ok: true, changed, scanned: updates.length });
+  } catch (err) { next(err); }
+});
+
+// POST /api/leads/bulk-delete { lead_ids } — delete multiple leads. Each is
+// only removed if the caller may delete it (global admin, the lead's creator,
+// or a manager of the lead's team). Others are counted as denied, not deleted.
+router.post('/leads/bulk-delete', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const ids = (Array.isArray(req.body?.lead_ids) ? req.body.lead_ids : []).map(Number).filter(Boolean);
+    if (!ids.length) return res.status(400).json({ error: 'No leads selected' });
+    if (ids.length > 1000) return res.status(400).json({ error: 'Too many leads in one delete (max 1000)' });
+    let deleted = 0, denied = 0;
+    for (const id of ids) {
+      const lead = await db.getLeadById(id);
+      if (!lead) continue;
+      let allowed = req.user.role === 'admin' || lead.created_by === req.user.username;
+      if (!allowed && lead.team_id) {
+        const user = await db.getUserByName(req.user.username);
+        const member = user && await db.getTeamMember(lead.team_id, user.id);
+        allowed = !!(member && member.status === 'active' && TEAM_MANAGER_ROLES.includes(member.role));
+      }
+      if (!allowed) { denied++; continue; }
+      await db.deleteLead(id);
+      deleted++;
+    }
+    db.logAiAction(null, 'bulk_delete', 'leads', `${deleted} deleted, ${denied} denied`, {}, req.user.username, null)
+      .catch(e => console.warn('[leads] bulk-delete log failed:', e && e.message));
+    res.json({ ok: true, deleted, denied, requested: ids.length });
   } catch (err) { next(err); }
 });
 

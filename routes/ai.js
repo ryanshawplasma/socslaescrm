@@ -285,6 +285,37 @@ Return ONLY: {"mapping": ["field-or-empty", ...], "notes": ""}`;
     }
     return null;
   }
+
+  // Map messy product strings to the catalog, or "unknown" + 1-3 NEW-product
+  // suggestions. Strict JSON, temperature 0. The AI may only PICK a catalog name
+  // or SUGGEST new ones — it never writes anything itself.
+  async resolveProducts(catalogNames, rawStrings) {
+    const sys = `You clean up product names for an adhesive / chemicals sales business. Output ONLY a single raw JSON object — no markdown, no code fences.
+
+CATALOG — the ONLY valid product names you may use in "map":
+${catalogNames.length ? catalogNames.map(n => '- ' + n).join('\n') : '(the catalog is currently empty)'}
+
+For EACH input string decide:
+- If it clearly refers to one of the catalog products (exact match, an obvious alias, abbreviation, or misspelling), set "map" to that EXACT catalog name, copied verbatim.
+- Otherwise set "map" to "unknown" and propose 1-3 NEW products it could become, each with a short "division" (category). NEVER invent a catalog name in "map".
+
+Return ONLY:
+{"results":[{"raw":"<input string>","map":"<exact catalog name>|unknown","suggestions":[{"name":"<proposed product>","division":"<category>"}]}]}
+Every input string must appear exactly once. Use "suggestions":[] when map is a catalog name.`;
+    const user = `Input strings:\n${(rawStrings || []).map(s => '- ' + s).join('\n')}`;
+    for (const model of this.models) {
+      try {
+        const raw = await this._call(model, sys, [{ text: user }], { maxOutputTokens: 1800, temperature: 0 });
+        const parsed = parseModelJson(raw);
+        if (Array.isArray(parsed.results)) return { results: parsed.results, model };
+      } catch (err) {
+        const code = err.response?.data?.error?.code;
+        if ([400, 404, 429, 503].includes(code)) { console.warn(`⚠️ Gemini resolveProducts ${model} (${code})`); continue; }
+        console.error('Gemini resolveProducts error:', err.response?.data?.error?.message || err.message);
+      }
+    }
+    return null;
+  }
 }
 
 const gemini = new GeminiProvider();

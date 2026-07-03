@@ -10,9 +10,24 @@ const crypto   = require('crypto');
 let _dbUrl = (process.env.DB_URL || '').replace(/([?&])sslmode=[^&]*(&?)/g, (_, pre, post) => post ? pre : '');
 _dbUrl += (_dbUrl.includes('?') ? '&' : '?') + 'uselibpqcompat=true&sslmode=require';
 
+// TLS: when the Aiven CA cert is provided (DB_CA_CERT), verify the server
+// certificate fully (rejectUnauthorized: true). Without it we can only encrypt,
+// not verify — so we keep the connection working but warn loudly. Set DB_CA_CERT
+// (the Aiven project CA, PEM) to enable full verification.
+const _dbCaCert = process.env.DB_CA_CERT;
+let _dbSsl;
+if (_dbCaCert) {
+  _dbSsl = { rejectUnauthorized: true, ca: _dbCaCert };
+} else {
+  if (process.env.NODE_ENV === 'production') {
+    console.warn('⚠️  DB_CA_CERT is not set — the database TLS connection is encrypted but NOT certificate-verified. Set DB_CA_CERT (Aiven CA cert) to enable full verification.');
+  }
+  _dbSsl = { rejectUnauthorized: false };
+}
+
 const pool = new Pool({
   connectionString: _dbUrl,
-  ssl: { rejectUnauthorized: false },
+  ssl: _dbSsl,
   max: 5,
   idleTimeoutMillis: 30000,
 });
@@ -115,15 +130,15 @@ async function initSchema() {
     // Migration: drop the UNIQUE constraint on telegram_user_id so multiple
     // web-registered users (who have no Telegram ID) can coexist.
     // PostgreSQL auto-names the constraint <table>_<col>_key.
-    await client.query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_telegram_user_id_key`).catch(() => {});
+    await client.query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_telegram_user_id_key`).catch(e => console.warn('[db] non-fatal:', e && e.message));
     // Convert any empty-string telegram_user_id to NULL so the partial index works
-    await client.query(`UPDATE users SET telegram_user_id = NULL WHERE telegram_user_id = ''`).catch(() => {});
+    await client.query(`UPDATE users SET telegram_user_id = NULL WHERE telegram_user_id = ''`).catch(e => console.warn('[db] non-fatal:', e && e.message));
     // Partial unique index: only enforce uniqueness for real (non-null) Telegram IDs
     await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS uq_users_telegram_id
       ON users(telegram_user_id)
       WHERE telegram_user_id IS NOT NULL
-    `).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS lead_access (
@@ -196,42 +211,42 @@ async function initSchema() {
     `);
 
     // Add team context columns to leads (safe – idempotent)
-    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS team_id     INTEGER REFERENCES teams(id)`).catch(() => {});
-    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS visibility  TEXT DEFAULT 'team'`).catch(() => {});
-    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS designation TEXT DEFAULT ''`).catch(() => {});
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS team_id     INTEGER REFERENCES teams(id)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS visibility  TEXT DEFAULT 'team'`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS designation TEXT DEFAULT ''`).catch(e => console.warn('[db] non-fatal:', e && e.message));
     // bucket: 'working' = the active pipeline (working sheet); 'database' = the
     // team's separate reference bank / staging pool, hidden from working views.
-    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS bucket      TEXT DEFAULT 'working'`).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_leads_bucket ON leads(bucket)`).catch(() => {});
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS bucket      TEXT DEFAULT 'working'`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_leads_bucket ON leads(bucket)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // ── Auth system tables ─────────────────────────────────────
     // Extend users with email, mobile, lockout fields
-    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT`).catch(() => {});
-    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile TEXT`).catch(() => {});
-    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS default_area TEXT DEFAULT ''`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile TEXT`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS default_area TEXT DEFAULT ''`).catch(e => console.warn('[db] non-fatal:', e && e.message));
     // Real account password (primary credential). PIN becomes device quick-unlock,
     // so it is no longer mandatory at the column level.
-    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT`).catch(() => {});
-    await client.query(`ALTER TABLE users ALTER COLUMN pin_hash DROP NOT NULL`).catch(() => {});
-    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_attempts SMALLINT DEFAULT 0`).catch(() => {});
-    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ`).catch(() => {});
-    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`ALTER TABLE users ALTER COLUMN pin_hash DROP NOT NULL`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_attempts SMALLINT DEFAULT 0`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ`).catch(e => console.warn('[db] non-fatal:', e && e.message));
     // Free-text job title shown on the Team page (e.g. "Regional Manager").
-    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS designation TEXT DEFAULT ''`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS designation TEXT DEFAULT ''`).catch(e => console.warn('[db] non-fatal:', e && e.message));
     // Admin-forced password reset: the account keeps whatever credential it
     // already had (password or PIN) so nobody is locked out, but the next
     // successful login is intercepted by the same blocking "set a password"
     // step used for legacy-PIN migration, before the app becomes usable.
-    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS uq_users_email
       ON users(LOWER(email)) WHERE email IS NOT NULL AND email != ''
-    `).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
     await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS uq_users_mobile
       ON users(mobile) WHERE mobile IS NOT NULL AND mobile != ''
-    `).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // Sessions: one row per active login (any device)
     await client.query(`
@@ -246,9 +261,9 @@ async function initSchema() {
         expires_at     TIMESTAMPTZ NOT NULL,
         revoked        BOOLEAN DEFAULT FALSE
       )
-    `).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id) WHERE NOT revoked`).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_sessions_exp  ON sessions(expires_at)`).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id) WHERE NOT revoked`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_sessions_exp  ON sessions(expires_at)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // Refresh tokens: rotated on every use, family-based reuse detection
     await client.query(`
@@ -261,13 +276,13 @@ async function initSchema() {
         issued_at   TIMESTAMPTZ DEFAULT NOW(),
         expires_at  TIMESTAMPTZ NOT NULL
       )
-    `).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_rt_family ON refresh_tokens(family)`).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rt_family ON refresh_tokens(family)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
     // Timestamp of when a token was marked used — lets rotation tell a genuine
     // replay-attack (an old token resurfacing much later) apart from two
     // legitimate concurrent refresh calls racing on the same still-fresh token
     // (e.g. two apiFetch calls firing together right as the access token expires).
-    await client.query(`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS used_at TIMESTAMPTZ`).catch(() => {});
+    await client.query(`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS used_at TIMESTAMPTZ`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // Trusted devices: "remember me" devices
     await client.query(`
@@ -283,12 +298,12 @@ async function initSchema() {
         trusted_at       TIMESTAMPTZ DEFAULT NOW(),
         last_active_at   TIMESTAMPTZ DEFAULT NOW()
       )
-    `).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_td_user ON trusted_devices(user_id)`).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_td_user ON trusted_devices(user_id)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
     await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_td_fingerprint
       ON trusted_devices(user_id, fingerprint_hash)
-    `).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // Device PINs: quick unlock PIN per (user, device)
     await client.query(`
@@ -303,7 +318,7 @@ async function initSchema() {
         updated_at      TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE(user_id, device_id)
       )
-    `).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // Security audit log
     await client.query(`
@@ -318,8 +333,8 @@ async function initSchema() {
         device_id  TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW()
       )
-    `).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_sl_user ON security_logs(user_id, created_at DESC) WHERE user_id IS NOT NULL`).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_sl_user ON security_logs(user_id, created_at DESC) WHERE user_id IS NOT NULL`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // ── AI Entry Mode tables ───────────────────────────────────
     await client.query(`
@@ -346,7 +361,7 @@ async function initSchema() {
         team_id     INTEGER REFERENCES teams(id) ON DELETE SET NULL,
         created_at  TIMESTAMPTZ DEFAULT NOW()
       )
-    `).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // ── New: Departments (sub-teams within workspace) ──────────
     await client.query(`
@@ -360,8 +375,8 @@ async function initSchema() {
         archived_at  TIMESTAMPTZ,
         UNIQUE(team_id, name)
       )
-    `).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_departments_team ON departments(team_id)`).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_departments_team ON departments(team_id)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS department_members (
@@ -371,7 +386,7 @@ async function initSchema() {
         joined_at     TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE(department_id, user_id)
       )
-    `).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // ── New: Granular permissions ──────────────────────────────
     await client.query(`
@@ -384,8 +399,8 @@ async function initSchema() {
         granted_at      TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE(user_id, team_id, permission_code)
       )
-    `).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_user_perms ON user_permissions(user_id, team_id)`).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_user_perms ON user_permissions(user_id, team_id)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // ── New: Lead activity timeline ────────────────────────────
     await client.query(`
@@ -399,8 +414,8 @@ async function initSchema() {
         performed_by  TEXT NOT NULL,
         created_at    TIMESTAMPTZ DEFAULT NOW()
       )
-    `).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id, created_at DESC)`).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id, created_at DESC)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // ── New: Field-level edit history ──────────────────────────
     await client.query(`
@@ -414,8 +429,8 @@ async function initSchema() {
         new_value   TEXT DEFAULT '',
         team_id     INTEGER
       )
-    `).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_history_lead ON lead_history(lead_id, changed_at DESC)`).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_history_lead ON lead_history(lead_id, changed_at DESC)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // ── New: Personal vocabulary (per-user AI aliases) ─────────
     await client.query(`
@@ -427,7 +442,7 @@ async function initSchema() {
         created_at TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE(user_id, alias)
       )
-    `).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // ── New: Lead share requests (teammates request access) ────
     await client.query(`
@@ -444,9 +459,9 @@ async function initSchema() {
         updated_at  TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE(lead_id, requester)
       )
-    `).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_lsr_owner ON lead_share_requests(owner, status)`).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_lsr_requester ON lead_share_requests(requester)`).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lsr_owner ON lead_share_requests(owner, status)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lsr_requester ON lead_share_requests(requester)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // ── New: AI corrections (learning engine) ──────────────────
     await client.query(`
@@ -461,8 +476,8 @@ async function initSchema() {
         team_id         INTEGER,
         created_at      TIMESTAMPTZ DEFAULT NOW()
       )
-    `).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_ai_corrections_team ON ai_corrections(team_id, created_at DESC)`).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ai_corrections_team ON ai_corrections(team_id, created_at DESC)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // ── Lead lists (tags) — a lead can carry many lists; lists are either
     //    personal (team_id NULL, scoped to owner) or shared across a team.
@@ -475,9 +490,9 @@ async function initSchema() {
         owner      TEXT DEFAULT '',
         created_at TEXT DEFAULT ''
       )
-    `).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_lists_team  ON lead_lists(team_id)`).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_lists_owner ON lead_lists(LOWER(owner))`).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_lists_team  ON lead_lists(team_id)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_lists_owner ON lead_lists(LOWER(owner))`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS lead_list_items (
@@ -485,8 +500,8 @@ async function initSchema() {
         lead_id INTEGER NOT NULL,
         PRIMARY KEY (list_id, lead_id)
       )
-    `).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_list_items_lead ON lead_list_items(lead_id)`).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_list_items_lead ON lead_list_items(lead_id)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // ── Products catalog ("major items") — the canonical product list the team
     //    curates. Each product belongs to a division (category, e.g. Adhesives)
@@ -502,9 +517,38 @@ async function initSchema() {
         owner      TEXT DEFAULT '',
         created_at TEXT DEFAULT ''
       )
-    `).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_products_team  ON products(team_id)`).catch(() => {});
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_products_owner ON products(LOWER(owner))`).catch(() => {});
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_products_team  ON products(team_id)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_products_owner ON products(LOWER(owner))`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+
+    // ── Product aliases — raw import strings mapped to a canonical product.
+    //    source: 'ai' (Gemini matched), 'manual' (admin mapped), 'keep-original'
+    //    (admin chose to keep the raw string; product_id is NULL). raw_text is
+    //    lowercase-unique so a string is only ever decided once.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS product_aliases (
+        id         SERIAL PRIMARY KEY,
+        raw_text   TEXT NOT NULL,
+        product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
+        source     TEXT DEFAULT 'ai',
+        created_at TEXT DEFAULT ''
+      )
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_product_aliases_raw ON product_aliases(LOWER(raw_text))`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+
+    // ── Product suggestions — unmatched strings awaiting an admin decision, with
+    //    the AI's 1-3 proposed new products (JSONB). status: pending/resolved/ignored.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS product_suggestions (
+        id          SERIAL PRIMARY KEY,
+        raw_text    TEXT NOT NULL,
+        suggestions JSONB DEFAULT '[]',
+        count       INTEGER DEFAULT 0,
+        status      TEXT DEFAULT 'pending',
+        created_at  TEXT DEFAULT ''
+      )
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_product_suggestions_raw ON product_suggestions(LOWER(raw_text))`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     console.log('✅ PostgreSQL schema ready');
   } finally {
@@ -513,7 +557,12 @@ async function initSchema() {
 }
 
 // ── READ: all leads with items + contacts ────────────────────
-async function getLeads() {
+// limit/offset are optional — omitting them keeps the original "return every
+// lead" behaviour so existing callers (stats, leadsForRequest) are unchanged.
+async function getLeads(limit = null, offset = 0) {
+  const params = [];
+  let paging = '';
+  if (limit != null) { params.push(Number(limit), Number(offset)); paging = ' LIMIT $1 OFFSET $2'; }
   const { rows } = await pool.query(`
     SELECT
       id AS "rowIndex",
@@ -521,8 +570,8 @@ async function getLeads() {
       product, quantity, rate, stage, follow_up, notes, area,
       lead_type, created_by, assigned_to, last_updated, mapped_stage, stage_number,
       lat, lng, COALESCE(bucket,'working') AS bucket
-    FROM leads ORDER BY id ASC
-  `);
+    FROM leads ORDER BY id ASC${paging}
+  `, params);
 
   const { rows: allItems }    = await pool.query(`SELECT * FROM lead_items    ORDER BY lead_id, id ASC`);
   const { rows: allContacts } = await pool.query(`SELECT * FROM lead_contacts ORDER BY lead_id, id ASC`);
@@ -779,14 +828,14 @@ async function importLeads(rows, defaultCreatedBy, teamId, listId, bucket = 'wor
       await pool.query(
         `INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES ($1,$2,$3,$4)`,
         [newRow.id, String(r.product).trim(), String(r.quantity || '').trim(), String(r.rate || '').trim()]
-      ).catch(() => {});
+      ).catch(e => console.warn('[db] non-fatal:', e && e.message));
     }
 
     if (listId) {
       await pool.query(
         `INSERT INTO lead_list_items (list_id, lead_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
         [listId, newRow.id]
-      ).catch(() => {});
+      ).catch(e => console.warn('[db] non-fatal:', e && e.message));
     }
 
     if (numKey) nums.add(numKey);
@@ -904,13 +953,13 @@ async function copyLeadsToWorking(leadIds, createdBy, teamId) {
       `SELECT product, quantity, rate FROM lead_items WHERE lead_id=$1`, [id]);
     for (const it of items) {
       await pool.query(`INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES ($1,$2,$3,$4)`,
-        [nw.id, it.product || '', it.quantity || '', it.rate || '']).catch(() => {});
+        [nw.id, it.product || '', it.quantity || '', it.rate || '']).catch(e => console.warn('[db] non-fatal:', e && e.message));
     }
     const { rows: contacts } = await pool.query(
       `SELECT person_name, contact, designation FROM lead_contacts WHERE lead_id=$1`, [id]);
     for (const c of contacts) {
       await pool.query(`INSERT INTO lead_contacts (lead_id, person_name, contact, designation) VALUES ($1,$2,$3,$4)`,
-        [nw.id, c.person_name || '', c.contact || '', c.designation || '']).catch(() => {});
+        [nw.id, c.person_name || '', c.contact || '', c.designation || '']).catch(e => console.warn('[db] non-fatal:', e && e.message));
     }
     newIds.push(nw.id);
   }
@@ -1415,6 +1464,9 @@ async function setupDevicePin(userId, deviceId, pin) {
   return { ok: true };
 }
 
+const PIN_LOCK_AT      = 5;    // lock after this many consecutive wrong PINs
+const PIN_HARD_LOCK_AT = 10;   // longer lock after this many
+
 async function verifyDevicePin(userId, deviceId, pin) {
   const { rows } = await pool.query(
     `SELECT * FROM device_pins WHERE user_id = $1 AND device_id = $2`, [userId, deviceId]
@@ -1426,17 +1478,21 @@ async function verifyDevicePin(userId, deviceId, pin) {
   const valid = await bcrypt.compare(String(pin), dp.pin_hash);
   if (!valid) {
     const newAttempts = (dp.failed_attempts || 0) + 1;
-    const lockedUntil = newAttempts >= 10
-      ? `NOW() + interval '1 hour'`
-      : newAttempts >= 5 ? `NOW() + interval '30 minutes'` : null;
-    if (lockedUntil) {
-      await pool.query(`UPDATE device_pins SET failed_attempts=$1, locked_until=${lockedUntil} WHERE id=$2`, [newAttempts, dp.id]);
-    } else {
-      await pool.query(`UPDATE device_pins SET failed_attempts=$1 WHERE id=$2`, [newAttempts, dp.id]);
+    // Lock exactly when the threshold is reached (not one attempt later), and
+    // report it as 'locked' so the message matches the threshold. locked_until
+    // is parameterised — never string-interpolated.
+    const lockMinutes = newAttempts >= PIN_HARD_LOCK_AT ? 60
+      : (newAttempts >= PIN_LOCK_AT ? 30 : 0);
+    if (lockMinutes > 0) {
+      await pool.query(
+        `UPDATE device_pins SET failed_attempts = $1, locked_until = NOW() + make_interval(mins => $2) WHERE id = $3`,
+        [newAttempts, lockMinutes, dp.id]);
+      return { ok: false, reason: 'locked', lockMinutes };
     }
-    return { ok: false, reason: 'wrong_pin', attemptsLeft: Math.max(0, 5 - newAttempts) };
+    await pool.query(`UPDATE device_pins SET failed_attempts = $1 WHERE id = $2`, [newAttempts, dp.id]);
+    return { ok: false, reason: 'wrong_pin', attemptsLeft: Math.max(0, PIN_LOCK_AT - newAttempts) };
   }
-  await pool.query(`UPDATE device_pins SET failed_attempts=0, locked_until=NULL WHERE id=$1`, [dp.id]);
+  await pool.query(`UPDATE device_pins SET failed_attempts = 0, locked_until = NULL WHERE id = $1`, [dp.id]);
   return { ok: true };
 }
 
@@ -1447,6 +1503,33 @@ async function hasDevicePin(userId, deviceId) {
   return rows.length > 0;
 }
 
+// ── Small auth lookups (kept out of the route layer) ─────────
+async function getUserById(id) {
+  const { rows } = await pool.query(`SELECT * FROM users WHERE id = $1`, [id]);
+  return rows[0] || null;
+}
+
+async function deleteDevicePin(userId, deviceId) {
+  await pool.query(`DELETE FROM device_pins WHERE user_id = $1 AND device_id = $2`, [userId, deviceId]);
+  return { ok: true };
+}
+
+async function revokeSessionsForDevice(deviceId, userId) {
+  await pool.query(`UPDATE sessions SET revoked = TRUE WHERE device_id = $1 AND user_id = $2`, [deviceId, userId]);
+  return { ok: true };
+}
+
+// The (unused, unexpired, non-revoked) session behind a raw refresh token —
+// used by pin-check to greet a remembered device without exposing SQL to routes.
+async function getActiveRefreshSession(rawToken) {
+  const { rows } = await pool.query(
+    `SELECT rt.session_id, s.user_id
+       FROM refresh_tokens rt JOIN sessions s ON s.id = rt.session_id
+      WHERE rt.token_hash = $1 AND NOT rt.used AND rt.expires_at > NOW() AND NOT s.revoked`,
+    [sha256(rawToken)]);
+  return rows[0] || null;
+}
+
 // ── Security log ──────────────────────────────────────────────
 async function logSecurity(userId, event, detail, ip, ua, sessionId, deviceId) {
   await pool.query(`
@@ -1455,7 +1538,7 @@ async function logSecurity(userId, event, detail, ip, ua, sessionId, deviceId) {
     [userId || null, event, JSON.stringify(detail || {}),
      (ip || '').slice(0, 100), (ua || '').slice(0, 500),
      sessionId || null, deviceId || null]
-  ).catch(() => {}); // never let logging break the request
+  ).catch(e => console.warn('[db] non-fatal:', e && e.message)); // never let logging break the request
 }
 
 async function getUserSecurityLog(userId, limit = 50) {
@@ -1796,6 +1879,103 @@ async function deleteProduct(id) {
   await pool.query(`DELETE FROM products WHERE id=$1`, [id]);
 }
 
+// ── Product aliases + AI resolution ──────────────────────────
+async function getAliases() {
+  const { rows } = await pool.query(
+    `SELECT a.id, a.raw_text, a.product_id, a.source, p.name AS product_name
+       FROM product_aliases a LEFT JOIN products p ON p.id = a.product_id`);
+  return rows;
+}
+
+// Upsert an alias for a raw string. productId null = "keep original" decision.
+async function saveAlias(rawText, productId, source = 'ai') {
+  const raw = String(rawText || '').trim();
+  if (!raw) return null;
+  const { rows } = await pool.query(
+    `INSERT INTO product_aliases (raw_text, product_id, source, created_at)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (LOWER(raw_text)) DO UPDATE
+       SET product_id = EXCLUDED.product_id, source = EXCLUDED.source
+     RETURNING id`,
+    [raw, productId || null, source, nowIST()]);
+  return rows[0] || null;
+}
+
+// Resolve raw product strings against a context's catalog + the alias table.
+// Returns { resolved: {raw: canonicalName}, unresolved: [raw] }. A 'keep-original'
+// alias resolves to itself (no change, never flagged for review).
+async function resolveProducts(rawStrings, owner, teamId) {
+  const uniq = [...new Set((rawStrings || []).map(s => String(s || '').trim()).filter(Boolean))];
+  const resolved = {}, unresolved = [];
+  if (!uniq.length) return { resolved, unresolved };
+
+  const catalog = await getProductsForContext(owner, teamId);
+  const nameByLower = {};
+  for (const p of catalog) nameByLower[p.name.toLowerCase()] = p.name;
+
+  const { rows: aliases } = await pool.query(
+    `SELECT LOWER(a.raw_text) AS k, a.source, p.name AS product_name
+       FROM product_aliases a LEFT JOIN products p ON p.id = a.product_id`);
+  const aliasByLower = {};
+  for (const a of aliases) aliasByLower[a.k] = a;
+
+  for (const raw of uniq) {
+    const lower = raw.toLowerCase();
+    if (nameByLower[lower]) { resolved[raw] = nameByLower[lower]; continue; }   // already canonical
+    const a = aliasByLower[lower];
+    if (a) {
+      if (a.source === 'keep-original' || !a.product_name) resolved[raw] = raw; // intentionally kept
+      else resolved[raw] = a.product_name;
+      continue;
+    }
+    unresolved.push(raw);
+  }
+  return { resolved, unresolved };
+}
+
+// Rewrite every lead_items.product and leads.product cell matching `raw`
+// (case-insensitive) to the canonical name. Returns rows touched.
+async function rewriteProductValue(raw, canonical) {
+  const r1 = await pool.query(`UPDATE lead_items SET product=$1 WHERE LOWER(product)=LOWER($2)`, [canonical, raw]);
+  const r2 = await pool.query(`UPDATE leads      SET product=$1 WHERE LOWER(product)=LOWER($2)`, [canonical, raw]);
+  return (r1.rowCount || 0) + (r2.rowCount || 0);
+}
+
+// Persist/refresh an unmatched string + its AI suggestions for admin review.
+async function upsertSuggestion(rawText, suggestions, addCount = 0) {
+  const raw = String(rawText || '').trim();
+  if (!raw) return;
+  await pool.query(
+    `INSERT INTO product_suggestions (raw_text, suggestions, count, status, created_at)
+     VALUES ($1,$2,$3,'pending',$4)
+     ON CONFLICT (LOWER(raw_text)) DO UPDATE
+       SET suggestions = EXCLUDED.suggestions,
+           count = product_suggestions.count + EXCLUDED.count,
+           status = CASE WHEN product_suggestions.status='resolved' THEN 'resolved' ELSE 'pending' END`,
+    [raw, JSON.stringify(suggestions || []), addCount, nowIST()]);
+}
+
+async function getPendingSuggestions() {
+  const { rows } = await pool.query(
+    `SELECT raw_text, suggestions, count FROM product_suggestions WHERE status='pending' ORDER BY count DESC, raw_text`);
+  return rows;
+}
+
+async function setSuggestionStatus(rawText, status) {
+  await pool.query(`UPDATE product_suggestions SET status=$1 WHERE LOWER(raw_text)=LOWER($2)`, [status, String(rawText || '')]);
+}
+
+// Distinct product strings currently in use (items + primary), with counts.
+async function distinctProductValues() {
+  const { rows } = await pool.query(`
+    SELECT product AS value, COUNT(*)::int AS n FROM (
+      SELECT product FROM lead_items WHERE COALESCE(product,'') <> ''
+      UNION ALL
+      SELECT product FROM leads WHERE COALESCE(product,'') <> ''
+    ) t GROUP BY product`);
+  return rows;
+}
+
 // Replace a lead's memberships, but only within the given scope of list ids
 // (so tagging in the personal view can't wipe the lead's team tags, or vice-versa).
 async function setLeadListMemberships(leadId, listIds, scopeListIds) {
@@ -1875,7 +2055,7 @@ async function logAiAction(leadId, action, inputType, rawInput, parsedJson, save
     `INSERT INTO ai_audit_log (lead_id, action, input_type, raw_input, parsed_json, saved_by, team_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [leadId || null, action, inputType || 'text', rawInput || '', parsedJson || '{}', savedBy || '', teamId || null]
-  ).catch(() => {});
+  ).catch(e => console.warn('[db] non-fatal:', e && e.message));
 }
 
 // ── Lead security helpers ─────────────────────────────────────
@@ -1958,7 +2138,7 @@ async function logLeadActivity(leadId, teamId, activityType, description, metada
     `INSERT INTO lead_activities (lead_id, team_id, activity_type, description, metadata, performed_by)
      VALUES ($1,$2,$3,$4,$5,$6)`,
     [leadId, teamId || null, activityType, description || '', JSON.stringify(metadata || {}), performedBy]
-  ).catch(() => {});
+  ).catch(e => console.warn('[db] non-fatal:', e && e.message));
 }
 
 async function getLeadActivities(leadId) {
@@ -1976,7 +2156,7 @@ async function logLeadHistory(leadId, changedBy, fieldName, oldValue, newValue, 
     `INSERT INTO lead_history (lead_id, changed_by, field_name, old_value, new_value, team_id)
      VALUES ($1,$2,$3,$4,$5,$6)`,
     [leadId, changedBy, fieldName, String(oldValue ?? ''), String(newValue ?? ''), teamId || null]
-  ).catch(() => {});
+  ).catch(e => console.warn('[db] non-fatal:', e && e.message));
 }
 
 async function getLeadHistory(leadId) {
@@ -2097,7 +2277,7 @@ async function logCorrection(sessionId, fieldName, originalValue, correctedValue
     `INSERT INTO ai_corrections (session_id, field_name, original_value, corrected_value, raw_input, user_id, team_id)
      VALUES ($1,$2,$3,$4,$5,$6,$7)`,
     [sessionId || '', fieldName || '', originalValue || '', correctedValue || '', rawInput || '', userId || null, teamId || null]
-  ).catch(() => {});
+  ).catch(e => console.warn('[db] non-fatal:', e && e.message));
 }
 
 // How many times has this user made this exact correction?
@@ -2205,6 +2385,7 @@ module.exports = {
   issueRefreshToken, rotateRefreshToken,
   trustDevice, getDeviceByFingerprint, getDeviceById, listUserDevices, removeDevice, renameDevice, touchDevice,
   setupDevicePin, verifyDevicePin, hasDevicePin,
+  getUserById, deleteDevicePin, revokeSessionsForDevice, getActiveRefreshSession,
   logSecurity, getUserSecurityLog,
   // AI Entry Mode
   getVocab, addVocab, deleteVocab, logAiAction,
@@ -2212,6 +2393,8 @@ module.exports = {
   getListsForContext, getListById, createList, renameList, deleteList,
   setLeadListMemberships, getListMembershipsForLeads, addLeadsToList,
   getProductsForContext, getProductById, createProduct, updateProduct, deleteProduct,
+  getAliases, saveAlias, resolveProducts, rewriteProductValue,
+  upsertSuggestion, getPendingSuggestions, setSuggestionStatus, distinctProductValues,
   // Lead security
   getLeadById, setLeadVisibility, userHasLeadAccess, getAccessibleLeadIds,
   // Lead share requests

@@ -20,6 +20,7 @@ const state = {
   dbLeads:     [],   // team Database (reference bank) leads
   dbSelected:  new Set(),
   dbSearch:    '',
+  selectedLeads: new Set(),   // bulk-select on the main Leads table
   view:        'table',
   fuFilter:    'overdue',
   sortKey:     '',
@@ -1455,9 +1456,17 @@ async function runImport() {
           result.skipped.slice(0, 12).map(s => `Row ${s.row}: ${escHtml(s.reason)}`).join('<br>')
         }${result.skipped.length > 12 ? `<br>…and ${result.skipped.length - 12} more` : ''}</div>`
       : '';
+    // AI product normalisation summary — "N auto-matched, M need review".
+    const nNorm = result.normalized || 0;
+    const nUnmatched = (result.unmatched || []).length;
+    const normHtml = nNorm ? `<div class="import-norm">✨ ${nNorm} product${nNorm === 1 ? '' : 's'} auto-matched to your catalog</div>` : '';
+    const reviewHtml = nUnmatched
+      ? `<div class="import-review">⚠️ ${nUnmatched} product${nUnmatched === 1 ? '' : 's'} need review${
+          state.role === 'admin' ? ` — <a href="#" onclick="closeImportModal(true); openProductCleanup(); return false;">Fix Product Data →</a>` : ''}</div>`
+      : '';
     document.getElementById('import-result-summary').innerHTML = `
       <div class="import-result-big">✅ Imported <b>${result.added}</b> of ${result.total} leads</div>
-      ${skippedHtml}`;
+      ${normHtml}${reviewHtml}${skippedHtml}`;
     document.getElementById('import-step-map').classList.add('hidden');
     document.getElementById('import-step-done').classList.remove('hidden');
   } catch (err) {
@@ -1503,6 +1512,8 @@ const PAGE_TITLES = {
 
 function navigate(page) {
   state.page = page;
+  // Leaving the Leads table clears the bulk selection + its floating bar.
+  if (page !== 'leads') { state.selectedLeads.clear(); document.getElementById('leads-bulk-bar')?.remove(); }
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   const pageEl = document.getElementById(`page-${page}`);
@@ -1968,7 +1979,7 @@ const TYPE_ROW_CLASS  = { Hot: 'row-hot', Warm: 'row-warm', Cold: 'row-cold' };
 const TYPE_CARD_CLASS = { Hot: 'card-hot', Warm: 'card-warm', Cold: 'card-cold' };
 const TYPE_EMOJI      = { Hot: '🔥', Warm: '🟡', Cold: '🔵' };
 
-function buildTable(leads, cols, actions = true) {
+function buildTable(leads, cols, actions = true, selectable = false) {
   if (!leads.length) return emptyState('No leads found');
 
   const colDefs = {
@@ -1997,9 +2008,17 @@ function buildTable(leads, cols, actions = true) {
     return `<th class="sortable" onclick="sortBy('${c}')">${label}${arrow}</th>`;
   }).join('');
 
+  const allSel = leads.length && leads.every(l => state.selectedLeads.has(Number(l.rowIndex)));
+  const selHead = selectable
+    ? `<th class="sel-col"><input type="checkbox" ${allSel ? 'checked' : ''} onchange="toggleAllLeadsSelect(this.checked)" title="Select all"></th>`
+    : '';
+
   const rows = leads.map(l => {
     const rowClass = TYPE_ROW_CLASS[l.lead_type] || '';
-    const cells = cols.map(c => `<td>${colDefs[c] ? colDefs[c][1](l) : (l[c] || '—')}</td>`).join('');
+    const selCell = selectable
+      ? `<td class="sel-col"><input type="checkbox" class="lead-sel" ${state.selectedLeads.has(Number(l.rowIndex)) ? 'checked' : ''} onchange="toggleLeadSelect(${l.rowIndex}, this.checked)"></td>`
+      : '';
+    const cells = selCell + cols.map(c => `<td>${colDefs[c] ? colDefs[c][1](l) : (l[c] || '—')}</td>`).join('');
     let act = '';
     if (actions && state.role !== 'guest') {
       const canEdit   = state.role === 'admin' || l.can_edit !== false;
@@ -2018,7 +2037,7 @@ function buildTable(leads, cols, actions = true) {
   }).join('');
 
   const actHead = actions ? '<th>Actions</th>' : '';
-  return `<div class="table-scroll"><table class="crm-table"><thead><tr>${heads}${actHead}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  return `<div class="table-scroll"><table class="crm-table"><thead><tr>${selHead}${heads}${actHead}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 // Fallback palette for lists created without an explicit colour
@@ -2518,6 +2537,10 @@ function renderLeadsView() {
   document.querySelectorAll('.view-toggle .toggle-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.view === state.view));
 
+  // Bulk-select is offered on the table view for users who can delete leads.
+  const selectable = canBulkDeleteLeads() && state.view === 'table';
+  if (!selectable && state.selectedLeads.size) state.selectedLeads.clear();
+
   if (state.view === 'cards') {
     cardsWrap.classList.remove('hidden');
     cardsWrap.innerHTML = buildCards(leads);
@@ -2526,7 +2549,78 @@ function renderLeadsView() {
     kanbanWrap.innerHTML = buildKanban(leads, true);
   } else {
     tableWrap.classList.remove('hidden');
-    tableWrap.innerHTML = buildTable(leads, cols, true);
+    // Drop any selected ids no longer in view (filters/search changed).
+    const visible = new Set(leads.map(l => Number(l.rowIndex)));
+    for (const id of [...state.selectedLeads]) if (!visible.has(id)) state.selectedLeads.delete(id);
+    tableWrap.innerHTML = buildTable(leads, cols, true, selectable);
+  }
+  renderBulkBar();
+}
+
+// Only users who can actually delete leads get the select/bulk-delete UI
+// (admins today — matching the per-row "Del" button; the server re-checks).
+function canBulkDeleteLeads() {
+  return state.role === 'admin';
+}
+
+function toggleLeadSelect(id, on) {
+  if (on) state.selectedLeads.add(Number(id)); else state.selectedLeads.delete(Number(id));
+  renderBulkBar();
+  // keep the header "select all" box in sync without a full re-render
+  const shown = filteredLeads().map(l => Number(l.rowIndex));
+  const all = shown.length && shown.every(x => state.selectedLeads.has(x));
+  const head = document.querySelector('#leads-table-wrap .sel-col input');
+  if (head) head.checked = all;
+}
+
+function toggleAllLeadsSelect(on) {
+  const shown = filteredLeads().map(l => Number(l.rowIndex));
+  if (on) shown.forEach(x => state.selectedLeads.add(x));
+  else    shown.forEach(x => state.selectedLeads.delete(x));
+  renderLeadsView();
+}
+
+function clearLeadSelection() {
+  state.selectedLeads.clear();
+  renderLeadsView();
+}
+
+// Floating action bar shown while leads are selected on the table.
+function renderBulkBar() {
+  let bar = document.getElementById('leads-bulk-bar');
+  const n = state.selectedLeads.size;
+  if (!n || !canBulkDeleteLeads() || state.view !== 'table') { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'leads-bulk-bar';
+    bar.className = 'leads-bulk-bar';
+    document.body.appendChild(bar);
+  }
+  bar.innerHTML = `
+    <span class="bulk-count">${n} selected</span>
+    <button class="btn btn-ghost btn-sm" onclick="clearLeadSelection()">Clear</button>
+    <button class="btn btn-danger btn-sm" onclick="bulkDeleteSelected()">🗑 Delete ${n}</button>`;
+}
+
+async function bulkDeleteSelected() {
+  const ids = [...state.selectedLeads];
+  if (!ids.length) return;
+  if (!confirm(`Delete ${ids.length} selected lead${ids.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+  const bar = document.getElementById('leads-bulk-bar');
+  if (bar) bar.querySelectorAll('button').forEach(b => b.disabled = true);
+  try {
+    const res = await apiFetch('/api/leads/bulk-delete' + orgQuery(), {
+      method: 'POST', body: JSON.stringify({ lead_ids: ids }),
+    });
+    state.selectedLeads.clear();
+    await loadLeads();
+    if (state.stats) { try { await loadStats(); } catch (_) {} }
+    renderLeads();
+    const extra = res.denied ? ` (${res.denied} skipped — no permission)` : '';
+    toast(`Deleted ${res.deleted} lead${res.deleted === 1 ? '' : 's'}${extra}`, res.deleted ? 'success' : 'warning');
+  } catch (err) {
+    toast(err.message, 'error');
+    if (bar) bar.querySelectorAll('button').forEach(b => b.disabled = false);
   }
 }
 
@@ -3793,6 +3887,110 @@ async function deleteProductConfirm(id, name) {
     renderProductsManageBody(); populateFilters(); renderLeadsView();
     toast('Product removed');
   } catch (err) { toast(err.message, 'error'); }
+}
+
+// ── Fix Product Data (AI cleanup) — admin ─────────────────────
+var _cleanupItems = [];   // var (not let): hoisted functions below reference it
+function openProductCleanup() {
+  if (state.role !== 'admin') { toast('Admins only', 'warning'); return; }
+  document.getElementById('cleanup-error').textContent = '';
+  document.getElementById('product-cleanup-overlay').classList.remove('hidden');
+  document.getElementById('cleanup-body').innerHTML =
+    '<div class="empty-state" style="padding:24px">Scanning your product data… (asks the AI once)</div>';
+  loadProducts().then(scanProductCleanup);
+}
+function closeProductCleanup() {
+  document.getElementById('product-cleanup-overlay').classList.add('hidden');
+}
+
+async function scanProductCleanup() {
+  const body = document.getElementById('cleanup-body');
+  try {
+    const res = await apiFetch('/api/products/cleanup-scan' + orgQuery());
+    _cleanupItems = res.items || [];
+    renderCleanupBody();
+  } catch (err) {
+    body.innerHTML = emptyState('Could not scan: ' + escHtml(err.message));
+  }
+}
+
+function renderCleanupBody() {
+  const body = document.getElementById('cleanup-body');
+  if (!_cleanupItems.length) {
+    body.innerHTML = '<div class="empty-state" style="padding:24px">🎉 Everything matches your catalog — nothing to fix.</div>';
+    return;
+  }
+  const catalog = state.myProducts || [];
+  const catOptions = catalog.length
+    ? catalog.map(p => `<option value="${p.id}">${escHtml(p.name)}${p.division ? ` (${escHtml(p.division)})` : ''}</option>`).join('')
+    : '<option value="">— no products in catalog —</option>';
+
+  body.innerHTML = _cleanupItems.map((it, i) => {
+    const sugg = (it.suggestions || []).map((s, si) => `
+      <label class="cleanup-opt">
+        <input type="radio" name="cl-${i}" value="create:${si}">
+        <span>Create <b>${escHtml(s.name)}</b>${s.division ? ` <span class="cleanup-div">(${escHtml(s.division)})</span>` : ''} <span class="cleanup-badge">AI</span></span>
+      </label>`).join('');
+    return `<div class="cleanup-card" data-idx="${i}">
+      <div class="cleanup-raw">“${escHtml(it.raw)}” <span class="cleanup-count">${it.count} lead${it.count === 1 ? '' : 's'}</span></div>
+      ${sugg}
+      <label class="cleanup-opt">
+        <input type="radio" name="cl-${i}" value="map">
+        <span>Map to existing: <select class="cleanup-map-sel" onchange="this.closest('.cleanup-card').querySelector('input[value=map]').checked=true">${catOptions}</select></span>
+      </label>
+      <label class="cleanup-opt">
+        <input type="radio" name="cl-${i}" value="keep" checked>
+        <span>Keep original “${escHtml(it.raw)}”</span>
+      </label>
+    </div>`;
+  }).join('');
+
+  // Pre-select the AI's "map to existing" pick where it proposed one.
+  _cleanupItems.forEach((it, i) => {
+    if (!it.aiMap) return;
+    const prod = catalog.find(p => p.name.toLowerCase() === String(it.aiMap).toLowerCase());
+    if (!prod) return;
+    const card = body.querySelector(`.cleanup-card[data-idx="${i}"]`);
+    const sel  = card?.querySelector('.cleanup-map-sel');
+    if (sel) sel.value = String(prod.id);
+    const mapRadio = card?.querySelector('input[value="map"]');
+    if (mapRadio) mapRadio.checked = true;
+  });
+}
+
+async function applyCleanup() {
+  const body = document.getElementById('cleanup-body');
+  const decisions = [];
+  _cleanupItems.forEach((it, i) => {
+    const card = body.querySelector(`.cleanup-card[data-idx="${i}"]`);
+    if (!card) return;
+    const chosen = card.querySelector(`input[name="cl-${i}"]:checked`);
+    const v = chosen ? chosen.value : 'keep';
+    if (v === 'map') {
+      const pid = card.querySelector('.cleanup-map-sel')?.value;
+      decisions.push(pid ? { raw: it.raw, action: 'map', productId: Number(pid) } : { raw: it.raw, action: 'keep' });
+    } else if (v.startsWith('create:')) {
+      const s = it.suggestions[Number(v.split(':')[1])];
+      decisions.push(s ? { raw: it.raw, action: 'create', name: s.name, division: s.division || '' } : { raw: it.raw, action: 'keep' });
+    } else {
+      decisions.push({ raw: it.raw, action: 'keep' });
+    }
+  });
+  const btn = document.getElementById('cleanup-apply-btn');
+  btn.disabled = true; btn.textContent = 'Applying…';
+  try {
+    const res = await apiFetch('/api/products/cleanup-apply' + orgQuery(), {
+      method: 'POST', body: JSON.stringify({ decisions }),
+    });
+    await loadProducts(); await loadLeads();
+    if (state.page === 'leads') { populateFilters(); renderLeadsView(); }
+    closeProductCleanup();
+    toast(`Applied — ${res.mapped} mapped, ${res.created} created, ${res.kept} kept (${res.rowsChanged} leads updated)`);
+  } catch (err) {
+    document.getElementById('cleanup-error').textContent = err.message;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Apply all';
+  }
 }
 
 async function handleFormSubmit(e) {

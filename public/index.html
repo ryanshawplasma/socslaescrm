@@ -17,7 +17,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=25" />
+  <link rel="stylesheet" href="style.css?v=27" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -297,6 +297,26 @@
       <datalist id="division-suggestions"></datalist>
       <p id="products-modal-error" class="login-error" style="margin:6px 0 0"></p>
       <div id="products-manage-body" class="lists-manage-body"></div>
+      <div class="products-cleanup-row admin-only" style="display:none">
+        <button class="btn btn-ghost btn-sm" onclick="closeProductsModal(); openProductCleanup();">🧹 Fix imported product data (AI)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Fix Product Data (AI cleanup) Modal ──────────────────── -->
+  <div id="product-cleanup-overlay" class="hidden">
+    <div id="product-cleanup-modal">
+      <div class="modal-header">
+        <h2>🧹 Fix Product Data</h2>
+        <button class="icon-btn" onclick="closeProductCleanup()">✕</button>
+      </div>
+      <p class="products-modal-hint">These product names don't match your catalog yet. Choose a fix for each — or keep it as-is. <b>Nothing changes until you press Apply.</b></p>
+      <p id="cleanup-error" class="login-error" style="margin:6px 0 0"></p>
+      <div id="cleanup-body"></div>
+      <div class="modal-footer" style="padding:14px 0 0">
+        <button class="btn btn-ghost" onclick="closeProductCleanup()">Cancel</button>
+        <button class="btn btn-primary" id="cleanup-apply-btn" onclick="applyCleanup()">Apply all</button>
+      </div>
     </div>
   </div>
 
@@ -1023,7 +1043,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=21"></script>
+  <script src="app.js?v=24"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:4400, once:true };</script>
   <script src="dive-splash.js"></script>

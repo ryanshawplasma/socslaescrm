@@ -50,31 +50,38 @@
       <div class="login-brand">◈ SalesCRM</div>
       <div class="login-tagline">The CRM that <b>learns how you talk</b> — type, speak or snap a photo.</div>
 
-      <!-- ── PIN Unlock screen (trusted device) ───────────── -->
+      <!-- ── Unlock / Welcome-back screen (trusted device) ──── -->
       <div id="pin-unlock-screen" style="display:none">
         <div class="pin-avatar-wrap">
           <div class="pin-avatar" id="pin-unlock-avatar">?</div>
           <div class="pin-username" id="pin-unlock-name">Welcome back</div>
-          <div class="pin-sub">Enter your unlock PIN</div>
+          <div class="pin-sub" id="pin-unlock-sub">Enter your unlock PIN</div>
         </div>
-        <div class="pin-dots" id="pin-dots">
-          <div class="pin-dot"></div><div class="pin-dot"></div>
-          <div class="pin-dot"></div><div class="pin-dot"></div>
-          <div class="pin-dot"></div><div class="pin-dot"></div>
+        <!-- PIN pad (shown only when this device has a quick-unlock PIN) -->
+        <div id="pin-pad-wrap">
+          <div class="pin-dots" id="pin-dots">
+            <div class="pin-dot"></div><div class="pin-dot"></div>
+            <div class="pin-dot"></div><div class="pin-dot"></div>
+            <div class="pin-dot"></div><div class="pin-dot"></div>
+          </div>
+          <!-- hidden real input for keyboard typing -->
+          <input id="pin-input" type="tel" inputmode="numeric" maxlength="6"
+            oninput="pinInputChanged(this.value)"
+            onkeydown="if(event.key==='Enter')submitPinUnlock()" />
+          <!-- visible numpad for touch -->
+          <div class="pin-numpad" onclick="(function(t){if(t.classList.contains('pin-key')){var i=document.getElementById('pin-input');if(t.dataset.k==='del'){i.value=i.value.slice(0,-1);}else if(i.value.length<6){i.value+=t.dataset.k;}pinInputChanged(i.value);}})(event.target)">
+            <div class="pin-key" data-k="1">1</div><div class="pin-key" data-k="2">2</div><div class="pin-key" data-k="3">3</div>
+            <div class="pin-key" data-k="4">4</div><div class="pin-key" data-k="5">5</div><div class="pin-key" data-k="6">6</div>
+            <div class="pin-key" data-k="7">7</div><div class="pin-key" data-k="8">8</div><div class="pin-key" data-k="9">9</div>
+            <div class="pin-key" data-k="del" style="font-size:13px">⌫</div>
+            <div class="pin-key" data-k="0">0</div>
+            <button id="pin-unlock-btn" class="pin-key" onclick="submitPinUnlock()" style="background:var(--primary);color:#fff;border-color:var(--primary)">→</button>
+          </div>
         </div>
-        <!-- hidden real input for keyboard typing -->
-        <input id="pin-input" type="tel" inputmode="numeric" maxlength="6"
-          oninput="pinInputChanged(this.value)"
-          onkeydown="if(event.key==='Enter')submitPinUnlock()" />
-        <!-- visible numpad for touch -->
-        <div class="pin-numpad" onclick="(function(t){if(t.classList.contains('pin-key')){var i=document.getElementById('pin-input');if(t.dataset.k==='del'){i.value=i.value.slice(0,-1);}else if(i.value.length<6){i.value+=t.dataset.k;}pinInputChanged(i.value);}})(event.target)">
-          <div class="pin-key" data-k="1">1</div><div class="pin-key" data-k="2">2</div><div class="pin-key" data-k="3">3</div>
-          <div class="pin-key" data-k="4">4</div><div class="pin-key" data-k="5">5</div><div class="pin-key" data-k="6">6</div>
-          <div class="pin-key" data-k="7">7</div><div class="pin-key" data-k="8">8</div><div class="pin-key" data-k="9">9</div>
-          <div class="pin-key" data-k="del" style="font-size:13px">⌫</div>
-          <div class="pin-key" data-k="0">0</div>
-          <button id="pin-unlock-btn" class="pin-key" onclick="submitPinUnlock()" style="background:var(--primary);color:#fff;border-color:var(--primary)">→</button>
-        </div>
+        <!-- Continue button (shown when there's no PIN — one tap to open) -->
+        <button type="button" id="pin-unlock-continue" class="btn btn-primary full-width hidden" style="margin-top:8px" onclick="continueRemembered()">Continue →</button>
+        <!-- Biometric (shown when the browser supports it) -->
+        <button type="button" id="pin-unlock-biometric" class="btn btn-biometric full-width hidden" style="margin-top:10px" onclick="loginWithBiometric()">🔐 Use Biometric / Fingerprint</button>
         <p id="pin-error"></p>
         <div class="pin-switch">
           <a href="#" onclick="showLoginPage();return false">Use password instead</a>
@@ -922,9 +929,9 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=7"></script>
+  <script src="app.js?v=8"></script>
 
-  <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:4400, once:false };</script>
+  <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:4400, once:true };</script>
   <script src="dive-splash.js"></script>
 </body>
 </html>

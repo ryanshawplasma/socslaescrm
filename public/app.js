@@ -315,27 +315,19 @@ async function checkAndShowAuth() {
   }
 
   const rt          = localStorage.getItem('crm_refresh_token');
-  const deviceId    = localStorage.getItem('crm_device_id');
   const devicePin   = localStorage.getItem('crm_device_has_pin') === 'true';
   const savedUser   = localStorage.getItem('crm_user');
 
-  if (rt && deviceId && devicePin && savedUser) {
-    // Check with server if PIN still valid for this device
-    try {
-      const res  = await fetch('/api/auth/pin-check', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: rt, deviceId }),
-      });
-      const data = await res.json();
-      if (res.ok && data.hasPIN) {
-        showPinUnlockScreen(data.username || savedUser);
-        return;
-      }
-    } catch (_) {}
+  // Remembered device → always greet the person by name and let them unlock
+  // (PIN / biometric / one-tap continue). We render this instantly from local
+  // state — no blocking network call — so the open never looks blank, and we
+  // never silently drop into the app or the raw login form.
+  if (rt && savedUser) {
+    showPinUnlockScreen(savedUser, devicePin);
+    return;
   }
 
-  // No PIN → try silent refresh
+  // A refresh token but no saved username → try a silent refresh, else login.
   if (rt) {
     const ok = await tryRefreshToken();
     if (ok) {
@@ -350,18 +342,65 @@ async function checkAndShowAuth() {
   showLoginPage();
 }
 
-function showPinUnlockScreen(username) {
-  document.getElementById('pin-unlock-name').textContent   = username || 'Welcome back';
-  document.getElementById('pin-unlock-avatar').textContent = (username || '?')[0].toUpperCase();
-  document.getElementById('pin-dots').innerHTML = '';
-  document.getElementById('pin-input').value   = '';
+function showPinUnlockScreen(username, hasPIN) {
+  const name    = username || 'there';
+  const bioAvail = !!(window.SimpleWebAuthnBrowser && window.SimpleWebAuthnBrowser.browserSupportsWebAuthn
+    && window.SimpleWebAuthnBrowser.browserSupportsWebAuthn());
+
+  document.getElementById('pin-unlock-name').textContent   = 'Welcome back, ' + name;
+  document.getElementById('pin-unlock-avatar').textContent = (name[0] || '?').toUpperCase();
   document.getElementById('pin-error').textContent = '';
+
+  const padWrap = document.getElementById('pin-pad-wrap');
+  const contBtn = document.getElementById('pin-unlock-continue');
+  const bioBtn  = document.getElementById('pin-unlock-biometric');
+  const sub     = document.getElementById('pin-unlock-sub');
+  const input   = document.getElementById('pin-input');
+
+  if (input) input.value = '';
+  pinInputChanged('');   // (re)draw the 6 empty PIN dots
+
+  if (hasPIN) {
+    padWrap.classList.remove('hidden');
+    contBtn.classList.add('hidden');
+    sub.textContent = bioAvail ? 'Enter your PIN, or use biometric' : 'Enter your unlock PIN';
+  } else {
+    padWrap.classList.add('hidden');
+    contBtn.classList.remove('hidden');
+    contBtn.textContent = 'Continue as ' + name + ' →';
+    sub.textContent = bioAvail ? 'Unlock with biometric, or continue' : 'Tap continue to open your account';
+  }
+  bioBtn.classList.toggle('hidden', !bioAvail);
+
   document.getElementById('pin-unlock-screen').style.display = '';
   document.getElementById('login-screen').style.display      = 'none';
   document.getElementById('register-screen').style.display   = 'none';
   document.getElementById('login-overlay').classList.remove('hidden');
   document.getElementById('app').classList.add('hidden');
-  setTimeout(() => document.getElementById('pin-input').focus(), 100);
+  if (hasPIN) setTimeout(() => input && input.focus(), 100);
+}
+
+// One-tap open for a remembered device that has no quick-unlock PIN: silently
+// refresh the session and go straight in. Never leaves the user on a blank
+// screen — on failure it shows an error and the password fallback stays.
+async function continueRemembered() {
+  const btn = document.getElementById('pin-unlock-continue');
+  const err = document.getElementById('pin-error');
+  err.textContent = '';
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Opening…';
+  try {
+    const ok = await tryRefreshToken();
+    if (!ok) throw new Error('Your session has expired — please sign in with your password.');
+    state.role = localStorage.getItem('crm_role') || 'sales';
+    hideLoginPage();
+    await initApp();
+  } catch (e) {
+    err.textContent = e.message || 'Could not open — use your password below.';
+    btn.disabled = false;
+    btn.textContent = label;
+  }
 }
 
 function pinInputChanged(val) {
@@ -2252,7 +2291,7 @@ async function renderTeam() {
     const header = `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
         <span style="font-size:15px;font-weight:600;color:var(--text)">Manage Team (${users.length})</span>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
           <button class="action-btn" title="Force every account to set a new password on next login — existing passwords/PINs still work to sign in, they just can't skip past the new-password step" onclick="requireAllPasswordChange()">🔒 Require Password Change (All)</button>
           <button class="btn btn-primary" style="font-size:13px;padding:6px 14px" onclick="openAddMemberModal()">+ Add Member</button>
         </div>
@@ -3362,8 +3401,11 @@ async function enableBiometric() {
 //  Biometric — Authenticate (called from login screen button)
 // ============================================================
 async function loginWithBiometric() {
-  const btn   = document.getElementById('btn-biometric-login');
-  const errEl = document.getElementById('login-error');
+  // This button lives on both the full login screen and the welcome-back
+  // unlock screen — write status to whichever one is currently visible.
+  const onUnlock = getComputedStyle(document.getElementById('pin-unlock-screen')).display !== 'none';
+  const btn   = document.getElementById(onUnlock ? 'pin-unlock-biometric' : 'btn-biometric-login');
+  const errEl = document.getElementById(onUnlock ? 'pin-error' : 'login-error');
   btn.disabled    = true;
   btn.textContent = '🔐 Waiting for biometric…';
   errEl.textContent = '';

@@ -2323,7 +2323,10 @@ function renderDatabaseTable() {
       <td>${escHtml(l.contact || '—')}</td>
       <td>${prodCell}</td>
       <td>${escHtml(l.area || '—')}</td>
-      <td><button class="action-btn" onclick="copyOneToWorking(${l.rowIndex})" title="Copy into your working leads (stays here too)">→ Copy</button></td>
+      <td><div class="table-actions">
+        <button class="action-btn" onclick="copyOneToWorking(${l.rowIndex})" title="Copy into your working leads (stays here too)">→ Copy</button>
+        <button class="action-btn del" onclick="deleteOneFromDb(${l.rowIndex})" title="Permanently remove this from the Database">Delete</button>
+      </div></td>
     </tr>`;
   }).join('');
 
@@ -2349,11 +2352,17 @@ function toggleDbSelectAll(on) {
   renderDatabaseTable();
 }
 function updateDbCopyBtn() {
-  const btn = document.getElementById('btn-db-copy-selected');
-  if (!btn) return;
   const n = state.dbSelected.size;
-  btn.disabled = !n;
-  btn.textContent = n ? `Copy ${n} selected → Working leads` : 'Copy selected → Working leads';
+  const copyBtn = document.getElementById('btn-db-copy-selected');
+  if (copyBtn) {
+    copyBtn.disabled = !n;
+    copyBtn.textContent = n ? `Copy ${n} selected → Working leads` : 'Copy selected → Working leads';
+  }
+  const delBtn = document.getElementById('btn-db-delete-selected');
+  if (delBtn) {
+    delBtn.disabled = !n;
+    delBtn.textContent = n ? `🗑 Delete ${n} selected` : '🗑 Delete selected';
+  }
 }
 
 async function copyDbLeads(ids) {
@@ -2370,6 +2379,33 @@ async function copyDbLeads(ids) {
 }
 function copyOneToWorking(id) { copyDbLeads([Number(id)]); }
 function copySelectedToWorking() { copyDbLeads([...state.dbSelected]); }
+
+// Permanently remove Database (reference bank) leads — unlike the working
+// sheet's "move to Database", there's no send-back once this runs.
+async function deleteDbLeads(ids) {
+  if (!ids.length) return;
+  if (!confirm(`Permanently delete ${ids.length} lead${ids.length === 1 ? '' : 's'} from the Database? This cannot be undone.`)) return;
+  try {
+    // Batch past the server's 1000-per-request cap so "select all → delete"
+    // works in one click no matter how large the Database is.
+    const CHUNK = 900;
+    let deleted = 0, denied = 0;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const res = await apiFetch('/api/leads/bulk-delete' + orgQuery(), {
+        method: 'POST', body: JSON.stringify({ lead_ids: ids.slice(i, i + CHUNK) }),
+      });
+      deleted += res.deleted || 0;
+      denied  += res.denied  || 0;
+    }
+    state.dbLeads = state.dbLeads.filter(l => !ids.includes(Number(l.rowIndex)));
+    state.dbSelected = new Set();
+    renderDatabaseTable();
+    const extra = denied ? ` (${denied} skipped — no permission)` : '';
+    toast(`Deleted ${deleted} lead${deleted === 1 ? '' : 's'} from the Database${extra}`, deleted ? 'success' : 'warning');
+  } catch (err) { toast(err.message, 'error'); }
+}
+function deleteOneFromDb(id) { deleteDbLeads([Number(id)]); }
+function deleteSelectedFromDb() { deleteDbLeads([...state.dbSelected]); }
 
 // Send a working lead down into the team Database (declutter the working sheet).
 async function moveLeadToDatabase(rowIndex) {
@@ -4278,6 +4314,7 @@ function wireEvents() {
   document.getElementById('btn-cleanup')?.addEventListener('click', cleanupImportedLeads);
   document.getElementById('btn-db-import')?.addEventListener('click', openImportToDatabase);
   document.getElementById('btn-db-copy-selected')?.addEventListener('click', copySelectedToWorking);
+  document.getElementById('btn-db-delete-selected')?.addEventListener('click', deleteSelectedFromDb);
   document.getElementById('db-search')?.addEventListener('input', e => {
     state.dbSearch = e.target.value;
     renderDatabaseTable();

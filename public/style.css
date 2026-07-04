@@ -2,6 +2,10 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
+  /* Tells the browser to render native controls (select dropdown popups,
+     scrollbars, checkboxes) in the light scheme — otherwise the OS defaults
+     the popup list to white/black regardless of our custom dark theme. */
+  color-scheme: light;
   /* Linear (default) — indigo palette */
   --bg:            #F7F7F8;
   --sidebar-bg:    #16161A;
@@ -28,6 +32,7 @@
 
 /* ── Dark Theme (Linear dark — default) ─────────────────── */
 [data-theme="dark"] {
+  color-scheme: dark;
   --bg:            #141414;
   --sidebar-bg:    #0E0E10;
   --card-bg:       #1C1C1E;
@@ -2913,6 +2918,7 @@ tr.row-cold:hover td { background: #dbeafe; }
   background-position: right 10px center;
 }
 .org-switcher select:hover { border-color: var(--primary); }
+.org-switcher select option { background: var(--card-bg); color: var(--text); }
 .org-switcher.hidden { display: none; }
 @media (max-width: 720px) {
   .org-switcher select { max-width: 120px; font-size: 12px; }

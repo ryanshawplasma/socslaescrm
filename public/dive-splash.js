@@ -255,7 +255,7 @@
     function clearTimers() { timers.forEach(clearTimeout); timers = []; }
 
     var BRAND_IN_DELAY = 60;    // let the initial transform paint before transitioning
-    var CTA_SHOW_DELAY = 2500;  // "~2.5s" intro, per spec
+    var CTA_SHOW_DELAY = 1000;  // "~1s" logo intro, then the video takes over
 
     schedule(function () { brand.classList.add('dive-in'); }, BRAND_IN_DELAY);
     schedule(function () {

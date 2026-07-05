@@ -51,7 +51,7 @@ const STAGE_NUMBERS = {
 };
 
 // ── Doughnut center-text plugin ──────────────────────────────
-Chart.register({
+if (typeof Chart !== 'undefined') Chart.register({
   id: 'doughnutCenter',
   afterDatasetsDraw(chart) {
     if (chart.config.type !== 'doughnut') return;
@@ -2190,11 +2190,13 @@ function renderChart(id, type, labels, data, colors, opts = {}) {
   const ctx = document.getElementById(id);
   if (!ctx) return;
   if (state.charts[id]) { state.charts[id].destroy(); delete state.charts[id]; }
+  if (typeof Chart === 'undefined') return; // charting CDN failed to load — skip, don't break the rest of the app
 
   const isHBar    = type === 'hbar';
   const isLine    = type === 'line';
   const chartType = isHBar ? 'bar' : type;
 
+  try {
   state.charts[id] = new Chart(ctx, {
     type: chartType,
     data: {
@@ -2260,6 +2262,7 @@ function renderChart(id, type, labels, data, colors, opts = {}) {
       } : {},
     },
   });
+  } catch (err) { console.error('Chart render failed for ' + id, err); }
 }
 
 // ============================================================

@@ -4002,3 +4002,16 @@ tr.row-cold:hover td { background: #dbeafe; }
     font-size: 16px !important;
   }
 }
+
+/* ── PIN length chooser (4- vs 6-digit) in the setup modal ── */
+.pin-len-choice { display: flex; gap: 8px; margin: 4px 0 14px; }
+.pin-len-btn {
+  flex: 1; padding: 9px 10px; border-radius: 9px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text-muted);
+  font: 600 13px/1 inherit; transition: all var(--transition);
+}
+.pin-len-btn:hover { border-color: var(--primary); color: var(--text); }
+.pin-len-btn.active {
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  border-color: var(--primary); color: var(--primary);
+}

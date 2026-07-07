@@ -433,13 +433,14 @@ function showPinUnlockScreen(username, hasPIN) {
   const sub     = document.getElementById('pin-unlock-sub');
   const input   = document.getElementById('pin-input');
 
-  if (input) input.value = '';
-  pinInputChanged('');   // (re)draw the 6 empty PIN dots
+  if (input) { input.value = ''; input.maxLength = pinUnlockLen(); }
+  pinInputChanged('');   // (re)draw the empty PIN dots at the right count (4 or 6)
 
   if (hasPIN) {
     padWrap.classList.remove('hidden');
     contBtn.classList.add('hidden');
-    sub.textContent = bioAvail ? 'Enter your PIN, or use biometric' : 'Enter your unlock PIN';
+    const digits = pinUnlockLen();
+    sub.textContent = bioAvail ? `Enter your ${digits}-digit PIN, or use biometric` : `Enter your ${digits}-digit PIN`;
   } else {
     padWrap.classList.add('hidden');
     contBtn.classList.remove('hidden');
@@ -484,12 +485,21 @@ async function continueRemembered() {
   }
 }
 
+function pinUnlockLen() {
+  const n = parseInt(localStorage.getItem('crm_pin_len'), 10);
+  return (n === 4 || n === 6) ? n : 6;   // default 6 for older PINs with no stored length
+}
+
 function pinInputChanged(val) {
-  const dots    = document.getElementById('pin-dots');
-  const len     = Math.min(val.length, 6);
-  dots.innerHTML = Array.from({ length: 6 }, (_, i) =>
+  const dots  = document.getElementById('pin-dots');
+  const total = pinUnlockLen();
+  const len   = Math.min(val.length, total);
+  dots.innerHTML = Array.from({ length: total }, (_, i) =>
     `<div class="pin-dot${i < len ? ' filled' : ''}"></div>`
   ).join('');
+  // Seamless: submit automatically the moment the full PIN is entered — no need
+  // to hit the → key. submitPinUnlock guards against a double-submit itself.
+  if (val.length === total && /^\d+$/.test(val)) submitPinUnlock();
 }
 
 async function submitPinUnlock() {
@@ -498,6 +508,7 @@ async function submitPinUnlock() {
   const rt       = localStorage.getItem('crm_refresh_token');
   const errEl    = document.getElementById('pin-error');
   const btn      = document.getElementById('pin-unlock-btn');
+  if (btn.disabled) return;   // already submitting (auto-submit + Enter could race)
   errEl.textContent = '';
   if (!pin || !/^\d{4,6}$/.test(pin)) { errEl.textContent = 'Enter 4–6 digit PIN'; return; }
   btn.disabled = true;
@@ -542,6 +553,9 @@ async function offerDeviceSetup(loginData) {
     localStorage.setItem('crm_device_id',      deviceId);
     localStorage.setItem('crm_device_trusted', 'true');
     localStorage.setItem('crm_device_has_pin', String(hasPIN));
+    // If this account has no PIN on this device, drop any stale length left by a
+    // previous account so the unlock screen never shows the wrong # of boxes.
+    if (!hasPIN) localStorage.removeItem('crm_pin_len');
   }
 
   hideLoginPage();
@@ -561,21 +575,50 @@ async function offerDeviceSetup(loginData) {
 }
 
 // ── PIN Setup modal ───────────────────────────────────────────
+let pinSetupLen = 4;   // user picks 4- or 6-digit; drives maxlength + validation
+
+// Toggle the 4- vs 6-digit choice: update both inputs' maxlength/placeholder and
+// the active button. Clears any partly-typed PIN so it can't exceed the new len.
+function setPinSetupLen(n) {
+  pinSetupLen = n === 6 ? 6 : 4;
+  document.querySelectorAll('#pin-setup-modal .pin-len-btn').forEach(b =>
+    b.classList.toggle('active', Number(b.dataset.len) === pinSetupLen));
+  ['pin-setup-input', 'pin-setup-input2'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.maxLength = pinSetupLen;
+    el.placeholder = pinSetupLen + ' digits';
+    el.value = '';
+  });
+  const err = document.getElementById('pin-setup-error');
+  if (err) err.textContent = '';
+}
+
 function showPinSetupModal(deviceId) {
   const modal = document.getElementById('pin-setup-modal');
   if (!modal) return;
   modal.classList.remove('hidden');
   modal.dataset.deviceId = deviceId || '';
-  // Remember we've offered on this device so we don't nag on the next login.
-  if (deviceId) localStorage.setItem('crm_pin_offered', deviceId);
-  document.getElementById('pin-setup-input').value   = '';
-  document.getElementById('pin-setup-input2').value  = '';
+  // NOTE: we do NOT mark the device as "offered" here — only an explicit "Not
+  // now" (skipPinSetup) or a successful set does. That way an accidental
+  // reload/navigate re-offers next time instead of silently killing the feature
+  // (the reason PIN quick-unlock "never showed up").
+  setPinSetupLen(4);   // default to the simpler 4-digit PIN
   document.getElementById('pin-setup-error').textContent = '';
+  setTimeout(() => document.getElementById('pin-setup-input')?.focus(), 120);
 }
 
 function closePinSetupModal() {
   const modal = document.getElementById('pin-setup-modal');
   if (modal) modal.classList.add('hidden');
+}
+
+// Explicit "Not now" — a deliberate skip, so we remember it and don't re-offer
+// automatically (they can still add one anytime from the account menu).
+function skipPinSetup() {
+  const deviceId = document.getElementById('pin-setup-modal')?.dataset.deviceId;
+  if (deviceId) localStorage.setItem('crm_pin_offered', deviceId);
+  closePinSetupModal();
 }
 
 // Let the user set (or replace) a quick-unlock PIN whenever they want, from the
@@ -602,14 +645,16 @@ async function submitPinSetup() {
   const errEl  = document.getElementById('pin-setup-error');
   const deviceId = document.getElementById('pin-setup-modal').dataset.deviceId;
   errEl.textContent = '';
-  if (!/^\d{4,6}$/.test(pin))  { errEl.textContent = 'PIN must be 4–6 digits'; return; }
+  if (!new RegExp(`^\\d{${pinSetupLen}}$`).test(pin)) { errEl.textContent = `Enter a ${pinSetupLen}-digit PIN`; return; }
   if (pin !== pin2)             { errEl.textContent = 'PINs do not match'; return; }
   try {
-    const res = await apiFetch('/api/auth/pin-setup', {
+    await apiFetch('/api/auth/pin-setup', {
       method: 'POST',
       body: JSON.stringify({ pin, deviceId }),
     });
     localStorage.setItem('crm_device_has_pin', 'true');
+    localStorage.setItem('crm_pin_len', String(pinSetupLen));   // so unlock shows the right # of boxes
+    if (deviceId) localStorage.setItem('crm_pin_offered', deviceId);
     closePinSetupModal();
     updateSecurityButtons();
     toast('Quick-unlock PIN set! Use it next time you open the app.', 'success');

@@ -18,7 +18,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=34" />
+  <link rel="stylesheet" href="style.css?v=35" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -330,19 +330,23 @@
   <div id="pin-setup-modal" class="hidden">
     <div class="pin-setup-box">
       <h3>🔐 Set Quick-Unlock PIN</h3>
-      <p>Set a 4–6 digit PIN for fast access on this device. Your account password is still used on new devices.</p>
+      <p>Set a PIN for fast access on this device — next time you open the app you just tap it in. Your account password is still used on new devices.</p>
+      <div class="pin-len-choice" role="group" aria-label="PIN length">
+        <button type="button" class="pin-len-btn active" data-len="4" onclick="setPinSetupLen(4)">4-digit PIN</button>
+        <button type="button" class="pin-len-btn" data-len="6" onclick="setPinSetupLen(6)">6-digit PIN</button>
+      </div>
       <div class="form-group">
         <label>PIN</label>
-        <input id="pin-setup-input" type="password" placeholder="4–6 digits" inputmode="numeric" maxlength="6" />
+        <input id="pin-setup-input" type="password" placeholder="4 digits" inputmode="numeric" maxlength="4" />
         <div id="pin-setup-strength"></div>
       </div>
       <div class="form-group">
         <label>Confirm PIN</label>
-        <input id="pin-setup-input2" type="password" placeholder="4–6 digits" inputmode="numeric" maxlength="6" />
+        <input id="pin-setup-input2" type="password" placeholder="4 digits" inputmode="numeric" maxlength="4" />
       </div>
       <p id="pin-setup-error" class="login-error"></p>
       <div class="modal-footer" style="padding:0;margin-top:14px">
-        <button type="button" class="btn btn-ghost" onclick="closePinSetupModal()">Skip</button>
+        <button type="button" class="btn btn-ghost" onclick="skipPinSetup()">Not now</button>
         <button type="button" class="btn btn-primary" onclick="submitPinSetup()">Set PIN</button>
       </div>
     </div>
@@ -1050,7 +1054,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=32"></script>
+  <script src="app.js?v=33"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:2600, once:true };</script>
   <script src="dive-splash.js"></script>

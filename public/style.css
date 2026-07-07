@@ -1121,23 +1121,42 @@ html { scrollbar-width: thin; scrollbar-color: var(--text-muted) transparent; }
 
 /* ── Responsive ────────────────────────────────────────── */
 
-/* Tablet (≤ 900px) */
-@media (max-width: 900px) {
+/* ══════════════════════════════════════════════════════════
+   RESPONSIVE TIERS  (rationalised — one breakpoint ladder)
+     Drawer : ≤1024px  → off-canvas sidebar (phones + portrait tablets)
+     Phone  : ≤640px   → compact topbar, stacked grids, bottom-sheet modals
+     Small  : ≤380px   → single-column, tighter spacing
+   Landscape phones (short height) share the Drawer + Phone tiers via the
+   `(max-height: 500px) and (orientation: landscape)` clause on each.
+   ══════════════════════════════════════════════════════════ */
+
+/* ── Tablet & down: reduce grid density (≤ 1024px) ───────── */
+@media (max-width: 1024px) {
   .stat-grid     { grid-template-columns: repeat(2, 1fr); }
   .row-2col      { grid-template-columns: 1fr; }
   .win-loss-grid { grid-template-columns: repeat(2, 1fr); }
   .chart-wrap.tall { height: 240px; }
   .pipeline-summary { flex-wrap: wrap; }
+
+  /* Declutter the topbar so its action cluster never overflows a tablet:
+     drop the desktop-only accent-swatch palette and the "updated Ns ago"
+     label (the ↺ icon stays), let the search compress, and allow the cluster
+     to wrap to a second row on the narrowest tablets instead of clipping the
+     rightmost controls off the edge. */
+  .theme-palette { display: none; }
+  .refresh-label { display: none; }
+  #topbar        { flex-wrap: wrap; height: auto; min-height: var(--topbar-h); row-gap: 8px; }
+  .topbar-right  { flex-wrap: wrap; justify-content: flex-end; }
+  .search-wrap   { flex: 0 1 220px; min-width: 0; }
+  .search-wrap input { width: 100%; min-width: 0; }
 }
 
-/* Mobile — portrait phones (≤ 640px wide) AND landscape phones (short
-   viewport height, regardless of width — a rotated phone can be 800px+
-   wide but it's still a small touch screen, not a desktop/tablet). Without
-   the height clause this whole block — and therefore the off-canvas
-   sidebar/hamburger, full-screen modal, hidden search/export clutter —
-   silently stopped applying the instant a phone was turned sideways. */
-@media (max-width: 640px), (max-height: 500px) and (orientation: landscape) {
-  /* Sidebar — hidden off-screen, slides in */
+/* ── Drawer layout: off-canvas sidebar (≤ 1024px + landscape phone) ──
+   Phones AND portrait tablets get a hamburger-driven drawer so the sidebar
+   never eats a third of the viewport; content spans the full width. The
+   short-landscape clause keeps a rotated phone (800px+ wide) on the drawer
+   too. Above 1024px the sidebar stays inline (collapsible to an icon rail). */
+@media (max-width: 1024px), (max-height: 500px) and (orientation: landscape) {
   #sidebar {
     position: fixed;
     left: calc(-1 * var(--sidebar-w));
@@ -1147,9 +1166,8 @@ html { scrollbar-width: thin; scrollbar-color: var(--text-muted) transparent; }
     transition: left var(--transition);
   }
   #sidebar.open { left: 0; }
-  /* A sidebar left "collapsed" (icon-only) from a prior desktop/landscape
-     session shouldn't reopen as a cramped icon rail on a phone — the drawer
-     should always show full width + labels when the user opens it here. */
+  /* A sidebar left "collapsed" (icon-only) from a >1024px session shouldn't
+     reopen as a cramped icon rail — the drawer always shows full width. */
   #sidebar.collapsed { width: var(--sidebar-w); min-width: var(--sidebar-w); }
   #sidebar.collapsed .brand-text,
   #sidebar.collapsed .nav-label,
@@ -1162,10 +1180,13 @@ html { scrollbar-width: thin; scrollbar-color: var(--text-muted) transparent; }
   #sidebar.collapsed .sidebar-brand,
   #sidebar.collapsed .nav-item,
   #sidebar.collapsed .user-card { justify-content: initial; padding: revert; }
+  /* Content spans the full width once the sidebar is off-canvas */
+  #main { width: 100%; }
+}
 
-  /* Main takes full width */
-  #main { width: 100vw; }
-
+/* Mobile — phone compaction (≤ 640px wide + landscape phone). Sidebar/drawer
+   behaviour lives in the ≤1024px block above; this tier only compacts chrome. */
+@media (max-width: 640px), (max-height: 500px) and (orientation: landscape) {
   /* Topbar — compact */
   #topbar       { padding: 0 12px; gap: 8px; }
   .topbar-right { gap: 6px; }
@@ -3786,4 +3807,58 @@ tr.row-cold:hover td { background: #dbeafe; }
 .cleanup-map-sel {
   padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px;
   font-size: 12.5px; font-family: inherit; background: var(--bg); color: var(--text); max-width: 220px;
+}
+
+/* ══════════════════════════════════════════════════════════
+   RESPONSIVE REBUILD — cross-screen hardening
+   Appended last so these win source-order ties over earlier rules.
+   Goal: nothing clips, nothing overflows, and every tier (small phone →
+   ultrawide) gets a deliberate layout. See the "RESPONSIVE TIERS" ladder
+   above for the breakpoint contract (drawer ≤1024 / phone ≤640 / small ≤380).
+   ══════════════════════════════════════════════════════════ */
+
+/* 1 ─ Tables never get clipped by `body{overflow-x:hidden}`. The Leads/Database
+   tables already scroll inside `.table-scroll`; this gives the dashboard
+   "Recent Leads" table the same treatment so its right-hand columns stay
+   reachable on narrow screens instead of being cut off. */
+#recent-table { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* 2 ─ Fluid type: smoothly scale the KPI numbers + dashboard headline across
+   sizes instead of hard-stepping them, so there are no jarring jumps at a
+   breakpoint edge. clamp() keeps them legible from 320px up to desktop. */
+.stat-value      { font-size: clamp(18px, 4.5vw, 28px); }
+.dash-hero-text h2 { font-size: clamp(18px, 3.2vw, 26px); }
+
+/* 3 ─ Notch / safe-area insets. Matters for notched phones and installed PWAs
+   (status-bar-style is black-translucent, so without these the content can sit
+   under the notch / home indicator). env() resolves to 0 in normal desktop
+   browsers, so this is a no-op there. */
+@supports (padding: max(0px)) {
+  #topbar        { padding-left: max(20px, env(safe-area-inset-left)); padding-right: max(20px, env(safe-area-inset-right)); }
+  #sidebar       { padding-left: env(safe-area-inset-left); }
+  #login-overlay { padding-top: max(20px, env(safe-area-inset-top)); padding-bottom: max(20px, env(safe-area-inset-bottom)); }
+  @media (max-width: 640px), (max-height: 500px) and (orientation: landscape) {
+    #topbar  { padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+    #content { padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+    #modal   { padding-bottom: env(safe-area-inset-bottom); }
+  }
+}
+
+/* 4 ─ Narrow phones (≤ 480px): let the topbar action cluster wrap to a second
+   row rather than overflow off-screen (previously the org switcher + buttons
+   were clipped past the right edge on ~320–380px devices). */
+@media (max-width: 480px) {
+  #topbar { flex-wrap: wrap; height: auto; min-height: var(--topbar-h); padding-top: 8px; padding-bottom: 8px; row-gap: 8px; }
+  .topbar-left  { flex: 1 1 auto; min-width: 0; }
+  .topbar-right { flex: 1 1 100%; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
+  .org-switcher select { max-width: 150px; }
+}
+
+/* 5 ─ Small phones (≤ 380px): guarantee fit + tighten spacing. */
+@media (max-width: 380px) {
+  #content    { padding: 10px; }
+  .stat-grid  { gap: 8px; }
+  .stat-card  { padding: 12px 10px; }
+  #page-title { font-size: 13px; }
+  .btn, #btn-add-lead { padding: 7px 10px; font-size: 12px; }
 }

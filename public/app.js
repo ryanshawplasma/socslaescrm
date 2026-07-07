@@ -4216,11 +4216,20 @@ function initTheme() {
   });
 }
 
+// Matches the CSS "phone" breakpoint (style.css: `@media (max-width: 640px),
+// (max-height: 500px) and (orientation: landscape)`) — a rotated phone can be
+// 800px+ wide but is still a small touch screen, not a desktop/tablet, so the
+// off-canvas drawer + hamburger behavior needs to kick in there too.
+function isPhoneLayout() {
+  return window.innerWidth <= 640 ||
+    (window.innerHeight <= 500 && window.matchMedia('(orientation: landscape)').matches);
+}
+
 function wireEvents() {
   document.querySelectorAll('.nav-item[data-page]').forEach(el => {
     el.addEventListener('click', () => {
       navigate(el.dataset.page);
-      if (window.innerWidth <= 640) {
+      if (isPhoneLayout()) {
         document.getElementById('sidebar').classList.remove('open');
         document.getElementById('sidebar-overlay').classList.remove('visible');
       }
@@ -4236,7 +4245,7 @@ function wireEvents() {
   document.getElementById('sidebar-toggle').addEventListener('click', () => {
     const sidebar = document.getElementById('sidebar');
     const overlay = document.getElementById('sidebar-overlay');
-    if (window.innerWidth <= 640) {
+    if (isPhoneLayout()) {
       sidebar.classList.toggle('open');
       overlay.classList.toggle('visible');
     } else {

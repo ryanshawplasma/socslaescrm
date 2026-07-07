@@ -1097,8 +1097,13 @@ body {
   .pipeline-summary { flex-wrap: wrap; }
 }
 
-/* Mobile (≤ 640px) */
-@media (max-width: 640px) {
+/* Mobile — portrait phones (≤ 640px wide) AND landscape phones (short
+   viewport height, regardless of width — a rotated phone can be 800px+
+   wide but it's still a small touch screen, not a desktop/tablet). Without
+   the height clause this whole block — and therefore the off-canvas
+   sidebar/hamburger, full-screen modal, hidden search/export clutter —
+   silently stopped applying the instant a phone was turned sideways. */
+@media (max-width: 640px), (max-height: 500px) and (orientation: landscape) {
   /* Sidebar — hidden off-screen, slides in */
   #sidebar {
     position: fixed;
@@ -1109,6 +1114,21 @@ body {
     transition: left var(--transition);
   }
   #sidebar.open { left: 0; }
+  /* A sidebar left "collapsed" (icon-only) from a prior desktop/landscape
+     session shouldn't reopen as a cramped icon rail on a phone — the drawer
+     should always show full width + labels when the user opens it here. */
+  #sidebar.collapsed { width: var(--sidebar-w); min-width: var(--sidebar-w); }
+  #sidebar.collapsed .brand-text,
+  #sidebar.collapsed .nav-label,
+  #sidebar.collapsed .nav-pill,
+  #sidebar.collapsed .nav-section,
+  #sidebar.collapsed .user-meta,
+  #sidebar.collapsed .user-card-btn,
+  #sidebar.collapsed .sb-action span,
+  #sidebar.collapsed .sidebar-badge { display: revert; }
+  #sidebar.collapsed .sidebar-brand,
+  #sidebar.collapsed .nav-item,
+  #sidebar.collapsed .user-card { justify-content: initial; padding: revert; }
 
   /* Main takes full width */
   #main { width: 100vw; }

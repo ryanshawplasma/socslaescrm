@@ -1956,7 +1956,12 @@ function clearRoute() {
 function stageBadge(lead) {
   const n     = String(lead.stage_number ?? '');
   const label = lead.stage || '—';
-  return `<span class="badge badge-${n}">${label}</span>`;
+  // Guests (and rows not in the working set) get a static badge; everyone else
+  // gets a one-tap stage changer. stopPropagation so it doesn't also open the
+  // row's lead-detail sheet.
+  if (state.role === 'guest') return `<span class="badge badge-${n}">${label}</span>`;
+  return `<button type="button" class="badge badge-${n} badge-stage" title="Tap to change stage"
+    onclick="event.stopPropagation(); openStagePicker(${lead.rowIndex})">${label}<span class="badge-caret">▾</span></button>`;
 }
 
 // Won / Lost / Active grouping — mirrors getStats() in db.js (won = stage 6/7,
@@ -2018,7 +2023,7 @@ const TYPE_ROW_CLASS  = { Hot: 'row-hot', Warm: 'row-warm', Cold: 'row-cold' };
 const TYPE_CARD_CLASS = { Hot: 'card-hot', Warm: 'card-warm', Cold: 'card-cold' };
 const TYPE_EMOJI      = { Hot: '🔥', Warm: '🟡', Cold: '🔵' };
 
-function buildTable(leads, cols, actions = true, selectable = false) {
+function buildTable(leads, cols, actions = true, selectable = false, rowClickFn = null) {
   if (!leads.length) return emptyState('No leads found');
 
   const colDefs = {
@@ -2055,7 +2060,7 @@ function buildTable(leads, cols, actions = true, selectable = false) {
   const rows = leads.map(l => {
     const rowClass = TYPE_ROW_CLASS[l.lead_type] || '';
     const selCell = selectable
-      ? `<td class="sel-col"><input type="checkbox" class="lead-sel" ${state.selectedLeads.has(Number(l.rowIndex)) ? 'checked' : ''} onchange="toggleLeadSelect(${l.rowIndex}, this.checked)"></td>`
+      ? `<td class="sel-col" onclick="event.stopPropagation()"><input type="checkbox" class="lead-sel" ${state.selectedLeads.has(Number(l.rowIndex)) ? 'checked' : ''} onchange="toggleLeadSelect(${l.rowIndex}, this.checked)"></td>`
       : '';
     const cells = selCell + cols.map(c => `<td>${colDefs[c] ? colDefs[c][1](l) : (l[c] || '—')}</td>`).join('');
     let act = '';
@@ -2068,11 +2073,14 @@ function buildTable(leads, cols, actions = true, selectable = false) {
           : `<button class="action-btn" title="Ask the owner for edit access" onclick="requestLeadAccess(${l.rowIndex})">🔑 Request</button>`,
         canDelete ? `<button class="action-btn del" onclick="confirmDelete(${l.rowIndex}, '${escAttr(l.factory_name || l.factory_number)}')">Del</button>` : '',
       ].filter(Boolean).join('');
-      act = `<td><div class="table-actions">${btns}</div></td>`;
+      act = `<td onclick="event.stopPropagation()"><div class="table-actions">${btns}</div></td>`;
     } else if (actions) {
       act = '<td>—</td>';
     }
-    return `<tr class="${rowClass}">${cells}${act}</tr>`;
+    const rowAttrs = rowClickFn
+      ? ` class="${rowClass} row-clickable" onclick="${rowClickFn}(${l.rowIndex})" tabindex="0" onkeydown="if(event.key==='Enter'){${rowClickFn}(${l.rowIndex})}"`
+      : ` class="${rowClass}"`;
+    return `<tr${rowAttrs}>${cells}${act}</tr>`;
   }).join('');
 
   const actHead = actions ? '<th>Actions</th>' : '';
@@ -2630,7 +2638,7 @@ function renderLeadsView() {
     // Drop any selected ids no longer in view (filters/search changed).
     const visible = new Set(leads.map(l => Number(l.rowIndex)));
     for (const id of [...state.selectedLeads]) if (!visible.has(id)) state.selectedLeads.delete(id);
-    tableWrap.innerHTML = buildTable(leads, cols, true, selectable);
+    tableWrap.innerHTML = buildTable(leads, cols, true, selectable, 'openLeadDetail');
   }
   renderBulkBar();
 }
@@ -2728,8 +2736,8 @@ function buildCards(leads) {
       : '';
     const line = (icon, val) => val ? `<div class="lead-card-line"><span>${icon}</span> ${val}</div>` : '';
     return `
-      <div class="lead-card ${typeCls}" onclick="openEditModal(${l.rowIndex})" tabindex="0"
-           onkeydown="if(event.key==='Enter'){openEditModal(${l.rowIndex})}">
+      <div class="lead-card ${typeCls}" onclick="openLeadDetail(${l.rowIndex})" tabindex="0"
+           onkeydown="if(event.key==='Enter'){openLeadDetail(${l.rowIndex})}">
         <div class="lead-card-head">
           <div class="lead-card-name">${String(l.visibility) === 'private' ? '<span title="Hidden from the team">🙈</span> ' : ''}${escHtml(l.factory_name || l.factory_number || '—')}</div>
           ${typeTag}
@@ -2741,11 +2749,205 @@ function buildCards(leads) {
         ${line('📅', l.follow_up ? escHtml(l.follow_up) : '')}
         ${showOwner ? line('🙋', escHtml(l.created_by || '')) : ''}
         <div class="lead-card-foot">
-          <span class="lead-card-stage" style="--stg:${stageCol}">${escHtml(l.stage || '—')}</span>
+          ${state.role === 'guest'
+            ? `<span class="lead-card-stage" style="--stg:${stageCol}">${escHtml(l.stage || '—')}</span>`
+            : `<button type="button" class="lead-card-stage lead-card-stage-btn" style="--stg:${stageCol}" title="Tap to change stage"
+                 onclick="event.stopPropagation(); openStagePicker(${l.rowIndex})">${escHtml(l.stage || '—')} ▾</button>`}
         </div>
       </div>`;
   }).join('');
   return `<div class="lead-cards">${cards}</div>`;
+}
+
+// ============================================================
+//  Lead detail — tap any lead to see everything at a glance
+//  (read-first; notes are editable inline, stage is one tap to change)
+// ============================================================
+function findLead(rowIndex) {
+  return state.leads.find(x => String(x.rowIndex) === String(rowIndex))
+      || (state.dbLeads || []).find(x => String(x.rowIndex) === String(rowIndex));
+}
+
+function openLeadDetail(rowIndex) {
+  const l = findLead(rowIndex);
+  if (!l) return;
+  closeLeadDetail();
+
+  const canEdit  = state.role !== 'guest' && (state.role === 'admin' || l.can_edit !== false);
+  const contacts = (l.contacts && l.contacts.length)
+    ? l.contacts
+    : ((l.person_in_charge || l.contact) ? [{ person_name: l.person_in_charge, contact: l.contact }] : []);
+  const items = (l.items && l.items.length)
+    ? l.items
+    : (l.product ? [{ product: l.product, quantity: l.quantity, rate: l.rate }] : []);
+
+  const stagePills = Object.keys(STAGE_NUMBERS).map(s => {
+    const col = STAGE_COLORS[s] || '#64748b';
+    const active = l.stage === s;
+    return `<button class="ld-stage-pill ${active ? 'active' : ''}" data-stage="${escAttr(s)}" style="--stg:${col}"
+      ${canEdit ? `onclick="setLeadStage(${l.rowIndex}, '${escAttr(s)}')"` : 'disabled'}>${escHtml(s)}</button>`;
+  }).join('');
+
+  const contactRows = contacts.length ? contacts.map(c => {
+    const name  = escHtml(c.person_name || '—');
+    const desig = c.designation ? `<span class="ld-desig">${escHtml(c.designation)}</span>` : '';
+    const num   = c.contact ? escHtml(c.contact) : '';
+    const tel   = c.contact ? `<a href="tel:${escAttr(c.contact)}" class="ld-tel" onclick="event.stopPropagation()">📞</a>` : '';
+    return `<div class="ld-contact"><span class="ld-c-name">${name}</span>${desig}<span class="ld-c-num">${num}</span>${tel}</div>`;
+  }).join('') : '<div class="ld-empty">No contact added</div>';
+
+  const itemRows = items.length ? items.map(it => {
+    const p = escHtml(it.product || '—');
+    const q = it.quantity ? `<span class="ld-i-q">${escHtml(it.quantity)}</span>` : '';
+    const r = it.rate ? `<span class="ld-i-r">@ ${escHtml(it.rate)}</span>` : '';
+    return `<div class="ld-item"><span class="ld-i-p">${p}</span><span class="ld-i-meta">${q}${r}</span></div>`;
+  }).join('') : '<div class="ld-empty">No products added</div>';
+
+  const notes = l.notes ? escHtml(l.notes) : '';
+  const lists = (l.lists && l.lists.length) ? tagChips(l.lists) : '';
+  const meta  = [
+    l.lead_type ? `<div class="ld-field"><span class="ld-k">Type</span><span class="ld-v">${TYPE_EMOJI[l.lead_type] || ''} ${escHtml(l.lead_type)}</span></div>` : '',
+    l.area      ? `<div class="ld-field"><span class="ld-k">Area</span><span class="ld-v">📍 ${escHtml(l.area)}</span></div>` : '',
+    l.follow_up ? `<div class="ld-field"><span class="ld-k">Follow-up</span><span class="ld-v">📅 ${escHtml(l.follow_up)}</span></div>` : '',
+    l.created_by? `<div class="ld-field"><span class="ld-k">Added by</span><span class="ld-v">${escHtml(l.created_by)}</span></div>` : '',
+  ].filter(Boolean).join('');
+
+  const notesBlock = canEdit
+    ? `<textarea id="ld-notes-input" class="ld-notes-input" placeholder="Add a note for quick reference…">${notes}</textarea>
+       <div class="ld-notes-actions"><button class="btn btn-primary btn-sm ld-notes-save" onclick="saveLeadNotes(${l.rowIndex})">Save note</button></div>`
+    : `<div class="ld-notes-view">${notes || '<span class="ld-empty">No notes</span>'}</div>`;
+
+  const html = `
+  <div class="lead-detail-overlay" id="lead-detail-overlay" onclick="if(event.target===this)closeLeadDetail()">
+    <div class="lead-detail" role="dialog" aria-modal="true" aria-label="Lead details">
+      <div class="ld-head">
+        <div class="ld-title">
+          <div class="ld-name">${String(l.visibility) === 'private' ? '🙈 ' : ''}${escHtml(l.factory_name || l.factory_number || '—')}</div>
+          ${l.factory_number && l.factory_name ? `<div class="ld-num">${escHtml(l.factory_number)}</div>` : ''}
+        </div>
+        <button class="ld-close" onclick="closeLeadDetail()" aria-label="Close">✕</button>
+      </div>
+      <div class="ld-body">
+        <div class="ld-section">
+          <div class="ld-label">Stage${canEdit ? ' <span class="ld-hint">— tap to change</span>' : ''}</div>
+          <div class="ld-stages">${stagePills}</div>
+        </div>
+        ${meta ? `<div class="ld-grid">${meta}</div>` : ''}
+        <div class="ld-section">
+          <div class="ld-label">Contacts</div>
+          ${contactRows}
+        </div>
+        <div class="ld-section">
+          <div class="ld-label">Products</div>
+          ${itemRows}
+        </div>
+        ${lists ? `<div class="ld-section"><div class="ld-label">Lists</div>${lists}</div>` : ''}
+        <div class="ld-section">
+          <div class="ld-label">📝 Notes</div>
+          ${notesBlock}
+        </div>
+      </div>
+      <div class="ld-foot">
+        ${canEdit ? `<button class="btn btn-ghost" onclick="closeLeadDetail(); openEditModal(${l.rowIndex});">✎ Edit full lead</button>` : ''}
+        <button class="btn btn-primary" onclick="closeLeadDetail()">Done</button>
+      </div>
+    </div>
+  </div>`;
+
+  const wrap = document.createElement('div');
+  wrap.innerHTML = html;
+  document.body.appendChild(wrap.firstElementChild);
+  document.addEventListener('keydown', ldEscHandler);
+}
+
+function ldEscHandler(e) { if (e.key === 'Escape') closeLeadDetail(); }
+function closeLeadDetail() {
+  const o = document.getElementById('lead-detail-overlay');
+  if (o) o.remove();
+  document.removeEventListener('keydown', ldEscHandler);
+}
+
+// Update just the active-pill highlight inside an open detail sheet without
+// rebuilding it (so an unsaved note in the textarea isn't lost on a stage tap).
+function refreshLeadDetailStages(activeStage) {
+  const cont = document.querySelector('#lead-detail-overlay .ld-stages');
+  if (!cont) return;
+  cont.querySelectorAll('.ld-stage-pill').forEach(b =>
+    b.classList.toggle('active', b.dataset.stage === activeStage));
+}
+
+// One-tap stage change — optimistic (updates the UI immediately, rolls back on
+// failure). Shared by the detail sheet, the stage picker, and (via updateLead)
+// mirrors the kanban drag path.
+async function setLeadStage(rowIndex, newStage) {
+  const l = state.leads.find(x => String(x.rowIndex) === String(rowIndex));
+  if (!l || l.stage === newStage) return;
+  const prevStage = l.stage, prevNum = l.stage_number;
+  l.stage = newStage;
+  l.stage_number = STAGE_NUMBERS[newStage] ?? '';
+  refreshLeadDetailStages(newStage);
+  renderPage(state.page);
+  try {
+    await updateLead(rowIndex, { ...l });
+    toast(`Stage → ${newStage}`);
+    try { await loadStats(); if (state.page === 'dashboard') renderDashboard(); } catch (_) {}
+  } catch (err) {
+    l.stage = prevStage; l.stage_number = prevNum;   // rollback
+    refreshLeadDetailStages(prevStage);
+    renderPage(state.page);
+    toast('Stage update failed: ' + err.message, 'error');
+  }
+}
+
+async function saveLeadNotes(rowIndex) {
+  const l = state.leads.find(x => String(x.rowIndex) === String(rowIndex));
+  if (!l) return;
+  const ta = document.getElementById('ld-notes-input');
+  if (!ta) return;
+  const val = ta.value;
+  const btn = document.querySelector('#lead-detail-overlay .ld-notes-save');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    await updateLead(rowIndex, { ...l, notes: val });
+    l.notes = val;
+    toast('Note saved');
+    if (btn) { btn.textContent = 'Saved ✓'; setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = 'Save note'; } }, 1200); }
+    renderPage(state.page);
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Save note'; }
+    toast('Could not save note: ' + err.message, 'error');
+  }
+}
+
+// Compact "change stage" sheet opened by tapping a stage badge in any list.
+function openStagePicker(rowIndex) {
+  const l = state.leads.find(x => String(x.rowIndex) === String(rowIndex));
+  if (!l || state.role === 'guest') return;
+  closeStagePicker();
+  const pills = Object.keys(STAGE_NUMBERS).map(s => {
+    const col = STAGE_COLORS[s] || '#64748b';
+    const active = l.stage === s;
+    return `<button class="sp-pill ${active ? 'active' : ''}" style="--stg:${col}"
+      onclick="closeStagePicker(); setLeadStage(${rowIndex}, '${escAttr(s)}');">${escHtml(s)}</button>`;
+  }).join('');
+  const html = `
+  <div class="stage-picker-overlay" id="stage-picker-overlay" onclick="if(event.target===this)closeStagePicker()">
+    <div class="stage-picker" role="dialog" aria-modal="true">
+      <div class="sp-head">Move <b>${escHtml(l.factory_name || l.factory_number || 'lead')}</b> to…</div>
+      <div class="sp-pills">${pills}</div>
+      <button class="btn btn-ghost btn-sm sp-cancel" onclick="closeStagePicker()">Cancel</button>
+    </div>
+  </div>`;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = html;
+  document.body.appendChild(wrap.firstElementChild);
+  document.addEventListener('keydown', spEscHandler);
+}
+function spEscHandler(e) { if (e.key === 'Escape') closeStagePicker(); }
+function closeStagePicker() {
+  const o = document.getElementById('stage-picker-overlay');
+  if (o) o.remove();
+  document.removeEventListener('keydown', spEscHandler);
 }
 
 // ============================================================
@@ -2781,7 +2983,7 @@ function buildKanban(leads, draggable = false) {
           return `
           <div class="kanban-card ${cardClass}"
                ${draggable ? `draggable="true" ondragstart="dragStart(event,${l.rowIndex})"` : ''}
-               onclick="openEditModal(${l.rowIndex})">
+               onclick="openLeadDetail(${l.rowIndex})">
             <div class="kanban-card-name">${l.factory_name || l.factory_number || '—'} ${typeTag}</div>
             <div class="kanban-card-meta">${(() => { const n = leadProductNames(l); return n.length ? escHtml(n.slice(0,2).join(', ')) + (n.length > 2 ? ` +${n.length-2}` : '') : ''; })()}</div>
             ${l.follow_up ? `<div class="kanban-card-meta" style="margin-top:4px">📅 ${l.follow_up}</div>` : ''}

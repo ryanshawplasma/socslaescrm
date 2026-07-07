@@ -959,16 +959,21 @@ async function loadLists() {
 async function loadProducts() {
   try { state.myProducts = await apiFetch('/api/products' + orgQuery()); }
   catch { state.myProducts = []; }
+  _prodDivMapCache = null;   // catalog changed → rebuild the division map lazily
   return state.myProducts;
 }
 
 // Product name → division, built from the team's catalog (case-insensitive).
+// Memoized: filteredLeads() calls this per lead when filtering by division, so
+// rebuilding it every time was O(leads × catalog). Invalidated in loadProducts.
+let _prodDivMapCache = null;
 function productDivisionMap() {
+  if (_prodDivMapCache) return _prodDivMapCache;
   const m = {};
   for (const p of (state.myProducts || [])) {
     if (p.name) m[p.name.toLowerCase()] = p.division || '';
   }
-  return m;
+  return (_prodDivMapCache = m);
 }
 // Distinct divisions defined in the catalog, sorted.
 function catalogDivisions() {
@@ -1039,6 +1044,8 @@ async function deleteLead(row) { return apiFetch(`/api/leads/${row}`, { method: 
 let autoRefreshTimer = null;
 let lastRefreshed    = null;
 let refreshLabelTimer = null;
+let _leadsSearchDebounce = null;   // debounce timers for the search inputs
+let _dbSearchDebounce    = null;
 
 function startAutoRefresh() {
   // Only re-render pages that are actually built from the working leads/stats we
@@ -1050,7 +1057,12 @@ function startAutoRefresh() {
     try {
       await Promise.all([loadLeads(), loadStats()]);
       lastRefreshed = new Date();
-      if (LIVE_PAGES.includes(state.page)) renderPage(state.page);
+      // Don't re-render out from under the user mid-interaction: skip while a
+      // modal / lead-detail / stage-picker is open or the search box is focused.
+      const busy = document.querySelector(
+        '#modal-overlay:not(.hidden), #lead-detail-overlay, #stage-picker-overlay, #products-modal:not(.hidden)')
+        || document.activeElement === document.getElementById('global-search');
+      if (LIVE_PAGES.includes(state.page) && !busy) renderPage(state.page);
     } catch (_) {}
   }, 60000);
 
@@ -2275,8 +2287,14 @@ function renderDashboard() {
 function renderChart(id, type, labels, data, colors, opts = {}) {
   const ctx = document.getElementById(id);
   if (!ctx) return;
-  if (state.charts[id]) { state.charts[id].destroy(); delete state.charts[id]; }
   if (typeof Chart === 'undefined') return; // charting CDN failed to load — skip, don't break the rest of the app
+
+  // Skip the expensive destroy+recreate when nothing changed (e.g. a 60s
+  // auto-refresh that returned identical numbers) — keep the existing chart.
+  const sig = JSON.stringify([type, labels, data, colors, opts.centerText || null, opts.label || null]);
+  const existing = state.charts[id];
+  if (existing && existing.__sig === sig) return;
+  if (existing) { existing.destroy(); delete state.charts[id]; }
 
   const isHBar    = type === 'hbar';
   const isLine    = type === 'line';
@@ -2348,6 +2366,7 @@ function renderChart(id, type, labels, data, colors, opts = {}) {
       } : {},
     },
   });
+  if (state.charts[id]) state.charts[id].__sig = sig;   // remember for skip-when-unchanged
   } catch (err) { console.error('Chart render failed for ' + id, err); }
 }
 
@@ -4548,7 +4567,11 @@ function wireEvents() {
 
   document.getElementById('global-search').addEventListener('input', e => {
     state.search = e.target.value;
-    if (state.page === 'leads') renderLeadsView();
+    // Debounce: re-render once the user pauses, not on every keystroke (a full
+    // list rebuild per key froze large datasets).
+    if (state.page !== 'leads') return;
+    clearTimeout(_leadsSearchDebounce);
+    _leadsSearchDebounce = setTimeout(renderLeadsView, 200);
   });
 
   document.getElementById('btn-add-lead').addEventListener('click', () => {
@@ -4617,7 +4640,8 @@ function wireEvents() {
   document.getElementById('btn-db-delete-selected')?.addEventListener('click', deleteSelectedFromDb);
   document.getElementById('db-search')?.addEventListener('input', e => {
     state.dbSearch = e.target.value;
-    renderDatabaseTable();
+    clearTimeout(_dbSearchDebounce);
+    _dbSearchDebounce = setTimeout(renderDatabaseTable, 200);
   });
 
   document.querySelectorAll('.toggle-btn').forEach(btn => {

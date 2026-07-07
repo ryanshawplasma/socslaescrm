@@ -3988,3 +3988,17 @@ tr.row-cold:hover td { background: #dbeafe; }
     padding-bottom: max(18px, env(safe-area-inset-bottom)); }
   .ld-grid { grid-template-columns: 1fr; }
 }
+
+/* ══════════════════════════════════════════════════════════
+   iOS focus-zoom guard — Mobile Safari auto-zooms the page whenever a
+   focused text control has font-size < 16px. Many controls here are 12–14px,
+   so tapping a field jumps/zooms the layout. Force text controls to 16px on
+   phones (still a fine touch size); desktop keeps its compact sizes.
+   ══════════════════════════════════════════════════════════ */
+@media (max-width: 640px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}

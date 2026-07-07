@@ -933,6 +933,9 @@ body {
 
 .toast-msg.success { border-left: 3px solid var(--success); }
 .toast-msg.error   { border-left: 3px solid var(--danger); }
+/* Dark theme: lift the toast off the near-black page so it stays legible
+   (the default #1e293b slate reads as invisible against the dark background). */
+[data-theme="dark"] .toast-msg { background: #2a2a2e; color: #ebebef; }
 
 @keyframes slideUp {
   from { opacity: 0; transform: translateY(12px); }
@@ -952,6 +955,28 @@ body {
 /* ── Misc ──────────────────────────────────────────────── */
 .hidden { display: none !important; }
 .link-sm { font-size: 12.5px; color: var(--primary); cursor: pointer; text-decoration: none; }
+
+/* ── Global interaction polish ─────────────────────────────
+   Consistent keyboard focus rings (mouse clicks stay ring-free thanks to
+   :focus-visible), a clear disabled affordance, and a thin themed scrollbar
+   on Firefox to match the app's ::-webkit-scrollbar styling. */
+button:focus-visible,
+a:focus-visible,
+.nav-item:focus-visible,
+.toggle-btn:focus-visible,
+.pill:focus-visible,
+.action-btn:focus-visible,
+.icon-btn:focus-visible,
+.stat-clickable:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+button:disabled,
+.btn:disabled,
+.btn.disabled,
+.action-btn:disabled { cursor: not-allowed; }
+html { scrollbar-width: thin; scrollbar-color: var(--text-muted) transparent; }
 
 .win-loss-grid {
   display: grid;
@@ -989,8 +1014,12 @@ body {
   justify-content: center;
   z-index: 9000;
   padding: 20px;
+  transition: opacity .32s ease;
 }
 #login-overlay.hidden { display: none; }
+/* Dissolve the auth overlay away to reveal the app underneath (set just before
+   .hidden is applied) so sign-in resolves into the app instead of hard-cutting. */
+#login-overlay.fade-out { opacity: 0; pointer-events: none; }
 
 #login-box {
   background: #fff;
@@ -1076,15 +1105,19 @@ body {
 @media (max-width: 640px) { .theme-palette { display: none; } }
 
 /* ── Sidebar overlay (mobile) ──────────────────────────── */
+/* Fades in/out (opacity + visibility) rather than snapping via display, so the
+   drawer scrim animates in sync with the sidebar's slide transition. */
 #sidebar-overlay {
-  display: none;
   position: fixed;
   inset: 0;
   background: rgba(0,0,0,.5);
   z-index: 99;
   backdrop-filter: blur(2px);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--transition), visibility var(--transition);
 }
-#sidebar-overlay.visible { display: block; }
+#sidebar-overlay.visible { opacity: 1; visibility: visible; }
 
 /* ── Responsive ────────────────────────────────────────── */
 
@@ -2121,7 +2154,11 @@ tr.row-cold:hover td { background: #dbeafe; }
 .remember-row input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
 
 /* ── PIN unlock screen ────────────────────────────────────── */
-#pin-unlock-screen { animation: fadeInUp .25s ease; }
+/* All three auth panels animate in identically so switching login ↔ register ↔
+   PIN-unlock feels like one cohesive surface rather than instant hard swaps. */
+#pin-unlock-screen,
+#login-screen,
+#register-screen { animation: fadeInUp .25s ease; }
 
 .pin-avatar-wrap {
   display: flex; flex-direction: column; align-items: center; gap: 10px;

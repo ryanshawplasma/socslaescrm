@@ -227,7 +227,9 @@ function showLoginPage() {
   document.getElementById('pin-unlock-screen').style.display = 'none';
   document.getElementById('login-screen').style.display      = '';
   document.getElementById('register-screen').style.display   = 'none';
-  document.getElementById('login-overlay').classList.remove('hidden');
+  const overlay = document.getElementById('login-overlay');
+  overlay.classList.remove('fade-out');   // clear any leftover dissolve state
+  overlay.classList.remove('hidden');
   document.getElementById('app').classList.add('hidden');
   // Prefill last-used username for a faster sign-in
   const lastUser = localStorage.getItem('crm_last_user');
@@ -262,9 +264,19 @@ function shakeError(el) {
 }
 
 function hideLoginPage() {
-  document.getElementById('login-overlay').classList.add('hidden');
-  document.getElementById('app').classList.remove('hidden');
+  const overlay = document.getElementById('login-overlay');
+  const app     = document.getElementById('app');
+  app.classList.remove('hidden');
   applyRoleUI();
+  // Reveal the app underneath, then dissolve the overlay over it (rather than a
+  // hard display:none cut). Guarded so a missing/already-hidden overlay is a
+  // no-op. During the launch splash this runs invisibly beneath the splash.
+  if (overlay.classList.contains('hidden')) return;
+  overlay.classList.add('fade-out');
+  setTimeout(() => {
+    overlay.classList.add('hidden');
+    overlay.classList.remove('fade-out');
+  }, 340);
 }
 
 function applyRoleUI() {
@@ -679,6 +691,7 @@ function showRegisterScreen(e) {
   document.getElementById('login-screen').style.display    = 'none';
   document.getElementById('register-screen').style.display = '';
   document.getElementById('register-error').textContent    = '';
+  setTimeout(() => document.getElementById('reg-name')?.focus(), 60);
 }
 
 function showLoginScreen(e) {
@@ -686,6 +699,7 @@ function showLoginScreen(e) {
   document.getElementById('register-screen').style.display = 'none';
   document.getElementById('login-screen').style.display    = '';
   document.getElementById('login-error').textContent       = '';
+  setTimeout(() => document.getElementById('login-username')?.focus(), 60);
 }
 
 function getUsernameFormatError(v) {

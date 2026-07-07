@@ -48,6 +48,22 @@
   --shadow-md:     0 16px 44px -8px rgba(0,0,0,.7);
 }
 
+/* ── Dropdowns — flat native arrow replaced with a themed chevron so every
+   <select> matches the rest of the UI instead of looking like a stock OS
+   control. !important is needed because plenty of existing rules set their
+   own `background`/`padding` shorthand at higher specificity, which would
+   otherwise silently reset background-image back to `none`. ─────────────── */
+select {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238b949e' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 10px center !important;
+  padding-right: 28px !important;
+}
+select option { background: var(--card-bg); color: var(--text); }
+
 /* ── Midnight accent (electric blue / navy) ─────────────── */
 [data-accent="midnight"] {
   --primary:       #4361EE;

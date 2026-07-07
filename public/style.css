@@ -4015,3 +4015,47 @@ tr.row-cold:hover td { background: #dbeafe; }
   background: color-mix(in srgb, var(--primary) 14%, transparent);
   border-color: var(--primary); color: var(--primary);
 }
+
+/* ══════════════════════════════════════════════════════════
+   MOBILE BOTTOM NAV — thumb-reachable primary actions (phones only).
+   Hidden on tablet/desktop (they use the sidebar/drawer). The center
+   "+" is a raised FAB like Instagram's compose button.
+   ══════════════════════════════════════════════════════════ */
+#bottom-nav { display: none; }
+
+@media (max-width: 640px) {
+  #bottom-nav {
+    display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 150;
+    align-items: stretch; justify-content: space-around;
+    background: var(--card-bg); border-top: 1px solid var(--border);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    box-shadow: 0 -2px 14px rgba(0,0,0,.07);
+  }
+  .bn-item {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px; border: none; background: transparent; color: var(--text-muted); cursor: pointer;
+    padding: 8px 0 6px; min-height: 56px; font: 600 10px/1 inherit;
+    -webkit-tap-highlight-color: transparent; transition: color var(--transition);
+  }
+  .bn-item svg { width: 22px; height: 22px; }
+  .bn-item.active { color: var(--primary); }
+  .bn-item:active { color: var(--text); }
+
+  .bn-add {
+    flex: 0 0 auto; align-self: center; width: 52px; height: 52px; margin-top: -18px;
+    border-radius: 50%; border: 3px solid var(--card-bg); cursor: pointer;
+    background: linear-gradient(135deg, var(--primary), var(--primary-lt));
+    color: var(--primary-fg); display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 8px 18px -5px color-mix(in srgb, var(--primary) 60%, transparent), 0 2px 6px rgba(0,0,0,.2);
+    -webkit-tap-highlight-color: transparent; transition: transform var(--transition);
+  }
+  .bn-add svg { width: 26px; height: 26px; }
+  .bn-add:active { transform: scale(.93); }
+
+  /* Clear space so content + floating bars aren't hidden behind the nav. */
+  #content            { padding-bottom: calc(66px + env(safe-area-inset-bottom, 0px)); }
+  #content.chat-mode  { padding-bottom: 0; }   /* chat has its own fixed composer */
+  .leads-bulk-bar     { bottom: calc(76px + env(safe-area-inset-bottom, 0px)); }
+  /* The topbar +Add is redundant now the bottom bar has a prominent one. */
+  #btn-add-lead       { display: none; }
+}

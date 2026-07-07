@@ -1650,13 +1650,17 @@ function navigate(page) {
   // Leaving the Leads table clears the bulk selection + its floating bar.
   if (page !== 'leads') { state.selectedLeads.clear(); document.getElementById('leads-bulk-bar')?.remove(); }
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.querySelectorAll('.nav-item, #bottom-nav .bn-item').forEach(n => n.classList.remove('active'));
   const pageEl = document.getElementById(`page-${page}`);
   if (pageEl) pageEl.classList.add('active');
-  document.querySelector(`[data-page="${page}"]`)?.classList.add('active');
+  document.querySelector(`.nav-item[data-page="${page}"]`)?.classList.add('active');
+  document.querySelector(`#bottom-nav .bn-item[data-page="${page}"]`)?.classList.add('active');
   document.getElementById('page-title').textContent = PAGE_TITLES[page] || page;
   // Chat page needs edge-to-edge layout (no content padding)
   document.getElementById('content')?.classList.toggle('chat-mode', page === 'chat');
+  // The chat page has its own fixed composer at the bottom — hide the mobile
+  // bottom nav there so the two don't stack/overlap.
+  document.getElementById('bottom-nav')?.classList.toggle('hidden', page === 'chat');
   applyChatViewport();
   renderPage(page);
 }
@@ -4592,6 +4596,19 @@ function wireEvents() {
     el.addEventListener('click', e => {
       if (el.tagName === 'A') { e.preventDefault(); navigate(el.dataset.page); }
     });
+  });
+
+  // Mobile bottom nav — thumb-reachable primary actions (phones only).
+  document.querySelectorAll('#bottom-nav .bn-item[data-page]').forEach(el => {
+    el.addEventListener('click', () => navigate(el.dataset.page));
+  });
+  document.getElementById('bn-add')?.addEventListener('click', () => {
+    if (state.aiMode && state.aiMode[state.page]) document.getElementById(`ai-input-${state.page}`)?.focus();
+    else openAddModal();
+  });
+  document.getElementById('bn-more')?.addEventListener('click', () => {
+    document.getElementById('sidebar').classList.add('open');
+    document.getElementById('sidebar-overlay').classList.add('visible');
   });
 
   document.getElementById('sidebar-toggle').addEventListener('click', () => {

@@ -1041,11 +1041,16 @@ let lastRefreshed    = null;
 let refreshLabelTimer = null;
 
 function startAutoRefresh() {
+  // Only re-render pages that are actually built from the working leads/stats we
+  // reload here. Pages that self-fetch (database) or are static/heavy (map, team,
+  // workspace, chat, ai-debug) must NOT be re-rendered on the timer — doing so
+  // flashes a loading state and wipes scroll/selection ("the table jumps").
+  const LIVE_PAGES = ['dashboard', 'leads', 'pipeline', 'followups', 'reports'];
   autoRefreshTimer = setInterval(async () => {
     try {
       await Promise.all([loadLeads(), loadStats()]);
       lastRefreshed = new Date();
-      renderPage(state.page);
+      if (LIVE_PAGES.includes(state.page)) renderPage(state.page);
     } catch (_) {}
   }, 60000);
 
@@ -1434,6 +1439,29 @@ function normImportProduct(v) {
   return '';
 }
 
+// A single import cell can list several products ("Latex, Hotmelt", "R6 / Toluene",
+// "PU + Silicon"). Split on multi-value delimiters (but NOT plain spaces, so
+// two-word names like "Rubber Adhesive" / "PU Adhesive" stay intact), normalise
+// each part to a catalog/canonical name, and return the DISTINCT list — so every
+// product ends up in items[] instead of the whole cell collapsing to just the
+// first match.
+function normImportProducts(v) {
+  const raw = tidyProductText(v);
+  if (!raw) return [];
+  const parts = raw.split(/\s*[,;/|+\n]\s*|\s+&\s+|\s+and\s+/i).map(s => s.trim()).filter(Boolean);
+  const source = parts.length ? parts : [raw];
+  const out = [], seen = new Set();
+  for (const part of source) {
+    const canon = normImportProduct(part) || tidyProductText(part);
+    if (!canon) continue;
+    const key = canon.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(canon);
+  }
+  return out;
+}
+
 async function runImport() {
   const { headers, rows, mapping } = _import;
   const errEl = document.getElementById('import-map-error');
@@ -1445,6 +1473,7 @@ async function runImport() {
 
   const leads = rows.map(r => {
     const obj = {};
+    let products = null;
     mapping.forEach((field, i) => {
       if (!field) return;
       const val = String(r[i] ?? '').trim();
@@ -1452,12 +1481,22 @@ async function runImport() {
       if (field === 'follow_up')      obj.follow_up = normImportDate(val);
       else if (field === 'lead_type') obj.lead_type = normImportLeadType(val) || val;
       else if (field === 'stage')     Object.assign(obj, normImportStage(val));
-      else if (field === 'product')   obj.product = normImportProduct(val) || tidyProductText(val);
+      else if (field === 'product')   { products = normImportProducts(val); obj.product = products[0] || tidyProductText(val); }
       // Proper-Case messy name/area data on the way in (codes & numbers untouched).
       else if (field === 'factory_name' || field === 'person_in_charge' || field === 'area')
         obj[field] = toProperCase(val);
       else obj[field] = val;
     });
+    // Multi-product cell → one item per product so ALL of them are captured, not
+    // just the first. The single quantity/rate columns attach to the primary
+    // product; obj.product stays the first (legacy single-product field + dedupe).
+    if (products && products.length > 1) {
+      obj.items = products.map((p, idx) => ({
+        product:  p,
+        quantity: idx === 0 ? (obj.quantity || '') : '',
+        rate:     idx === 0 ? (obj.rate || '')     : '',
+      }));
+    }
     return obj;
   }).filter(o => Object.keys(o).length);
 
@@ -2327,7 +2366,10 @@ function renderLeads() {
 // ============================================================
 async function renderDatabase() {
   const wrap = document.getElementById('db-table-wrap');
-  if (wrap) wrap.innerHTML = '<div class="empty-state" style="padding:26px">Loading the Database…</div>';
+  // Only show the "Loading…" placeholder on the FIRST load — on a re-open/refresh
+  // keep the current table on screen so it never flashes/jumps under the user.
+  const firstLoad = !state.dbLeads.length;
+  if (wrap && firstLoad) wrap.innerHTML = '<div class="empty-state" style="padding:26px">Loading the Database…</div>';
   try {
     const q = 'bucket=database' + (state.activeOrgId ? '&teamId=' + encodeURIComponent(state.activeOrgId) : '');
     state.dbLeads = await apiFetch('/api/leads?' + q);
@@ -2336,7 +2378,9 @@ async function renderDatabase() {
     if (wrap) wrap.innerHTML = emptyState('Could not load the Database: ' + escHtml(err.message));
     return;
   }
-  state.dbSelected = new Set();
+  // Keep any selection that still exists (don't wipe it on a refresh).
+  const stillHere = new Set(state.dbLeads.map(l => Number(l.rowIndex)));
+  for (const id of [...state.dbSelected]) if (!stillHere.has(id)) state.dbSelected.delete(id);
   renderDatabaseTable();
 }
 
@@ -2381,13 +2425,13 @@ function renderDatabaseTable() {
   }).join('');
 
   const allChecked = leads.length && leads.every(l => state.dbSelected.has(Number(l.rowIndex)));
-  wrap.innerHTML = `<table class="crm-table">
+  wrap.innerHTML = `<div class="table-scroll"><table class="crm-table">
     <thead><tr>
       <th class="db-check-col"><input type="checkbox" ${allChecked ? 'checked' : ''} onchange="toggleDbSelectAll(this.checked)"></th>
       <th>#</th><th>Factory</th><th>Person</th><th>Contact</th><th>Product</th><th>Area</th><th></th>
     </tr></thead>
     <tbody>${rows}</tbody>
-  </table>`;
+  </table></div>`;
   updateDbCopyBtn();
 }
 

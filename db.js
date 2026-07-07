@@ -824,10 +824,19 @@ async function importLeads(rows, defaultCreatedBy, teamId, listId, bucket = 'wor
       dest,
     ]);
 
-    if (r.product) {
+    // Persist every product as its own line item. A multi-product import row
+    // arrives with items[] (one per product); a single-product row falls back to
+    // the flat product/quantity/rate columns. Either way each item becomes a
+    // lead_items row so the multi-product display/filters see all of them.
+    const importItems = Array.isArray(r.items) && r.items.length
+      ? r.items
+      : (r.product ? [{ product: r.product, quantity: r.quantity, rate: r.rate }] : []);
+    for (const it of importItems) {
+      const p = String((it && it.product) || '').trim();
+      if (!p) continue;
       await pool.query(
         `INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES ($1,$2,$3,$4)`,
-        [newRow.id, String(r.product).trim(), String(r.quantity || '').trim(), String(r.rate || '').trim()]
+        [newRow.id, p, String((it && it.quantity) || '').trim(), String((it && it.rate) || '').trim()]
       ).catch(e => console.warn('[db] non-fatal:', e && e.message));
     }
 

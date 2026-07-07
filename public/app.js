@@ -294,6 +294,29 @@ function applyRoleUI() {
   }
 }
 
+// Wipe every account-scoped localStorage key + in-memory state field so the
+// next login on this device/tab (a different person, or the same person
+// re-authenticating) can never inherit a leftover workspace, team, or lead
+// destination from the account that was just signed out. Without this, since
+// logout/switch-account never reloads the page, `state.activeOrgId` — which
+// applyDefaultWorkspace() only sets when *empty* — would silently keep
+// pointing at the previous account's team for the entire next session.
+function resetAccountScopedState() {
+  localStorage.removeItem('crm_org_id');
+  localStorage.removeItem('ws_team_id');
+  localStorage.removeItem('crm_lead_dest');
+  localStorage.removeItem('crm_default_area');
+  state.activeOrgId  = '';
+  state.myTeams      = [];
+  state.leads        = [];
+  state.dbLeads      = [];
+  state.stats        = null;
+  state.myLists      = [];
+  state.myProducts   = [];
+  state.selectedLeads.clear();
+  state.dbSelected.clear();
+}
+
 async function logout() {
   clearInterval(autoRefreshTimer);
   // Tell server to revoke session (best-effort)
@@ -306,6 +329,7 @@ async function logout() {
   localStorage.removeItem('crm_user');
   localStorage.removeItem('crm_user_id');
   localStorage.removeItem('crm_session_id');
+  resetAccountScopedState();
   state.role = null;
   showLoginPage();
 }
@@ -320,6 +344,7 @@ function switchAccount() {
   localStorage.removeItem('crm_device_trusted');
   localStorage.removeItem('crm_device_id');
   localStorage.removeItem('crm_device_has_pin');
+  resetAccountScopedState();
   state.role = null;
   document.getElementById('pin-unlock-screen').style.display = 'none';
   showLoginScreen();

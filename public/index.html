@@ -18,7 +18,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=36" />
+  <link rel="stylesheet" href="style.css?v=37" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -507,6 +507,11 @@
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="20" x2="4" y2="12"/><line x1="10" y1="20" x2="10" y2="4"/><line x1="16" y1="20" x2="16" y2="9"/><line x1="22" y1="20" x2="2" y2="20"/></svg>
           <span class="nav-label">Reports</span>
         </a>
+        <a class="nav-item" data-page="brochure">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+          <span class="nav-label">Brochure</span>
+          <span class="nav-pill">New</span>
+        </a>
 
         <div class="nav-section">Workspace</div>
         <a class="nav-item" data-page="chat">
@@ -924,6 +929,47 @@
 
         </section>
 
+        <!-- ── BROCHURE MAKER ────────────────────────────────── -->
+        <section id="page-brochure" class="page">
+          <div class="brochure-layout">
+            <div class="brochure-editor">
+              <div class="bre-group">
+                <h3 class="bre-title">Company details</h3>
+                <div class="bre-field"><label>Company name</label><input id="br-company" oninput="brochureFieldChanged()" placeholder="Acme Adhesives" /></div>
+                <div class="bre-field"><label>Tagline</label><input id="br-tagline" oninput="brochureFieldChanged()" placeholder="Industrial adhesives &amp; solvents" /></div>
+                <div class="bre-row">
+                  <div class="bre-field"><label>Website</label><input id="br-website" oninput="brochureFieldChanged()" placeholder="www.acme.com" /></div>
+                  <div class="bre-field"><label>Phone</label><input id="br-phone" oninput="brochureFieldChanged()" placeholder="+91 98xxxxxxx" /></div>
+                </div>
+                <div class="bre-row">
+                  <div class="bre-field"><label>Email</label><input id="br-email" oninput="brochureFieldChanged()" placeholder="sales@acme.com" /></div>
+                  <div class="bre-field bre-field-accent"><label>Accent</label><input id="br-accent" type="color" value="#5E6AD2" oninput="brochureFieldChanged()" /></div>
+                </div>
+                <div class="bre-field"><label>Address</label><input id="br-address" oninput="brochureFieldChanged()" placeholder="Plot 12, MIDC, Pune" /></div>
+              </div>
+              <div class="bre-group">
+                <div class="bre-items-head">
+                  <h3 class="bre-title">Products &amp; rates</h3>
+                  <button class="btn btn-ghost btn-sm" onclick="addBrochureItemFromCatalog()">+ From catalog</button>
+                </div>
+                <div id="br-items"></div>
+                <button class="btn btn-secondary btn-sm bre-add" onclick="addBrochureItem()">+ Add item</button>
+              </div>
+            </div>
+            <div class="brochure-preview-col">
+              <div class="brochure-actions">
+                <button class="btn btn-primary btn-sm" onclick="exportBrochure('share')">📤 Share</button>
+                <button class="btn btn-secondary btn-sm" onclick="exportBrochure('jpg')">⬇ JPG</button>
+                <button class="btn btn-secondary btn-sm" onclick="exportBrochure('pdf')">⬇ PDF</button>
+                <span id="brochure-status" class="brochure-status"></span>
+              </div>
+              <div class="brochure-preview-wrap">
+                <div id="brochure-poster"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- ── AI DEBUG CONSOLE ──────────────────────────────── -->
         <section id="page-ai-debug" class="page">
           <div class="card">
@@ -1077,7 +1123,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=34"></script>
+  <script src="app.js?v=35"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:2600, once:true };</script>
   <script src="dive-splash.js"></script>

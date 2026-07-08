@@ -1642,7 +1642,7 @@ function toast(msg, type = 'success') {
 const PAGE_TITLES = {
   dashboard: 'Dashboard', leads: 'Leads', database: 'Database',
   pipeline: 'Pipeline', followups: 'Follow-ups', reports: 'Reports', team: 'Team', map: 'Map', chat: 'Chat',
-  workspace: 'Workspace',
+  workspace: 'Workspace', brochure: 'Brochure Maker',
 };
 
 function navigate(page) {
@@ -1693,7 +1693,210 @@ function renderPage(page) {
   if (page === 'map')        renderMap();
   if (page === 'chat')       chatFocusInput();
   if (page === 'workspace')  renderWorkspace();
+  if (page === 'brochure')   renderBrochure();
   if (page === 'ai-debug')   renderAiDebugPage();
+}
+
+// ============================================================
+//  Brochure Maker — build a product rate-list flyer, export it as
+//  a JPG / PDF, or share it straight to WhatsApp (native share sheet).
+//  All client-side; the brochure config persists in localStorage.
+// ============================================================
+const BROCHURE_KEY = 'crm_brochure';
+
+function defaultBrochure() {
+  return { company: '', tagline: '', website: '', phone: '', email: '', address: '', accent: '#5E6AD2', items: [] };
+}
+function seedBrochure() {
+  const b = defaultBrochure();
+  b.company = (state.myTeams && state.myTeams[0] && state.myTeams[0].name) || '';
+  const cat = state.myProducts || [];
+  b.items = cat.slice(0, 8).map(p => ({ product: p.name, rate: '', unit: '' }));
+  if (!b.items.length) b.items = [{ product: '', rate: '', unit: '' }];
+  return b;
+}
+function loadBrochureCfg() {
+  try { return JSON.parse(localStorage.getItem(BROCHURE_KEY)) || null; } catch { return null; }
+}
+function saveBrochure() {
+  try { localStorage.setItem(BROCHURE_KEY, JSON.stringify(state.brochure)); } catch (_) {}
+}
+
+// Darken/lighten a #rrggbb hex by a fraction (used for the header gradient —
+// concrete hex stops so html2canvas renders them reliably, unlike color-mix()).
+function shadeHex(hex, pct) {
+  const h = String(hex || '').replace('#', '');
+  if (h.length !== 6) return hex;
+  const n = parseInt(h, 16); let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const f = pct < 0 ? 0 : 255, p = Math.abs(pct);
+  r = Math.round((f - r) * p) + r; g = Math.round((f - g) * p) + g; b = Math.round((f - b) * p) + b;
+  return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+}
+
+function renderBrochure() {
+  if (!state.brochure) state.brochure = loadBrochureCfg() || seedBrochure();
+  const b = state.brochure;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
+  set('br-company', b.company); set('br-tagline', b.tagline); set('br-website', b.website);
+  set('br-phone', b.phone); set('br-email', b.email); set('br-address', b.address);
+  set('br-accent', b.accent || '#5E6AD2');
+  renderBrochureItems();
+  renderBrochurePoster();
+}
+
+function brochureFieldChanged() {
+  const b = state.brochure, v = id => (document.getElementById(id)?.value || '');
+  b.company = v('br-company'); b.tagline = v('br-tagline'); b.website = v('br-website');
+  b.phone = v('br-phone'); b.email = v('br-email'); b.address = v('br-address');
+  b.accent = v('br-accent') || '#5E6AD2';
+  saveBrochure(); renderBrochurePoster();
+}
+
+function renderBrochureItems() {
+  const wrap = document.getElementById('br-items');
+  if (!wrap) return;
+  const its = state.brochure.items;
+  wrap.innerHTML = its.length ? its.map((it, i) => `
+    <div class="bre-item">
+      <input class="bre-item-name" value="${escAttr(it.product || '')}" placeholder="Product" oninput="brochureItemChanged(${i},'product',this.value)">
+      <input class="bre-item-rate" value="${escAttr(it.rate || '')}" placeholder="Rate" inputmode="decimal" oninput="brochureItemChanged(${i},'rate',this.value)">
+      <input class="bre-item-unit" value="${escAttr(it.unit || '')}" placeholder="Unit" oninput="brochureItemChanged(${i},'unit',this.value)">
+      <button class="bre-item-del" onclick="removeBrochureItem(${i})" aria-label="Remove">✕</button>
+    </div>`).join('') : '<div class="bre-empty">No products yet — add some below.</div>';
+}
+function brochureItemChanged(i, field, v) {
+  if (!state.brochure.items[i]) return;
+  state.brochure.items[i][field] = v; saveBrochure(); renderBrochurePoster();
+}
+function addBrochureItem() {
+  state.brochure.items.push({ product: '', rate: '', unit: '' });
+  saveBrochure(); renderBrochureItems(); renderBrochurePoster();
+}
+function removeBrochureItem(i) {
+  state.brochure.items.splice(i, 1);
+  saveBrochure(); renderBrochureItems(); renderBrochurePoster();
+}
+function addBrochureItemFromCatalog() {
+  const cat = state.myProducts || [];
+  if (!cat.length) { toast('No products in your catalog yet — add some under Manage Products.', 'warning'); return; }
+  const have = new Set(state.brochure.items.map(i => (i.product || '').toLowerCase()));
+  let added = 0;
+  cat.forEach(p => { if (p.name && !have.has(p.name.toLowerCase())) { state.brochure.items.push({ product: p.name, rate: '', unit: '' }); added++; } });
+  saveBrochure(); renderBrochureItems(); renderBrochurePoster();
+  toast(added ? `Added ${added} product${added === 1 ? '' : 's'} from your catalog` : 'All catalog products are already on the list');
+}
+
+function renderBrochurePoster() {
+  const el = document.getElementById('brochure-poster');
+  if (!el) return;
+  const b = state.brochure, accent = b.accent || '#5E6AD2';
+  const rows = b.items.filter(it => (it.product || '').trim()).map(it => `
+    <div class="bp-item">
+      <span class="bp-item-name">${escHtml(it.product)}</span>
+      <span class="bp-item-rate">${it.rate ? '₹' + escHtml(it.rate) : '—'}${it.unit ? ` <small>/ ${escHtml(it.unit)}</small>` : ''}</span>
+    </div>`).join('');
+  const contact = [
+    b.phone   ? `<span>📞 ${escHtml(b.phone)}</span>`   : '',
+    b.email   ? `<span>✉ ${escHtml(b.email)}</span>`    : '',
+    b.website ? `<span>🌐 ${escHtml(b.website)}</span>` : '',
+  ].filter(Boolean).join('');
+  el.innerHTML = `
+    <div class="bp" style="--bp-accent:${escAttr(accent)};--bp-accent2:${escAttr(shadeHex(accent, -0.28))}">
+      <div class="bp-header">
+        <div class="bp-company">${escHtml(b.company || 'Your Company')}</div>
+        ${b.tagline ? `<div class="bp-tagline">${escHtml(b.tagline)}</div>` : ''}
+      </div>
+      <div class="bp-body">
+        <div class="bp-title">Product Rate List</div>
+        <div class="bp-items">${rows || '<div class="bp-empty">Add products to see them here.</div>'}</div>
+      </div>
+      <div class="bp-footer">
+        ${contact ? `<div class="bp-contact">${contact}</div>` : ''}
+        ${b.address ? `<div class="bp-address">📍 ${escHtml(b.address)}</div>` : ''}
+        <div class="bp-brand">Made with Dive</div>
+      </div>
+    </div>`;
+}
+
+// ── Export (lazy-loads html2canvas / jsPDF only on first use) ──
+function loadScriptOnce(src) {
+  return new Promise((resolve, reject) => {
+    if ([...document.scripts].some(s => s.src === src)) return resolve();
+    const el = document.createElement('script');
+    el.src = src; el.onload = () => resolve(); el.onerror = () => reject(new Error('Could not load ' + src));
+    document.head.appendChild(el);
+  });
+}
+async function ensureBrochureLibs(needPdf) {
+  if (!window.html2canvas) await loadScriptOnce('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
+  if (needPdf && !(window.jspdf && window.jspdf.jsPDF)) await loadScriptOnce('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js');
+}
+async function captureBrochureCanvas() {
+  const poster = document.querySelector('#brochure-poster .bp');
+  if (!poster) throw new Error('Nothing to export yet');
+  // Clone into a fixed 794px offscreen holder so the export is crisp and the
+  // same size regardless of the on-screen viewport.
+  const holder = document.createElement('div');
+  holder.style.cssText = 'position:fixed;left:-10000px;top:0;width:794px;background:#fff';
+  const clone = poster.cloneNode(true);
+  clone.style.width = '794px';
+  holder.appendChild(clone);
+  document.body.appendChild(holder);
+  try {
+    return await window.html2canvas(clone, { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false });
+  } finally { holder.remove(); }
+}
+function setBrochureBusy(busy, label) {
+  document.querySelectorAll('.brochure-actions button').forEach(btn => { btn.disabled = busy; });
+  const s = document.getElementById('brochure-status');
+  if (s) s.textContent = busy ? (label || 'Generating…') : '';
+}
+function downloadDataUrl(dataUrl, filename) {
+  const a = document.createElement('a');
+  a.href = dataUrl; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+async function exportBrochure(kind) {
+  const b = state.brochure || defaultBrochure();
+  const fname = ((b.company || 'brochure').replace(/[^\w]+/g, '_').replace(/^_+|_+$/g, '') || 'brochure').toLowerCase();
+  try {
+    setBrochureBusy(true, kind === 'share' ? 'Preparing…' : 'Generating…');
+    await ensureBrochureLibs(kind === 'pdf');
+    const canvas = await captureBrochureCanvas();
+
+    if (kind === 'pdf') {
+      const jsPDF = window.jspdf.jsPDF;
+      const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+      const pw = pdf.internal.pageSize.getWidth(), ph = pdf.internal.pageSize.getHeight();
+      let iw = pw, ih = canvas.height * (pw / canvas.width);
+      if (ih > ph) { ih = ph; iw = canvas.width * (ph / canvas.height); }   // fit the whole poster on one page
+      pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', (pw - iw) / 2, (ph - ih) / 2, iw, ih);
+      pdf.save(fname + '.pdf');
+      toast('PDF downloaded');
+      return;
+    }
+
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+    if (kind === 'share') {
+      try {
+        const blob = await (await fetch(dataUrl)).blob();
+        const file = new File([blob], fname + '.jpg', { type: 'image/jpeg' });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: b.company || 'Brochure', text: `${b.company || ''} — product rate list`.trim() });
+          return;
+        }
+      } catch (e) { if (e && e.name === 'AbortError') return; /* user cancelled */ }
+      downloadDataUrl(dataUrl, fname + '.jpg');
+      toast('Sharing not available here — saved the image instead');
+      return;
+    }
+    downloadDataUrl(dataUrl, fname + '.jpg');
+    toast('JPG downloaded');
+  } catch (err) {
+    toast('Export failed: ' + (err && err.message ? err.message : err), 'error');
+  } finally {
+    setBrochureBusy(false);
+  }
 }
 
 // ============================================================

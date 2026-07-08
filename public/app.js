@@ -1105,7 +1105,7 @@ function startAutoRefresh() {
       // Don't re-render out from under the user mid-interaction: skip while a
       // modal / lead-detail / stage-picker is open or the search box is focused.
       const busy = document.querySelector(
-        '#modal-overlay:not(.hidden), #lead-detail-overlay, #stage-picker-overlay, #products-modal:not(.hidden)')
+        '#modal-overlay:not(.hidden), #lead-detail-overlay, #stage-picker-overlay, #products-modal-overlay:not(.hidden)')
         || document.activeElement === document.getElementById('global-search');
       if (LIVE_PAGES.includes(state.page) && !busy) renderPage(state.page);
     } catch (_) {}

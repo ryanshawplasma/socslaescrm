@@ -1111,7 +1111,9 @@ html { scrollbar-width: thin; scrollbar-color: var(--text-muted) transparent; }
   position: fixed;
   inset: 0;
   background: rgba(0,0,0,.5);
-  z-index: 99;
+  /* Above the mobile bottom nav (150) so the scrim dims it too, but below the
+     drawer itself (200). Otherwise the bright bottom bar pokes through the scrim. */
+  z-index: 190;
   backdrop-filter: blur(2px);
   opacity: 0;
   visibility: hidden;
@@ -4056,6 +4058,8 @@ tr.row-cold:hover td { background: #dbeafe; }
   #content            { padding-bottom: calc(66px + env(safe-area-inset-bottom, 0px)); }
   #content.chat-mode  { padding-bottom: 0; }   /* chat has its own fixed composer */
   .leads-bulk-bar     { bottom: calc(76px + env(safe-area-inset-bottom, 0px)); }
+  /* Lift toasts above the bottom nav so they don't pop up behind it. */
+  #toast              { bottom: calc(72px + env(safe-area-inset-bottom, 0px)); right: 12px; left: 12px; align-items: center; }
   /* The topbar +Add is redundant now the bottom bar has a prominent one. */
   #btn-add-lead       { display: none; }
 }
@@ -4063,11 +4067,16 @@ tr.row-cold:hover td { background: #dbeafe; }
 /* ══════════════════════════════════════════════════════════
    BROCHURE MAKER — editor + live poster preview + export
    ══════════════════════════════════════════════════════════ */
-.brochure-layout { display: grid; grid-template-columns: 380px 1fr; gap: 18px; align-items: start; }
+.brochure-layout { display: grid; grid-template-columns: 380px 1fr; gap: 18px; align-items: start; min-width: 0; }
+/* min-width:0 lets these grid/flex children shrink below their inputs' intrinsic
+   width instead of forcing the editor wider than the phone (which body's
+   overflow-x:hidden would then silently clip off-screen). */
+.brochure-editor, .brochure-preview-col { min-width: 0; }
 .brochure-editor {
   background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 18px; display: flex; flex-direction: column; gap: 20px; box-shadow: var(--shadow);
 }
+.bre-group, .bre-field, .bre-row, .bre-item, .bre-items-head { min-width: 0; }
 .bre-group { display: flex; flex-direction: column; gap: 10px; }
 .bre-title { font-size: 13px; font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: .04em; }
 .bre-field { display: flex; flex-direction: column; gap: 5px; }
@@ -4075,6 +4084,7 @@ tr.row-cold:hover td { background: #dbeafe; }
 .bre-field input {
   padding: 9px 11px; border: 1px solid var(--border); border-radius: 9px; font: inherit; font-size: 13.5px;
   background: var(--bg); color: var(--text); outline: none; transition: border-color var(--transition), box-shadow var(--transition);
+  width: 100%; min-width: 0; box-sizing: border-box;
 }
 .bre-field input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-glow); }
 .bre-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -4084,7 +4094,7 @@ tr.row-cold:hover td { background: #dbeafe; }
 .bre-item { display: grid; grid-template-columns: 1fr 68px 64px 28px; gap: 6px; align-items: center; }
 .bre-item input {
   padding: 8px 9px; border: 1px solid var(--border); border-radius: 8px; font: inherit; font-size: 13px;
-  background: var(--bg); color: var(--text); outline: none; min-width: 0;
+  background: var(--bg); color: var(--text); outline: none; min-width: 0; width: 100%; box-sizing: border-box;
 }
 .bre-item input:focus { border-color: var(--primary); }
 .bre-item-del {

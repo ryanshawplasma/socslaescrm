@@ -18,7 +18,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=41" />
+  <link rel="stylesheet" href="style.css?v=42" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -542,6 +542,8 @@
         <button id="btn-enable-biometric" class="btn-biometric-enable hidden" onclick="enableBiometric()">🔐 Enable Biometric Login</button>
         <button id="btn-toggle-bubble" class="btn-biometric-enable" onclick="toggleAiBubble()">💬 Show AI bubble</button>
         <button id="btn-install-app" class="btn-biometric-enable hidden" onclick="installApp()">📲 Add to Home Screen</button>
+        <button id="btn-codes" class="btn-biometric-enable hidden" onclick="openCodesModal()">🎟 Access codes</button>
+        <button id="plan-badge" class="plan-badge hidden" type="button"></button>
         <div class="user-card">
           <div class="user-avatar" id="sidebar-avatar">?</div>
           <div class="user-meta">
@@ -1131,7 +1133,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=40"></script>
+  <script src="app.js?v=41"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:2600, once:true };</script>
   <script src="dive-splash.js"></script>

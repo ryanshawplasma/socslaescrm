@@ -761,6 +761,53 @@ router.delete('/leads/:id/photos/:photoId', authMiddleware, noGuest, async (req,
   } catch (err) { next(err); }
 });
 
+// ============================================================
+//  Plan / Pro entitlement (Lite vs Pro) + dev access codes
+// ============================================================
+// Current user's plan — the client calls this after login to gate Pro features.
+router.get('/me/plan', authMiddleware, async (req, res, next) => {
+  try {
+    if (req.user.role === 'guest') return res.json({ isPro: false, plan: 'lite', daysLeft: 0 });
+    const user = await db.getUserByName(req.user.username);
+    res.json(db.entitlementOf(user));
+  } catch (err) { next(err); }
+});
+
+// Redeem a dev-issued access code → extends the caller's Pro window.
+router.post('/plan/redeem', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const user = await db.getUserByName(req.user.username);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const result = await db.redeemAccessCode((req.body || {}).code, user.id);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    const fresh = await db.getUserByName(req.user.username);
+    res.json({ ok: true, added_days: result.days, plan: db.entitlementOf(fresh) });
+  } catch (err) { next(err); }
+});
+
+// Dev code panel (admin only): generate / list / delete access codes.
+router.get('/admin/codes', authMiddleware, adminOnly, async (req, res, next) => {
+  try { res.json(await db.getAccessCodes()); } catch (err) { next(err); }
+});
+router.post('/admin/codes', authMiddleware, adminOnly, async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    let code = String(b.code || '').trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
+    if (!code) code = 'DIVE-' + Math.random().toString(36).slice(2, 8).toUpperCase();
+    const days    = Math.max(1, Math.min(3650, parseInt(b.days, 10) || 30));
+    const maxUses = Math.max(1, Math.min(100000, parseInt(b.max_uses, 10) || 1));
+    const created = await db.createAccessCode({ code, days, label: b.label, maxUses, createdBy: req.user.username });
+    res.json({ ok: true, code: created });
+  } catch (err) {
+    if (String(err && err.message || '').toLowerCase().includes('duplicate')) return res.status(409).json({ error: 'That code already exists' });
+    next(err);
+  }
+});
+router.delete('/admin/codes/:id', authMiddleware, adminOnly, async (req, res, next) => {
+  try { await db.deleteAccessCode(req.params.id); res.json({ ok: true }); }
+  catch (err) { next(err); }
+});
+
 // ── Lead sharing: owner, global admin, or team owner/admin ───
 async function requireLeadManage(req, res, next) {
   try {

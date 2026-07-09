@@ -5164,6 +5164,8 @@ async function initApp() {
     applyRoleUI();
     updateSecurityButtons();    // show/hide the "Set PIN" shortcut for this device
     refreshAiBubbleVisibility(); // reveal the floating AI bubble (unless hidden)
+    loadPlan();                 // Lite/Pro entitlement → sidebar badge + gating
+    document.getElementById('btn-codes')?.classList.toggle('hidden', state.role !== 'admin');
     startAutoRefresh();
     initSocket();
     maybeShowTeamsDiscover();   // nudge team-less users to join a public team
@@ -5175,6 +5177,190 @@ async function initApp() {
     }
     console.error(err);
   }
+}
+
+// ============================================================
+//  Plan / Pro entitlement (Lite vs Pro) — trial, upgrade, codes
+// ============================================================
+const PRICE_INDIVIDUAL = 500;   // ₹/month
+const PRICE_TEAM_SEAT  = 299;   // ₹/month per person
+
+function isPro() { return !!(state.plan && state.plan.isPro); }
+
+async function loadPlan() {
+  try { state.plan = await apiFetch('/api/me/plan'); }
+  catch (_) { state.plan = { isPro: false, plan: 'lite', daysLeft: 0 }; }
+  renderPlanBadge();
+  return state.plan;
+}
+
+// Gate a Pro-only feature. Returns true if allowed; otherwise opens the upgrade
+// screen and returns false. Use: `if (!requirePro('Team chat')) return;`
+function requirePro(featureName) {
+  if (isPro()) return true;
+  openUpgradeModal(featureName);
+  return false;
+}
+
+// Small plan chip in the sidebar: trial countdown, Pro, or an Upgrade nudge.
+function renderPlanBadge() {
+  const el = document.getElementById('plan-badge');
+  if (!el) return;
+  const p = state.plan || {};
+  if (state.role === 'guest') { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  if (p.plan === 'admin') { el.className = 'plan-badge is-pro'; el.innerHTML = '<span>✦ Pro</span><small>dev</small>'; el.onclick = openCodesModal; return; }
+  if (p.isPro && p.kind === 'trial') {
+    el.className = 'plan-badge is-trial';
+    el.innerHTML = `<span>✦ Pro trial</span><small>${p.daysLeft} day${p.daysLeft === 1 ? '' : 's'} left</small>`;
+  } else if (p.isPro) {
+    el.className = 'plan-badge is-pro';
+    el.innerHTML = `<span>✦ Pro</span><small>${p.daysLeft != null ? p.daysLeft + 'd left' : 'active'}</small>`;
+  } else {
+    el.className = 'plan-badge is-lite';
+    el.innerHTML = '<span>Lite</span><small>Upgrade →</small>';
+  }
+  el.onclick = openUpgradeModal;
+}
+
+function openUpgradeModal(feature) {
+  closeUpgradeModal();
+  const p = state.plan || {};
+  const trialLine = p.kind === 'trial' && p.isPro
+    ? `<div class="up-trial">You're on the free trial — <b>${p.daysLeft} day${p.daysLeft === 1 ? '' : 's'} left</b>.</div>`
+    : (p.plan === 'lite' && p.proUntil ? `<div class="up-trial up-ended">Your Pro trial has ended.</div>` : '');
+  const featLine = (typeof feature === 'string' && feature)
+    ? `<div class="up-feat">🔒 <b>${escHtml(feature)}</b> is a Pro feature.</div>` : '';
+  const html = `
+  <div class="up-overlay" id="upgrade-modal" onclick="if(event.target===this)closeUpgradeModal()">
+    <div class="up-box" role="dialog" aria-modal="true" aria-label="Upgrade to Pro">
+      <button class="up-close" onclick="closeUpgradeModal()" aria-label="Close">✕</button>
+      <div class="up-head">
+        <div class="up-kicker">Dive Pro</div>
+        <h2 class="up-title">Unlock the Team Hub</h2>
+        <p class="up-sub">Tasks, team chat, activity feed, presence &amp; leaderboards — everything your team needs to work together.</p>
+      </div>
+      ${featLine}${trialLine}
+      <div class="up-plans">
+        <div class="up-plan">
+          <div class="up-plan-name">Individual</div>
+          <div class="up-price">₹${PRICE_INDIVIDUAL}<span>/month</span></div>
+          <div class="up-plan-note">For a solo rep.</div>
+        </div>
+        <div class="up-plan up-plan-best">
+          <div class="up-badge">Best for teams</div>
+          <div class="up-plan-name">Team</div>
+          <div class="up-price">₹${PRICE_TEAM_SEAT}<span>/person·mo</span></div>
+          <div class="up-plan-note">Every seat on your team.</div>
+        </div>
+      </div>
+      <ul class="up-list">
+        <li>Assign tasks &amp; leads to teammates with due dates</li>
+        <li>Real-time team chat with history</li>
+        <li>Live activity feed &amp; who's online</li>
+        <li>Leaderboard &amp; monthly targets</li>
+      </ul>
+      <div class="up-actions">
+        <button class="btn btn-primary up-pay" onclick="startProCheckout()">Pay online · ₹${PRICE_INDIVIDUAL}/mo</button>
+        <div class="up-code">
+          <input id="up-code-input" placeholder="Have an access code?" autocomplete="off" />
+          <button class="btn btn-secondary" onclick="redeemProCode()">Redeem</button>
+        </div>
+        <div id="up-code-msg" class="up-msg"></div>
+      </div>
+    </div>
+  </div>`;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = html;
+  document.body.appendChild(wrap.firstElementChild);
+  document.addEventListener('keydown', upEscHandler);
+  setTimeout(() => document.getElementById('up-code-input')?.focus(), 120);
+}
+function upEscHandler(e) { if (e.key === 'Escape') closeUpgradeModal(); }
+function closeUpgradeModal() {
+  document.getElementById('upgrade-modal')?.remove();
+  document.removeEventListener('keydown', upEscHandler);
+}
+
+// Phase 2 hook — the real Razorpay checkout wires in here once keys are set.
+function startProCheckout() {
+  toast('Online payment is being set up — use an access code for now, or ask the admin for one.', 'info');
+}
+
+async function redeemProCode() {
+  const input = document.getElementById('up-code-input');
+  const msg   = document.getElementById('up-code-msg');
+  const code  = (input?.value || '').trim();
+  if (msg) msg.textContent = '';
+  if (!code) { if (msg) { msg.className = 'up-msg err'; msg.textContent = 'Enter a code first.'; } return; }
+  try {
+    const res = await apiFetch('/api/plan/redeem', { method: 'POST', body: JSON.stringify({ code }) });
+    state.plan = res.plan;
+    renderPlanBadge();
+    if (msg) { msg.className = 'up-msg ok'; msg.textContent = `Unlocked! +${res.added_days} days of Pro.`; }
+    toast('Pro unlocked 🎉', 'success');
+    setTimeout(() => { closeUpgradeModal(); applyRoleUI(); }, 900);
+  } catch (err) {
+    if (msg) { msg.className = 'up-msg err'; msg.textContent = err.message || 'Could not redeem that code.'; }
+  }
+}
+
+// ── Dev access-code panel (admin only) ──────────────────────
+async function openCodesModal() {
+  if (state.role !== 'admin') return;
+  closeUpgradeModal();
+  document.getElementById('codes-modal')?.remove();
+  const html = `
+  <div class="up-overlay" id="codes-modal" onclick="if(event.target===this)this.remove()">
+    <div class="up-box codes-box" role="dialog" aria-modal="true" aria-label="Access codes">
+      <button class="up-close" onclick="document.getElementById('codes-modal').remove()" aria-label="Close">✕</button>
+      <div class="up-head"><div class="up-kicker">Dev panel</div><h2 class="up-title">Access codes</h2>
+      <p class="up-sub">Generate a code, share it with whoever paid, they redeem it to unlock Pro.</p></div>
+      <div class="codes-new">
+        <input id="cc-days" type="number" min="1" value="30" title="Days of Pro" />
+        <input id="cc-uses" type="number" min="1" value="1" title="How many people can use it" />
+        <input id="cc-label" placeholder="Label (e.g. Acme Corp)" />
+        <button class="btn btn-primary" onclick="createCode()">Generate</button>
+      </div>
+      <div id="codes-list" class="codes-list"><div class="ld-empty">Loading…</div></div>
+    </div>
+  </div>`;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = html;
+  document.body.appendChild(wrap.firstElementChild);
+  loadCodes();
+}
+async function loadCodes() {
+  const box = document.getElementById('codes-list');
+  if (!box) return;
+  try {
+    const codes = await apiFetch('/api/admin/codes');
+    box.innerHTML = codes.length ? codes.map(c => `
+      <div class="code-row">
+        <button class="code-val" title="Tap to copy" onclick="copyText('${escAttr(c.code)}')">${escHtml(c.code)}</button>
+        <span class="code-meta">${c.days}d · ${c.uses}/${c.max_uses} used${c.label ? ' · ' + escHtml(c.label) : ''}</span>
+        <button class="code-del" title="Delete" onclick="deleteCode(${c.id})">✕</button>
+      </div>`).join('') : '<div class="ld-empty">No codes yet — generate one above.</div>';
+  } catch (err) { box.innerHTML = `<div class="ld-empty">${escHtml(err.message)}</div>`; }
+}
+async function createCode() {
+  const days = document.getElementById('cc-days')?.value;
+  const maxUses = document.getElementById('cc-uses')?.value;
+  const label = document.getElementById('cc-label')?.value;
+  try {
+    const res = await apiFetch('/api/admin/codes', { method: 'POST', body: JSON.stringify({ days, max_uses: maxUses, label }) });
+    toast(`Code ${res.code.code} created`, 'success');
+    const lbl = document.getElementById('cc-label'); if (lbl) lbl.value = '';
+    loadCodes();
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function deleteCode(id) {
+  if (!confirm('Delete this code? People who already redeemed it keep their Pro.')) return;
+  try { await apiFetch('/api/admin/codes/' + id, { method: 'DELETE' }); loadCodes(); }
+  catch (err) { toast(err.message, 'error'); }
+}
+function copyText(t) {
+  navigator.clipboard?.writeText(t).then(() => toast('Copied: ' + t), () => toast('Copy failed', 'error'));
 }
 
 async function init() {

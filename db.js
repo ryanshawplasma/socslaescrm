@@ -239,6 +239,37 @@ async function initSchema() {
     // step used for legacy-PIN migration, before the app becomes usable.
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
+    // ── Pro entitlement (Lite vs Pro) ──────────────────────────
+    // pro_until = when Pro access ends (trial or paid); plan_kind = trial|code|individual|team.
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS pro_until TIMESTAMPTZ`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_kind TEXT DEFAULT ''`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    // Give every account a 14-day Pro trial the first time this ships. Idempotent:
+    // only rows with no pro_until yet are touched, so it never re-grants on reboot.
+    await client.query(`UPDATE users SET pro_until = NOW() + INTERVAL '14 days', plan_kind = 'trial' WHERE pro_until IS NULL`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+
+    // Dev-assigned access codes: redeem one to extend Pro by `days`.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS access_codes (
+        id          SERIAL PRIMARY KEY,
+        code        TEXT UNIQUE NOT NULL,
+        days        INTEGER NOT NULL DEFAULT 30,
+        label       TEXT DEFAULT '',
+        max_uses    INTEGER DEFAULT 1,
+        uses        INTEGER DEFAULT 0,
+        created_by  TEXT DEFAULT '',
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+      )
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS access_code_redemptions (
+        id          SERIAL PRIMARY KEY,
+        code        TEXT NOT NULL,
+        user_id     INTEGER NOT NULL,
+        redeemed_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(code, user_id)
+      )
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+
     await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS uq_users_email
       ON users(LOWER(email)) WHERE email IS NOT NULL AND email != ''
@@ -416,6 +447,24 @@ async function initSchema() {
       )
     `).catch(e => console.warn('[db] non-fatal:', e && e.message));
     await client.query(`CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id, created_at DESC)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+
+    // ── New: Team tasks (assign a to-do / lead to a teammate) ──
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS team_tasks (
+        id          BIGSERIAL PRIMARY KEY,
+        team_id     INTEGER,
+        title       TEXT NOT NULL,
+        assignee    TEXT DEFAULT '',
+        created_by  TEXT NOT NULL,
+        lead_id     INTEGER,
+        lead_label  TEXT DEFAULT '',
+        due_at      TEXT DEFAULT '',
+        status      TEXT DEFAULT 'open',
+        created_at  TIMESTAMPTZ DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ DEFAULT NOW()
+      )
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_team_tasks_team ON team_tasks(team_id, status)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // ── New: Field-level edit history ──────────────────────────
     await client.query(`
@@ -1099,7 +1148,8 @@ async function createUser(displayName, pin, role = 'sales', telegramUserId = '',
   const pinHash      = pin      ? await bcrypt.hash(String(pin), 10)      : null;
   const passwordHash = password ? await bcrypt.hash(String(password), 10) : null;
   await pool.query(
-    `INSERT INTO users (display_name, role, pin_hash, password_hash, telegram_user_id, created_at) VALUES ($1,$2,$3,$4,$5,$6)`,
+    `INSERT INTO users (display_name, role, pin_hash, password_hash, telegram_user_id, created_at, pro_until, plan_kind)
+     VALUES ($1,$2,$3,$4,$5,$6, NOW() + INTERVAL '${TRIAL_DAYS} days', 'trial')`,
     [displayName, role, pinHash, passwordHash, telegramUserId || null, nowIST()]
   );
   return { ok: true };
@@ -2184,6 +2234,118 @@ async function getLeadActivities(leadId) {
   return rows;
 }
 
+// ── Team tasks ────────────────────────────────────────────────
+const TASK_STATUSES = ['open', 'doing', 'done'];
+
+async function createTask(t) {
+  const status = TASK_STATUSES.includes(t.status) ? t.status : 'open';
+  const { rows } = await pool.query(
+    `INSERT INTO team_tasks (team_id, title, assignee, created_by, lead_id, lead_label, due_at, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [t.teamId || null, String(t.title).trim(), String(t.assignee || '').trim(), t.createdBy,
+     t.leadId || null, String(t.leadLabel || '').trim(), String(t.dueAt || '').trim(), status]
+  );
+  return rows[0];
+}
+
+// Team board (all tasks for a team) or, when teamId is null, the caller's own
+// personal tasks (created_by = owner, no team).
+async function getTasks(teamId, owner) {
+  const { rows } = teamId
+    ? await pool.query(`SELECT * FROM team_tasks WHERE team_id=$1 ORDER BY created_at DESC`, [teamId])
+    : await pool.query(`SELECT * FROM team_tasks WHERE team_id IS NULL AND LOWER(created_by)=LOWER($1) ORDER BY created_at DESC`, [owner || '']);
+  return rows;
+}
+
+async function getTaskById(id) {
+  const { rows } = await pool.query(`SELECT * FROM team_tasks WHERE id=$1`, [parseInt(id, 10) || 0]);
+  return rows[0] || null;
+}
+
+async function updateTask(id, fields) {
+  const allowed = ['title', 'assignee', 'lead_id', 'lead_label', 'due_at', 'status'];
+  const sets = [], vals = [];
+  for (const k of allowed) {
+    if (fields[k] === undefined) continue;
+    if (k === 'status' && !TASK_STATUSES.includes(fields[k])) continue;
+    sets.push(`${k}=$${sets.length + 1}`);
+    vals.push(k === 'lead_id' ? (fields[k] || null) : fields[k]);
+  }
+  if (!sets.length) return getTaskById(id);
+  vals.push(parseInt(id, 10) || 0);
+  const { rows } = await pool.query(
+    `UPDATE team_tasks SET ${sets.join(', ')}, updated_at=NOW() WHERE id=$${vals.length} RETURNING *`, vals);
+  return rows[0] || null;
+}
+
+async function deleteTask(id) {
+  const r = await pool.query(`DELETE FROM team_tasks WHERE id=$1`, [parseInt(id, 10) || 0]);
+  return { ok: true, deleted: r.rowCount || 0 };
+}
+
+// ── Pro entitlement + access codes ────────────────────────────
+const TRIAL_DAYS = 14;
+
+// Derive a user's plan from their row. Global admins (the dev) are always Pro.
+function entitlementOf(user) {
+  if (!user) return { isPro: false, plan: 'lite', proUntil: null, daysLeft: 0 };
+  if (String(user.role) === 'admin') return { isPro: true, plan: 'admin', proUntil: null, daysLeft: null };
+  const until = user.pro_until ? new Date(user.pro_until).getTime() : 0;
+  const now = Date.now();
+  if (until > now) {
+    return { isPro: true, plan: user.plan_kind || 'pro', proUntil: user.pro_until,
+             daysLeft: Math.ceil((until - now) / 86400000), kind: user.plan_kind || 'pro' };
+  }
+  return { isPro: false, plan: 'lite', proUntil: user.pro_until || null, daysLeft: 0, kind: user.plan_kind || '' };
+}
+
+// Extend a user's Pro window by N days from the later of now / current expiry.
+async function extendUserPro(userId, days, planKind) {
+  const { rows } = await pool.query(
+    `UPDATE users
+        SET pro_until = GREATEST(COALESCE(pro_until, NOW()), NOW()) + ($2 || ' days')::interval,
+            plan_kind = $3
+      WHERE id = $1
+      RETURNING pro_until`,
+    [userId, String(parseInt(days, 10) || 0), planKind || 'code']);
+  return rows[0] ? rows[0].pro_until : null;
+}
+
+async function createAccessCode({ code, days, label, maxUses, createdBy }) {
+  const { rows } = await pool.query(
+    `INSERT INTO access_codes (code, days, label, max_uses, created_by)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [String(code).toUpperCase(), parseInt(days, 10) || 30, String(label || '').slice(0, 120),
+     parseInt(maxUses, 10) || 1, createdBy || '']);
+  return rows[0];
+}
+async function getAccessCodes() {
+  const { rows } = await pool.query(`SELECT * FROM access_codes ORDER BY created_at DESC`);
+  return rows;
+}
+async function deleteAccessCode(id) {
+  const r = await pool.query(`DELETE FROM access_codes WHERE id=$1`, [parseInt(id, 10) || 0]);
+  return { ok: true, deleted: r.rowCount || 0 };
+}
+
+// Redeem a code for a user: validate remaining uses, block double-redeem, extend Pro.
+async function redeemAccessCode(rawCode, userId) {
+  const code = String(rawCode || '').trim().toUpperCase();
+  if (!code) return { ok: false, error: 'Enter a code' };
+  const { rows } = await pool.query(`SELECT * FROM access_codes WHERE UPPER(code)=$1`, [code]);
+  const rec = rows[0];
+  if (!rec) return { ok: false, error: 'That code isn’t valid' };
+  if (rec.uses >= rec.max_uses) return { ok: false, error: 'This code has already been used up' };
+  try {
+    await pool.query(`INSERT INTO access_code_redemptions (code, user_id) VALUES ($1,$2)`, [rec.code, userId]);
+  } catch (e) {
+    return { ok: false, error: 'You’ve already redeemed this code' };
+  }
+  await pool.query(`UPDATE access_codes SET uses = uses + 1 WHERE id=$1`, [rec.id]);
+  const proUntil = await extendUserPro(userId, rec.days, 'code');
+  return { ok: true, days: rec.days, proUntil };
+}
+
 // ── Field-level edit history ──────────────────────────────────
 async function logLeadHistory(leadId, changedBy, fieldName, oldValue, newValue, teamId) {
   await pool.query(
@@ -2401,6 +2563,8 @@ module.exports = {
   getLeads, getLeadsForUser, getLeadsByTeam, getStats, addLead, updateLead, deleteLead, importLeads,
   copyLeadsToWorking, moveLeadsBucket, updateLeadFields, setLeadProducts,
   addPhoto, getPhotos, deletePhoto, getPhotoById, getLeadContacts,
+  createTask, getTasks, getTaskById, updateTask, deleteTask,
+  entitlementOf, extendUserPro, createAccessCode, getAccessCodes, deleteAccessCode, redeemAccessCode,
   grantLeadAccess, revokeLeadAccess, getLeadAccess, claimFollowUp, reassignFollowUp,
   createUser, getUserByName, getUserByTelegramId, updateUserPin, updateUserName, updateUserDefaultArea,
   getAllUsers, deleteUser, verifyUserPin, verifyUserPassword, setUserPassword, seedAdminUser,

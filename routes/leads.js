@@ -704,8 +704,61 @@ router.patch('/leads/:row/location', authMiddleware, requireLeadAccess, async (r
 
 // ── GET /api/leads/:id/photos ─────────────────────────────────
 router.get('/leads/:id/photos', authMiddleware, async (req, res, next) => {
-  try { res.json(await db.getPhotos(parseInt(req.params.id, 10))); }
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.json([]);   // e.g. demo leads have no real id
+  try { res.json(await db.getPhotos(id)); }
   catch (err) { next(err); }
+});
+
+// Can this user attach/remove photos on this lead? Admin, the lead's owner, or
+// an active member of the lead's team. Returns the lead (or null) so callers
+// don't re-fetch.
+async function canManageLeadPhotos(req, leadId) {
+  if (!Number.isInteger(leadId)) return { ok: false, code: 400, error: 'Invalid lead id' };
+  const lead = await db.getLeadById(leadId);
+  if (!lead) return { ok: false, code: 404, error: 'Lead not found' };
+  if (req.user.role === 'admin' || lead.created_by === req.user.username) return { ok: true, lead };
+  if (lead.team_id) {
+    const user   = await db.getUserByName(req.user.username);
+    const member = user && await db.getTeamMember(lead.team_id, user.id);
+    if (member && member.status === 'active') return { ok: true, lead };
+  }
+  return { ok: false, code: 403, error: 'You do not have access to this lead' };
+}
+
+// ── POST /api/leads/:id/photos — attach a captured photo (stored as a
+//    compressed data-URL in Postgres so it persists across redeploys) ──
+router.post('/leads/:id/photos', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const leadId = parseInt(req.params.id, 10);
+    const { image, caption } = req.body || {};
+    if (!image || typeof image !== 'string' || !/^data:image\/(jpe?g|png|webp);base64,/i.test(image)) {
+      return res.status(400).json({ error: 'A JPEG or PNG image is required' });
+    }
+    if (image.length > 6 * 1024 * 1024) {   // ~4.5MB decoded — client already downscales
+      return res.status(413).json({ error: 'Image is too large — please retake' });
+    }
+    const auth = await canManageLeadPhotos(req, leadId);
+    if (!auth.ok) return res.status(auth.code).json({ error: auth.error });
+    await db.addPhoto(leadId, image, String(caption || 'Factory pic').slice(0, 120), req.user.username);
+    db.logLeadActivity(leadId, auth.lead.team_id || null, 'photo_added',
+      `${req.user.username} added a photo`, {}, req.user.username).catch(() => {});
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ── DELETE /api/leads/:id/photos/:photoId ─────────────────────
+router.delete('/leads/:id/photos/:photoId', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const leadId  = parseInt(req.params.id, 10);
+    const photoId = parseInt(req.params.photoId, 10);
+    const auth = await canManageLeadPhotos(req, leadId);
+    if (!auth.ok) return res.status(auth.code).json({ error: auth.error });
+    const photo = await db.getPhotoById(photoId);
+    if (!photo || photo.lead_id !== leadId) return res.status(404).json({ error: 'Photo not found' });
+    await db.deletePhoto(photoId);
+    res.json({ ok: true });
+  } catch (err) { next(err); }
 });
 
 // ── Lead sharing: owner, global admin, or team owner/admin ───

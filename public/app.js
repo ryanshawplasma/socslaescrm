@@ -3158,6 +3158,11 @@ function openLeadDetail(rowIndex) {
         </div>
         ${lists ? `<div class="ld-section"><div class="ld-label">Lists</div>${lists}</div>` : ''}
         <div class="ld-section">
+          <div class="ld-label">📸 Factory pics</div>
+          <div id="ld-photos" class="ld-photos"><div class="ld-empty">Loading…</div></div>
+          ${canEdit ? `<button class="btn btn-secondary btn-sm ld-photo-add" onclick="capturePhotoForLead(${l.rowIndex})">📷 Add factory pic</button>` : ''}
+        </div>
+        <div class="ld-section">
           <div class="ld-label">📝 Notes</div>
           ${notesBlock}
         </div>
@@ -3173,6 +3178,7 @@ function openLeadDetail(rowIndex) {
   wrap.innerHTML = html;
   document.body.appendChild(wrap.firstElementChild);
   document.addEventListener('keydown', ldEscHandler);
+  loadLeadPhotos(l.rowIndex);   // async — fills the Factory pics section
 }
 
 function ldEscHandler(e) { if (e.key === 'Escape') closeLeadDetail(); }
@@ -3263,6 +3269,111 @@ function closeStagePicker() {
   const o = document.getElementById('stage-picker-overlay');
   if (o) o.remove();
   document.removeEventListener('keydown', spEscHandler);
+}
+
+// ============================================================
+//  Factory pics — one-tap camera capture attached to a lead.
+//  Uses a native `capture` file input (the OS camera app handles the
+//  permission + shutter), downscales client-side, and stores the JPEG as a
+//  data-URL in Postgres so it persists across Render redeploys.
+// ============================================================
+async function loadLeadPhotos(rowIndex) {
+  const box = document.getElementById('ld-photos');
+  if (!box) return;
+  // Demo/unsaved leads have no real row id — nothing to fetch, don't 500.
+  if (!Number.isInteger(Number(rowIndex))) { box.innerHTML = '<div class="ld-empty">No factory pics yet.</div>'; return; }
+  try {
+    const photos = await apiFetch(`/api/leads/${rowIndex}/photos` + orgQuery());
+    if (!photos.length) { box.innerHTML = '<div class="ld-empty">No factory pics yet.</div>'; return; }
+    const canDel = state.role !== 'guest';
+    // Read the data-URL from the <img>'s own src at click time rather than
+    // inlining the (hundreds-of-KB base64) string into an onclick attribute.
+    box.innerHTML = photos.map(p => `<div class="ld-photo">
+        <img src="${escAttr(p.file_path)}" alt="${escAttr(p.caption || 'Factory pic')}" loading="lazy" onclick="viewLeadPhoto(this.src)" />
+        ${canDel ? `<button class="ld-photo-del" title="Delete" onclick="event.stopPropagation(); deleteLeadPhoto(${rowIndex}, ${p.id})">✕</button>` : ''}
+      </div>`).join('');
+  } catch (err) {
+    box.innerHTML = `<div class="ld-empty">Couldn't load pics: ${escHtml(err.message)}</div>`;
+  }
+}
+
+function capturePhotoForLead(rowIndex) {
+  // A fresh input each time so re-selecting the same file still fires change.
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.setAttribute('capture', 'environment');   // rear camera on phones
+  input.style.display = 'none';
+  input.onchange = () => {
+    const file = input.files && input.files[0];
+    input.remove();
+    if (file) handleLeadPhotoFile(rowIndex, file);
+  };
+  document.body.appendChild(input);
+  input.click();
+}
+
+// Downscale/compress before upload so a phone's 4–12MP photo becomes a small
+// (~1600px, quality .72) JPEG the DB can hold comfortably.
+function downscaleImageFile(file, maxDim = 1600, quality = 0.72) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let { width, height } = img;
+      if (Math.max(width, height) > maxDim) {
+        const s = maxDim / Math.max(width, height);
+        width = Math.round(width * s); height = Math.round(height * s);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, width, height);   // flatten any alpha
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('That file is not a readable image')); };
+    img.src = url;
+  });
+}
+
+async function handleLeadPhotoFile(rowIndex, file) {
+  if (!/^image\//.test(file.type)) { toast('Please choose a photo', 'error'); return; }
+  const btn = document.querySelector('.ld-photo-add');
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Uploading…'; }
+  try {
+    const dataUrl = await downscaleImageFile(file);
+    await apiFetch(`/api/leads/${rowIndex}/photos` + orgQuery(), {
+      method: 'POST',
+      body: JSON.stringify({ image: dataUrl, caption: 'Factory pic' }),
+    });
+    toast('Factory pic saved');
+    await loadLeadPhotos(rowIndex);
+  } catch (err) {
+    toast('Could not save pic: ' + err.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label || '📷 Add factory pic'; }
+  }
+}
+
+async function deleteLeadPhoto(rowIndex, photoId) {
+  if (!confirm('Delete this factory pic? This cannot be undone.')) return;
+  try {
+    await apiFetch(`/api/leads/${rowIndex}/photos/${photoId}` + orgQuery(), { method: 'DELETE' });
+    toast('Pic deleted');
+    await loadLeadPhotos(rowIndex);
+  } catch (err) { toast('Could not delete: ' + err.message, 'error'); }
+}
+
+// Full-screen viewer for a tapped pic.
+function viewLeadPhoto(src) {
+  const ov = document.createElement('div');
+  ov.className = 'photo-viewer';
+  ov.onclick = () => ov.remove();
+  ov.innerHTML = `<img src="${escAttr(src)}" alt="Factory pic" /><button class="photo-viewer-close" aria-label="Close">✕</button>`;
+  document.body.appendChild(ov);
 }
 
 // ============================================================

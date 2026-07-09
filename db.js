@@ -1029,6 +1029,16 @@ async function getPhotos(leadId) {
   return rows;
 }
 
+async function deletePhoto(photoId) {
+  const r = await pool.query(`DELETE FROM lead_photos WHERE id = $1 RETURNING lead_id`, [photoId]);
+  return { ok: true, deleted: r.rowCount || 0, leadId: r.rows[0] && r.rows[0].lead_id };
+}
+
+async function getPhotoById(photoId) {
+  const { rows } = await pool.query(`SELECT * FROM lead_photos WHERE id = $1`, [photoId]);
+  return rows[0] || null;
+}
+
 // ── Lead Access ───────────────────────────────────────────────
 async function grantLeadAccess(leadId, userDisplayName, grantedBy = '') {
   try {
@@ -2390,7 +2400,7 @@ module.exports = {
   initSchema,
   getLeads, getLeadsForUser, getLeadsByTeam, getStats, addLead, updateLead, deleteLead, importLeads,
   copyLeadsToWorking, moveLeadsBucket, updateLeadFields, setLeadProducts,
-  addPhoto, getPhotos, getLeadContacts,
+  addPhoto, getPhotos, deletePhoto, getPhotoById, getLeadContacts,
   grantLeadAccess, revokeLeadAccess, getLeadAccess, claimFollowUp, reassignFollowUp,
   createUser, getUserByName, getUserByTelegramId, updateUserPin, updateUserName, updateUserDefaultArea,
   getAllUsers, deleteUser, verifyUserPin, verifyUserPassword, setUserPassword, seedAdminUser,

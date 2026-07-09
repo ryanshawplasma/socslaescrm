@@ -18,7 +18,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=40" />
+  <link rel="stylesheet" href="style.css?v=41" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -540,6 +540,8 @@
       <div class="sidebar-footer">
         <button id="btn-set-pin" class="btn-biometric-enable" onclick="openPinSetupFromMenu()">🔢 Set Quick-Unlock PIN</button>
         <button id="btn-enable-biometric" class="btn-biometric-enable hidden" onclick="enableBiometric()">🔐 Enable Biometric Login</button>
+        <button id="btn-toggle-bubble" class="btn-biometric-enable" onclick="toggleAiBubble()">💬 Show AI bubble</button>
+        <button id="btn-install-app" class="btn-biometric-enable hidden" onclick="installApp()">📲 Add to Home Screen</button>
         <div class="user-card">
           <div class="user-avatar" id="sidebar-avatar">?</div>
           <div class="user-meta">
@@ -1008,6 +1010,12 @@
         <span>More</span>
       </button>
     </nav>
+
+    <!-- ── Floating AI assistant bubble (draggable; tap to open AI chat) ── -->
+    <button id="ai-bubble" class="ai-bubble hidden" aria-label="Open AI assistant" title="AI assistant — tap to chat, drag to move">
+      <span class="ai-bubble-icon">✨</span>
+    </button>
+    <div id="ai-bubble-trash" class="ai-bubble-trash" aria-hidden="true"><span>✕</span><small>Remove</small></div>
   </div><!-- /app -->
 
   <!-- ── MODAL — Add / Edit Lead ──────────────────────────── -->
@@ -1123,7 +1131,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=38"></script>
+  <script src="app.js?v=40"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:2600, once:true };</script>
   <script src="dive-splash.js"></script>

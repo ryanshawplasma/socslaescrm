@@ -1661,6 +1661,12 @@ function navigate(page) {
   // The chat page has its own fixed composer at the bottom — hide the mobile
   // bottom nav there so the two don't stack/overlap.
   document.getElementById('bottom-nav')?.classList.toggle('hidden', page === 'chat');
+  // The floating AI bubble is redundant on the chat page (you're already there).
+  const _bubble = document.getElementById('ai-bubble');
+  if (_bubble) {
+    if (page === 'chat') _bubble.classList.add('hidden');
+    else if (!bubbleHidden()) _bubble.classList.remove('hidden');
+  }
   applyChatViewport();
   renderPage(page);
 }
@@ -5157,6 +5163,7 @@ async function initApp() {
     navigate('dashboard');
     applyRoleUI();
     updateSecurityButtons();    // show/hide the "Set PIN" shortcut for this device
+    refreshAiBubbleVisibility(); // reveal the floating AI bubble (unless hidden)
     startAutoRefresh();
     initSocket();
     maybeShowTeamsDiscover();   // nudge team-less users to join a public team
@@ -5174,10 +5181,161 @@ async function init() {
   initTheme();
   wireEvents();
   initChatViewport();
+  initAiBubble();
+  initInstallPrompt();
   // Show overlay while we check auth state
   document.getElementById('login-overlay').classList.remove('hidden');
   document.getElementById('app').classList.add('hidden');
   await checkAndShowAuth();
+}
+
+// ============================================================
+//  Floating AI assistant bubble — draggable launcher for the AI chat.
+//  Tap to open chat, drag to reposition (position persists), drag onto the
+//  "Remove" zone to hide it; re-enable from the sidebar. Visibility +
+//  position are saved in localStorage so it stays how the user left it.
+// ============================================================
+const AI_BUBBLE_HIDDEN_KEY = 'crm_ai_bubble_hidden';
+const AI_BUBBLE_POS_KEY     = 'crm_ai_bubble_pos';
+
+function bubbleHidden() { return localStorage.getItem(AI_BUBBLE_HIDDEN_KEY) === '1'; }
+
+// Viewport size — clientWidth/Height are more reliable than innerWidth/Height
+// (which some embedded/automation contexts report as 0, breaking the clamp).
+function bubbleVW() { return document.documentElement.clientWidth  || window.innerWidth  || 360; }
+function bubbleVH() { return document.documentElement.clientHeight || window.innerHeight || 640; }
+
+function applyBubblePosition() {
+  const bubble = document.getElementById('ai-bubble');
+  if (!bubble) return;
+  let pos = null;
+  try { pos = JSON.parse(localStorage.getItem(AI_BUBBLE_POS_KEY)); } catch (_) {}
+  const m = 8, w = bubble.offsetWidth || 56, h = bubble.offsetHeight || 56;
+  if (pos && typeof pos.left === 'number') {
+    // Re-clamp to the current viewport (handles rotation / smaller screens).
+    const left = Math.max(m, Math.min(bubbleVW() - w - m, pos.left));
+    const top  = Math.max(m, Math.min(bubbleVH() - h - m, pos.top));
+    bubble.style.left = left + 'px'; bubble.style.top = top + 'px';
+    bubble.style.right = 'auto'; bubble.style.bottom = 'auto';
+  } else {
+    // Default: bottom-right, lifted above the mobile bottom nav.
+    bubble.style.left = ''; bubble.style.top = '';
+    bubble.style.right = '16px';
+    bubble.style.bottom = (bubbleVW() <= 640 ? 88 : 24) + 'px';
+  }
+}
+
+function saveBubblePosition() {
+  const bubble = document.getElementById('ai-bubble');
+  if (!bubble) return;
+  const r = bubble.getBoundingClientRect();
+  localStorage.setItem(AI_BUBBLE_POS_KEY, JSON.stringify({ left: Math.round(r.left), top: Math.round(r.top) }));
+}
+
+function updateBubbleToggleLabel() {
+  const btn = document.getElementById('btn-toggle-bubble');
+  if (btn) btn.textContent = bubbleHidden() ? '💬 Show AI bubble' : '💬 Hide AI bubble';
+}
+
+function showAiBubble() {
+  localStorage.setItem(AI_BUBBLE_HIDDEN_KEY, '0');
+  document.getElementById('ai-bubble')?.classList.remove('hidden');
+  applyBubblePosition();
+  updateBubbleToggleLabel();
+}
+function hideAiBubble() {
+  localStorage.setItem(AI_BUBBLE_HIDDEN_KEY, '1');
+  document.getElementById('ai-bubble')?.classList.add('hidden');
+  updateBubbleToggleLabel();
+  toast('AI bubble hidden — turn it back on from the menu');
+}
+function toggleAiBubble() { bubbleHidden() ? showAiBubble() : hideAiBubble(); }
+
+// Called once after login to reveal the bubble unless the user hid it. (The
+// bubble lives inside #app, so the login screen hides it automatically.)
+function refreshAiBubbleVisibility() {
+  const bubble = document.getElementById('ai-bubble');
+  if (!bubble) return;
+  bubble.classList.toggle('hidden', bubbleHidden());
+  applyBubblePosition();
+  updateBubbleToggleLabel();
+}
+
+function initAiBubble() {
+  const bubble = document.getElementById('ai-bubble');
+  const trash  = document.getElementById('ai-bubble-trash');
+  if (!bubble) return;
+  applyBubblePosition();
+  updateBubbleToggleLabel();
+
+  let start = null, moved = false;
+  const overTrash = (x, y) => {
+    if (!trash) return false;
+    const t = trash.getBoundingClientRect();
+    return x >= t.left && x <= t.right && y >= t.top && y <= t.bottom;
+  };
+  const onMove = (e) => {
+    if (!start) return;
+    const dx = e.clientX - start.x, dy = e.clientY - start.y;
+    if (!moved && Math.abs(dx) + Math.abs(dy) > 6) { moved = true; document.body.classList.add('bubble-dragging'); }
+    if (!moved) return;
+    const m = 8, w = bubble.offsetWidth, h = bubble.offsetHeight;
+    const left = Math.max(m, Math.min(bubbleVW() - w - m, start.left + dx));
+    const top  = Math.max(m, Math.min(bubbleVH() - h - m, start.top + dy));
+    bubble.style.left = left + 'px'; bubble.style.top = top + 'px';
+    bubble.style.right = 'auto'; bubble.style.bottom = 'auto';
+    if (trash) trash.classList.toggle('hot', overTrash(e.clientX, e.clientY));
+  };
+  const onUp = (e) => {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    bubble.classList.remove('grabbing');
+    document.body.classList.remove('bubble-dragging');
+    if (trash) trash.classList.remove('hot');
+    const wasMoved = moved, s = start; start = null; moved = false;
+    if (!wasMoved) { navigate('chat'); return; }              // a tap → open chat
+    if (s && overTrash(e.clientX, e.clientY)) { hideAiBubble(); return; }  // dropped on Remove
+    saveBubblePosition();
+  };
+  bubble.addEventListener('pointerdown', (e) => {
+    if (e.button != null && e.button !== 0) return;
+    const rect = bubble.getBoundingClientRect();
+    start = { x: e.clientX, y: e.clientY, left: rect.left, top: rect.top };
+    moved = false;
+    bubble.classList.add('grabbing');
+    try { bubble.setPointerCapture(e.pointerId); } catch (_) {}
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  });
+  // Keep it on-screen after rotation / resize.
+  window.addEventListener('resize', () => { if (!bubbleHidden()) applyBubblePosition(); });
+}
+
+// ── PWA install ("Add to Home Screen") ──────────────────────
+let _deferredInstall = null;
+function initInstallPrompt() {
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault(); _deferredInstall = e;
+    document.getElementById('btn-install-app')?.classList.remove('hidden');
+  });
+  window.addEventListener('appinstalled', () => {
+    _deferredInstall = null;
+    document.getElementById('btn-install-app')?.classList.add('hidden');
+    toast('Installed! You can open Dive from your home screen now.');
+  });
+}
+async function installApp() {
+  if (_deferredInstall) {
+    _deferredInstall.prompt();
+    try { await _deferredInstall.userChoice; } catch (_) {}
+    _deferredInstall = null;
+    document.getElementById('btn-install-app')?.classList.add('hidden');
+    return;
+  }
+  // iOS/Safari has no install event — guide the manual flow.
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  toast(isIOS ? 'Tap the Share icon, then “Add to Home Screen”.'
+              : 'Use your browser menu → “Install app” / “Add to Home Screen”.', 'info');
 }
 
 // ============================================================

@@ -4187,3 +4187,38 @@ tr.row-cold:hover td { background: #dbeafe; }
   display: flex; align-items: center; justify-content: center;
 }
 .photo-viewer-close:hover { background: rgba(255,255,255,.28); }
+
+/* ══════════════════════════════════════════════════════════
+   FLOATING AI BUBBLE — draggable launcher for the AI chat
+   ══════════════════════════════════════════════════════════ */
+.ai-bubble {
+  position: fixed; right: 16px; bottom: 24px; z-index: 8500;
+  width: 56px; height: 56px; border-radius: 50%; border: none; cursor: grab;
+  background: linear-gradient(135deg, var(--primary), var(--primary-lt));
+  color: #fff; display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 10px 26px -6px color-mix(in srgb, var(--primary) 60%, transparent), 0 3px 10px rgba(0,0,0,.28);
+  touch-action: none; -webkit-tap-highlight-color: transparent; user-select: none;
+  transition: transform .16s ease, box-shadow .16s ease;
+  animation: bubblePop .3s cubic-bezier(.2,1.1,.5,1) both;
+}
+.ai-bubble:hover { transform: scale(1.06); }
+.ai-bubble.grabbing { cursor: grabbing; transform: scale(1.12); box-shadow: 0 16px 34px -6px rgba(0,0,0,.4); }
+.ai-bubble-icon { font-size: 25px; line-height: 1; pointer-events: none; }
+@keyframes bubblePop { from { transform: scale(0); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+/* Drag-to-remove drop zone (appears only while dragging) */
+.ai-bubble-trash {
+  position: fixed; left: 50%; bottom: 34px; transform: translateX(-50%) translateY(20px);
+  z-index: 8600; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  width: 76px; height: 76px; border-radius: 50%; justify-content: center;
+  background: rgba(120,120,130,.28); color: #fff; backdrop-filter: blur(4px);
+  border: 1.5px dashed rgba(255,255,255,.6);
+  opacity: 0; pointer-events: none; transition: opacity .18s ease, transform .18s ease, background .16s ease;
+}
+.ai-bubble-trash span { font-size: 20px; line-height: 1; }
+.ai-bubble-trash small { font-size: 10px; letter-spacing: .04em; }
+body.bubble-dragging .ai-bubble-trash { opacity: 1; transform: translateX(-50%) translateY(0); }
+.ai-bubble-trash.hot { background: var(--danger); border-style: solid; transform: translateX(-50%) translateY(0) scale(1.12); }
+
+/* On the chat page the bubble is redundant (you're already there) — tuck it away. */
+#content.chat-mode ~ .ai-bubble, .page-chat-active .ai-bubble { display: none; }

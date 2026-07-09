@@ -1642,13 +1642,15 @@ function toast(msg, type = 'success') {
 const PAGE_TITLES = {
   dashboard: 'Dashboard', leads: 'Leads', database: 'Database',
   pipeline: 'Pipeline', followups: 'Follow-ups', reports: 'Reports', team: 'Team', map: 'Map', chat: 'Chat',
-  workspace: 'Workspace', brochure: 'Brochure Maker',
+  workspace: 'Workspace', brochure: 'Brochure Maker', hub: 'Team Hub',
 };
 
 function navigate(page) {
   state.page = page;
   // Leaving the Leads table clears the bulk selection + its floating bar.
   if (page !== 'leads') { state.selectedLeads.clear(); document.getElementById('leads-bulk-bar')?.remove(); }
+  // Leaving the Team Hub stops its chat poll so we don't network in the background.
+  if (page !== 'hub') hubStopChatPoll();
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item, #bottom-nav .bn-item').forEach(n => n.classList.remove('active'));
   const pageEl = document.getElementById(`page-${page}`);
@@ -1700,6 +1702,7 @@ function renderPage(page) {
   if (page === 'chat')       chatFocusInput();
   if (page === 'workspace')  renderWorkspace();
   if (page === 'brochure')   renderBrochure();
+  if (page === 'hub')        renderHub();
   if (page === 'ai-debug')   renderAiDebugPage();
 }
 
@@ -5166,6 +5169,7 @@ async function initApp() {
     refreshAiBubbleVisibility(); // reveal the floating AI bubble (unless hidden)
     loadPlan();                 // Lite/Pro entitlement → sidebar badge + gating
     document.getElementById('btn-codes')?.classList.toggle('hidden', state.role !== 'admin');
+    startPresenceHeartbeat();   // "who's online" for the Team Hub
     startAutoRefresh();
     initSocket();
     maybeShowTeamsDiscover();   // nudge team-less users to join a public team
@@ -5361,6 +5365,408 @@ async function deleteCode(id) {
 }
 function copyText(t) {
   navigator.clipboard?.writeText(t).then(() => toast('Copied: ' + t), () => toast('Copy failed', 'error'));
+}
+
+// ============================================================
+//  Team Hub (Pro) — tasks · activity · chat · leaderboard
+//  A team-scoped collaboration space. Gated behind Pro + team
+//  membership; every call carries ?teamId=<hubState.teamId>.
+// ============================================================
+const hubState = { teamId: '', tab: 'tasks', members: [], tasks: [], chatPoll: null, lastMsgId: 0, loaded: {} };
+
+function me() { return localStorage.getItem('crm_user') || ''; }
+
+// Which team the Hub operates on: the active workspace, else the first team.
+function hubResolveTeamId() {
+  if (state.activeOrgId) return String(state.activeOrgId);
+  const t = (state.myTeams || [])[0];
+  return t ? String(t.id) : '';
+}
+function hubTeamObj() {
+  return (state.myTeams || []).find(t => String(t.id) === String(hubState.teamId)) || null;
+}
+function hubQuery(extra) {
+  const q = new URLSearchParams();
+  if (hubState.teamId) q.set('teamId', hubState.teamId);
+  for (const k in (extra || {})) q.set(k, extra[k]);
+  const s = q.toString();
+  return s ? '?' + s : '';
+}
+const hubApi = (path, opts) => apiFetch(path + hubQuery(), opts);
+
+// ── Entry point ───────────────────────────────────────────────
+function renderHub() {
+  const gate = document.getElementById('hub-gate');
+  const main = document.getElementById('hub-main');
+  if (!gate || !main) return;
+  const show = (which) => {
+    gate.classList.toggle('hidden', which !== 'gate');
+    main.classList.toggle('hidden', which !== 'main');
+  };
+
+  if (state.role === 'guest') {
+    gate.innerHTML = hubGateCard('👋', 'Sign in to use the Team Hub',
+      'The Team Hub is where your sales team assigns tasks, chats and tracks who’s winning.',
+      'Create an account', "showLoginPage()");
+    return show('gate');
+  }
+
+  hubState.teamId = hubResolveTeamId();
+  if (!hubState.teamId) {
+    gate.innerHTML = hubGateCard('🏢', 'Create or join a team first',
+      'The Team Hub works across your team. Set up a workspace, invite your reps, then come back here.',
+      'Go to Workspace', "navigate('workspace')");
+    return show('gate');
+  }
+
+  if (!isPro()) {
+    gate.innerHTML = hubGateCard('✦', 'Team Hub is a Pro feature',
+      'Assign tasks & leads, chat with your team in real time, see a live activity feed and a sales leaderboard.',
+      'Unlock Pro', "openUpgradeModal('Team Hub')", true);
+    return show('gate');
+  }
+
+  show('main');
+  const t = hubTeamObj();
+  const nm = (t && t.name) || 'Your team';
+  document.getElementById('hub-team-name').textContent = nm;
+  document.getElementById('hub-team-avatar').textContent = (nm.trim()[0] || '?').toUpperCase();
+  document.getElementById('hub-team-meta').textContent = t ? `@${t.handle || 'team'}` : '';
+  hubLoadMembers();
+  hubLoadPresence();
+  hubShowTab(hubState.tab || 'tasks');
+}
+
+function hubGateCard(icon, title, sub, btnLabel, onclick, pro) {
+  return `<div class="hub-gate-card">
+    <div class="hub-gate-icon ${pro ? 'is-pro' : ''}">${icon}</div>
+    <h2 class="hub-gate-title">${escHtml(title)}</h2>
+    <p class="hub-gate-sub">${escHtml(sub)}</p>
+    <button class="btn btn-primary" onclick="${onclick}">${escHtml(btnLabel)}</button>
+  </div>`;
+}
+
+async function hubLoadMembers() {
+  try {
+    const rows = await apiFetch(`/api/teams/${hubState.teamId}/members`, { headers: { 'X-Team-ID': String(hubState.teamId) } });
+    hubState.members = rows.filter(m => m.status === 'active').map(m => m.display_name).filter(Boolean);
+  } catch (_) { hubState.members = []; }
+}
+
+async function hubLoadPresence() {
+  const el = document.getElementById('hub-online');
+  if (!el) return;
+  try {
+    const board = await hubApi('/api/team/leaderboard');
+    hubState._board = board;
+    const online = board.filter(p => p.online);
+    const dots = online.slice(0, 6).map(p =>
+      `<span class="hub-ava" title="${escAttr(p.name)}">${escHtml((p.name.trim()[0] || '?').toUpperCase())}</span>`).join('');
+    el.innerHTML = online.length
+      ? `${dots}<span class="hub-online-txt">${online.length} online</span>`
+      : `<span class="hub-online-txt hub-online-none">No one online</span>`;
+  } catch (_) { el.innerHTML = ''; }
+}
+
+// ── Tab switching ─────────────────────────────────────────────
+function hubShowTab(tab) {
+  hubState.tab = tab;
+  document.querySelectorAll('#hub-tabs .hub-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  ['tasks', 'activity', 'chat', 'board'].forEach(t =>
+    document.getElementById('hub-panel-' + t)?.classList.toggle('hidden', t !== tab));
+  if (tab !== 'chat') hubStopChatPoll();
+  if (tab === 'tasks')    renderHubTasks();
+  if (tab === 'activity') renderHubActivity();
+  if (tab === 'chat')     renderHubChat();
+  if (tab === 'board')    renderHubBoard();
+}
+
+// ── Tasks board ───────────────────────────────────────────────
+const HUB_COLS = [
+  { key: 'open',  label: 'To do' },
+  { key: 'doing', label: 'In progress' },
+  { key: 'done',  label: 'Done' },
+];
+const hubToday = () => new Date().toISOString().slice(0, 10);
+
+async function renderHubTasks() {
+  const panel = document.getElementById('hub-panel-tasks');
+  if (!panel) return;
+  const memberOpts = ['<option value="">Assign to…</option>']
+    .concat(hubState.members.map(n => `<option value="${escAttr(n)}">${escHtml(n)}</option>`)).join('');
+  panel.innerHTML = `
+    <div class="hub-newtask">
+      <input id="hub-task-title" placeholder="Add a task for the team…" maxlength="200"
+        onkeydown="if(event.key==='Enter')hubAddTask()" />
+      <select id="hub-task-assignee">${memberOpts}</select>
+      <input id="hub-task-due" type="date" title="Due date" />
+      <button class="btn btn-primary" onclick="hubAddTask()">Add</button>
+    </div>
+    <div id="hub-reminder"></div>
+    <div id="hub-board" class="hub-board"><div class="ld-empty">Loading tasks…</div></div>`;
+  try {
+    hubState.tasks = await hubApi('/api/tasks');
+    hubDrawBoard();
+  } catch (err) {
+    if (!hubHandleGate(err))
+      document.getElementById('hub-board').innerHTML = `<div class="ld-empty">${escHtml(err.message)}</div>`;
+  }
+}
+
+function hubDrawBoard() {
+  const board = document.getElementById('hub-board');
+  if (!board) return;
+  const tasks = hubState.tasks || [];
+  const open = tasks.filter(t => t.status !== 'done').length;
+  const badge = document.getElementById('hub-badge-tasks');
+  if (badge) { badge.textContent = open; badge.classList.toggle('hidden', !open); }
+  hubDrawReminder(tasks);
+  board.innerHTML = HUB_COLS.map(col => {
+    const list = tasks.filter(t => (t.status || 'open') === col.key);
+    return `<div class="hub-col">
+      <div class="hub-col-head">${col.label}<span class="hub-col-n">${list.length}</span></div>
+      <div class="hub-col-body">
+        ${list.length ? list.map(hubTaskCard).join('') : '<div class="hub-col-empty">—</div>'}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// Personal reminder banner: your open + overdue tasks, from the loaded board.
+function hubDrawReminder(tasks) {
+  const box = document.getElementById('hub-reminder');
+  if (!box) return;
+  const mine = me().toLowerCase();
+  const my = (tasks || []).filter(t => t.status !== 'done' && String(t.assignee || '').toLowerCase() === mine);
+  if (!my.length) { box.innerHTML = ''; return; }
+  const overdue = my.filter(t => t.due_at && t.due_at < hubToday()).length;
+  box.innerHTML = `<div class="hub-reminder${overdue ? ' has-overdue' : ''}">
+    <span class="hub-reminder-ico">📌</span>
+    <span><b>${my.length}</b> task${my.length === 1 ? '' : 's'} assigned to you${overdue ? ` · <b class="hub-reminder-over">${overdue} overdue</b>` : ''}</span>
+  </div>`;
+}
+
+function hubTaskCard(t) {
+  const overdue = t.status !== 'done' && t.due_at && t.due_at < hubToday();
+  const chips = [];
+  if (t.assignee)   chips.push(`<span class="hub-chip">👤 ${escHtml(t.assignee)}</span>`);
+  if (t.due_at)     chips.push(`<span class="hub-chip ${overdue ? 'is-overdue' : ''}">📅 ${escHtml(t.due_at)}</span>`);
+  if (t.lead_label) chips.push(`<span class="hub-chip">🏭 ${escHtml(t.lead_label)}</span>`);
+  let moves = '';
+  if (t.status === 'open')  moves = `<button onclick="hubMoveTask(${t.id},'doing')">Start ▸</button><button onclick="hubMoveTask(${t.id},'done')">✓</button>`;
+  if (t.status === 'doing') moves = `<button onclick="hubMoveTask(${t.id},'open')">◂ Back</button><button onclick="hubMoveTask(${t.id},'done')">✓ Done</button>`;
+  if (t.status === 'done')  moves = `<button onclick="hubMoveTask(${t.id},'doing')">↩ Reopen</button>`;
+  return `<div class="hub-task${t.status === 'done' ? ' is-done' : ''}">
+    <div class="hub-task-title">${escHtml(t.title)}</div>
+    ${chips.length ? `<div class="hub-task-meta">${chips.join('')}</div>` : ''}
+    <div class="hub-task-actions">${moves}<button class="hub-task-del" title="Delete" onclick="hubDeleteTask(${t.id})">🗑</button></div>
+  </div>`;
+}
+
+async function hubAddTask() {
+  const titleEl = document.getElementById('hub-task-title');
+  const title = (titleEl?.value || '').trim();
+  if (!title) { titleEl?.focus(); return; }
+  const assignee = document.getElementById('hub-task-assignee')?.value || '';
+  const due_at   = document.getElementById('hub-task-due')?.value || '';
+  try {
+    const res = await hubApi('/api/tasks', { method: 'POST', body: JSON.stringify({ title, assignee, due_at }) });
+    hubState.tasks.unshift(res.task);
+    if (titleEl) titleEl.value = '';
+    const d = document.getElementById('hub-task-due'); if (d) d.value = '';
+    hubDrawBoard();
+    toast('Task added', 'success');
+  } catch (err) { if (!hubHandleGate(err)) toast(err.message, 'error'); }
+}
+
+async function hubMoveTask(id, status) {
+  try {
+    const res = await hubApi('/api/tasks/' + id, { method: 'PATCH', body: JSON.stringify({ status }) });
+    const i = hubState.tasks.findIndex(t => String(t.id) === String(id));
+    if (i >= 0 && res.task) hubState.tasks[i] = res.task;
+    hubDrawBoard();
+  } catch (err) { if (!hubHandleGate(err)) toast(err.message, 'error'); }
+}
+
+async function hubDeleteTask(id) {
+  if (!confirm('Delete this task?')) return;
+  try {
+    await hubApi('/api/tasks/' + id, { method: 'DELETE' });
+    hubState.tasks = hubState.tasks.filter(t => String(t.id) !== String(id));
+    hubDrawBoard();
+  } catch (err) { if (!hubHandleGate(err)) toast(err.message, 'error'); }
+}
+
+// ── Activity feed ─────────────────────────────────────────────
+const HUB_VERBS = {
+  created:      { icon: '➕', text: 'added lead' },
+  stage_change: { icon: '🔄', text: 'moved' },
+  edit:         { icon: '✏️', text: 'edited' },
+  shared:       { icon: '🤝', text: 'shared' },
+  hidden:       { icon: '🙈', text: 'hid' },
+  unhidden:     { icon: '👁', text: 'unhid' },
+  imported:     { icon: '📥', text: 'imported leads' },
+  task_created: { icon: '📝', text: 'created task' },
+  task_done:    { icon: '✅', text: 'completed task' },
+};
+
+async function renderHubActivity() {
+  const panel = document.getElementById('hub-panel-activity');
+  if (!panel) return;
+  panel.innerHTML = `<div class="ld-empty">Loading activity…</div>`;
+  try {
+    const items = await hubApi('/api/team/activity');
+    if (!items.length) { panel.innerHTML = `<div class="hub-empty">No team activity yet. Add a lead or a task to get started.</div>`; return; }
+    panel.innerHTML = `<div class="hub-feed">${items.map(hubActivityRow).join('')}</div>`;
+  } catch (err) { if (!hubHandleGate(err)) panel.innerHTML = `<div class="ld-empty">${escHtml(err.message)}</div>`; }
+}
+
+function hubActivityRow(a) {
+  const v = HUB_VERBS[a.verb] || { icon: '•', text: a.verb };
+  const who = escHtml(a.actor || 'Someone');
+  const label = a.label ? ` <b>${escHtml(a.label)}</b>` : '';
+  const extra = a.source === 'lead' && a.text && (a.verb === 'stage_change')
+    ? ` <span class="hub-feed-extra">${escHtml(a.text)}</span>` : '';
+  return `<div class="hub-feed-row">
+    <span class="hub-feed-ico">${v.icon}</span>
+    <div class="hub-feed-body"><span class="hub-feed-txt">${who} ${escHtml(v.text)}${label}${extra}</span>
+    <span class="hub-feed-time">${hubTimeAgo(a.created_at)}</span></div>
+  </div>`;
+}
+
+// ── Chat ──────────────────────────────────────────────────────
+function renderHubChat() {
+  const panel = document.getElementById('hub-panel-chat');
+  if (!panel) return;
+  panel.innerHTML = `
+    <div class="hub-chat">
+      <div id="hub-chat-msgs" class="hub-chat-msgs"><div class="ld-empty">Loading…</div></div>
+      <div class="hub-chat-compose">
+        <textarea id="hub-chat-input" rows="1" placeholder="Message your team…"
+          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();hubSendMessage();}"></textarea>
+        <button class="btn btn-primary" onclick="hubSendMessage()">Send</button>
+      </div>
+    </div>`;
+  hubState.lastMsgId = 0;
+  hubLoadMessages(true);
+  hubStartChatPoll();
+}
+
+async function hubLoadMessages(initial) {
+  try {
+    const q = hubQuery(hubState.lastMsgId ? { after: hubState.lastMsgId } : null);
+    const msgs = await apiFetch('/api/team/messages' + q);
+    hubRenderMessages(msgs, !initial);
+  } catch (err) {
+    if (initial && !hubHandleGate(err)) {
+      const box = document.getElementById('hub-chat-msgs');
+      if (box) box.innerHTML = `<div class="ld-empty">${escHtml(err.message)}</div>`;
+    }
+  }
+}
+
+function hubRenderMessages(msgs, append) {
+  const box = document.getElementById('hub-chat-msgs');
+  if (!box) return;
+  if (!append) box.innerHTML = '';
+  if (!append && !msgs.length) { box.innerHTML = `<div class="hub-empty">No messages yet — say hi 👋</div>`; return; }
+  const mine = me().toLowerCase();
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  const frag = msgs.map(m => {
+    if (m.id > hubState.lastMsgId) hubState.lastMsgId = m.id;
+    const isMine = String(m.sender || '').toLowerCase() === mine;
+    return `<div class="hub-msg${isMine ? ' mine' : ''}">
+      ${isMine ? '' : `<div class="hub-msg-who">${escHtml(m.sender)}</div>`}
+      <div class="hub-msg-bubble">${escHtml(m.body).replace(/\n/g, '<br>')}</div>
+      <div class="hub-msg-time">${hubClock(m.created_at)}</div>
+    </div>`;
+  }).join('');
+  const empty = box.querySelector('.hub-empty'); if (empty) box.innerHTML = '';
+  box.insertAdjacentHTML('beforeend', frag);
+  if (!append || atBottom) box.scrollTop = box.scrollHeight;
+}
+
+async function hubSendMessage() {
+  const input = document.getElementById('hub-chat-input');
+  const body = (input?.value || '').trim();
+  if (!body) return;
+  input.value = '';
+  try {
+    const res = await hubApi('/api/team/messages', { method: 'POST', body: JSON.stringify({ body }) });
+    if (res.message) hubRenderMessages([res.message], true);
+  } catch (err) { if (!hubHandleGate(err)) { toast(err.message, 'error'); if (input) input.value = body; } }
+}
+
+function hubStartChatPoll() {
+  hubStopChatPoll();
+  hubState.chatPoll = setInterval(() => { if (state.page === 'hub' && hubState.tab === 'chat') hubLoadMessages(false); }, 4000);
+}
+function hubStopChatPoll() {
+  if (hubState.chatPoll) { clearInterval(hubState.chatPoll); hubState.chatPoll = null; }
+}
+
+// ── Leaderboard + presence ────────────────────────────────────
+async function renderHubBoard() {
+  const panel = document.getElementById('hub-panel-board');
+  if (!panel) return;
+  panel.innerHTML = `<div class="ld-empty">Loading leaderboard…</div>`;
+  try {
+    const board = hubState._board || await hubApi('/api/team/leaderboard');
+    hubState._board = board;
+    if (!board.length) { panel.innerHTML = `<div class="hub-empty">No teammates yet.</div>`; return; }
+    const medal = i => ['🥇', '🥈', '🥉'][i] || `${i + 1}`;
+    panel.innerHTML = `
+      <div class="hub-lead-note">Score = leads + hot×2 + tasks done×3</div>
+      <div class="hub-lead">
+        ${board.map((p, i) => `
+          <div class="hub-lead-row${i < 3 ? ' top' : ''}">
+            <div class="hub-lead-rank">${medal(i)}</div>
+            <div class="hub-lead-who">
+              <span class="hub-ava sm ${p.online ? 'on' : ''}">${escHtml((p.name.trim()[0] || '?').toUpperCase())}</span>
+              <div><div class="hub-lead-name">${escHtml(p.name)}${p.online ? '<span class="hub-live-dot" title="Online"></span>' : ''}</div>
+              <div class="hub-lead-sub">${p.total} leads · ${p.hot} hot · ${p.done} done</div></div>
+            </div>
+            <div class="hub-lead-score">${p.score}</div>
+          </div>`).join('')}
+      </div>`;
+  } catch (err) { if (!hubHandleGate(err)) panel.innerHTML = `<div class="ld-empty">${escHtml(err.message)}</div>`; }
+}
+
+// ── Shared helpers ────────────────────────────────────────────
+// If a call 402s (Pro lapsed mid-session), re-render the gate. Returns true if handled.
+function hubHandleGate(err) {
+  if (err && /pro required|402/i.test(err.message || '')) {
+    state.plan = { isPro: false, plan: 'lite', daysLeft: 0 };
+    renderPlanBadge();
+    renderHub();
+    return true;
+  }
+  return false;
+}
+
+function hubTimeAgo(ts) {
+  const d = new Date(ts).getTime();
+  if (!d) return '';
+  const s = Math.floor((Date.now() - d) / 1000);
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60); if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60); if (h < 24) return h + 'h ago';
+  const days = Math.floor(h / 24); if (days < 7) return days + 'd ago';
+  return new Date(ts).toLocaleDateString();
+}
+function hubClock(ts) {
+  const d = new Date(ts);
+  return isNaN(d) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// Presence heartbeat — every logged-in client pings so "who's online" stays live.
+let presenceTimer = null;
+function startPresenceHeartbeat() {
+  if (state.role === 'guest') return;
+  const ping = () => apiFetch('/api/presence', { method: 'POST' }).catch(() => {});
+  ping();
+  if (presenceTimer) clearInterval(presenceTimer);
+  presenceTimer = setInterval(() => { if (document.visibilityState === 'visible') ping(); }, 90000);
 }
 
 async function init() {

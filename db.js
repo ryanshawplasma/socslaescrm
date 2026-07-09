@@ -466,6 +466,37 @@ async function initSchema() {
     `).catch(e => console.warn('[db] non-fatal:', e && e.message));
     await client.query(`CREATE INDEX IF NOT EXISTS idx_team_tasks_team ON team_tasks(team_id, status)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
+    // ── Team Hub (Pro): chat messages ─────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS team_messages (
+        id          BIGSERIAL PRIMARY KEY,
+        team_id     INTEGER NOT NULL,
+        sender      TEXT NOT NULL,
+        body        TEXT DEFAULT '',
+        kind        TEXT DEFAULT 'msg',
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+      )
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_team_messages_team ON team_messages(team_id, id DESC)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+
+    // ── Team Hub (Pro): unified activity feed (non-lead events) ─
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS team_activity (
+        id           BIGSERIAL PRIMARY KEY,
+        team_id      INTEGER NOT NULL,
+        actor        TEXT NOT NULL,
+        verb         TEXT NOT NULL,
+        object_type  TEXT DEFAULT '',
+        object_label TEXT DEFAULT '',
+        meta         JSONB DEFAULT '{}',
+        created_at   TIMESTAMPTZ DEFAULT NOW()
+      )
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_team_activity_team ON team_activity(team_id, created_at DESC)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+
+    // Presence: last time a user pinged the server (for "who's online").
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+
     // ── New: Field-level edit history ──────────────────────────
     await client.query(`
       CREATE TABLE IF NOT EXISTS lead_history (
@@ -2283,6 +2314,112 @@ async function deleteTask(id) {
   return { ok: true, deleted: r.rowCount || 0 };
 }
 
+// ── Team Hub: chat ────────────────────────────────────────────
+async function addTeamMessage(teamId, sender, body, kind) {
+  const { rows } = await pool.query(
+    `INSERT INTO team_messages (team_id, sender, body, kind) VALUES ($1,$2,$3,$4) RETURNING *`,
+    [teamId, String(sender || '').trim(), String(body || '').slice(0, 4000), kind || 'msg']);
+  return rows[0];
+}
+async function getTeamMessages(teamId, afterId, limit) {
+  const after = parseInt(afterId, 10) || 0;
+  const lim = Math.max(1, Math.min(200, parseInt(limit, 10) || 80));
+  if (after) {
+    const { rows } = await pool.query(
+      `SELECT * FROM team_messages WHERE team_id=$1 AND id>$2 ORDER BY id ASC LIMIT $3`, [teamId, after, lim]);
+    return rows;
+  }
+  // Newest `lim`, returned oldest-first for natural chat order.
+  const { rows } = await pool.query(
+    `SELECT * FROM (SELECT * FROM team_messages WHERE team_id=$1 ORDER BY id DESC LIMIT $2) t ORDER BY id ASC`,
+    [teamId, lim]);
+  return rows;
+}
+
+// ── Team Hub: activity feed ───────────────────────────────────
+// Non-lead events (tasks, chat milestones) live in team_activity; lead events
+// already live in lead_activities. getTeamActivity merges + normalises both.
+async function logTeamActivity(teamId, actor, verb, objectType, objectLabel, meta) {
+  if (!teamId) return;
+  await pool.query(
+    `INSERT INTO team_activity (team_id, actor, verb, object_type, object_label, meta)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [teamId, String(actor || '').trim(), verb, objectType || '', String(objectLabel || '').slice(0, 200),
+     JSON.stringify(meta || {})]).catch(e => console.warn('[db] non-fatal:', e && e.message));
+}
+async function getTeamActivity(teamId, limit) {
+  const lim = Math.max(1, Math.min(120, parseInt(limit, 10) || 60));
+  const [teamRows, leadRows] = await Promise.all([
+    pool.query(`SELECT actor, verb, object_type, object_label, created_at
+                  FROM team_activity WHERE team_id=$1 ORDER BY created_at DESC LIMIT $2`, [teamId, lim]),
+    pool.query(`SELECT la.performed_by AS actor, la.activity_type AS verb, la.description,
+                       l.factory_name, l.factory_number, la.created_at
+                  FROM lead_activities la LEFT JOIN leads l ON l.id = la.lead_id
+                 WHERE la.team_id=$1 ORDER BY la.created_at DESC LIMIT $2`, [teamId, lim]),
+  ]);
+  const items = [];
+  for (const r of teamRows.rows) items.push({
+    actor: r.actor, verb: r.verb, objectType: r.object_type, label: r.object_label,
+    created_at: r.created_at, source: 'team',
+  });
+  for (const r of leadRows.rows) {
+    const label = (r.factory_name || r.factory_number || '').toString().trim();
+    items.push({ actor: r.actor, verb: r.verb, objectType: 'lead', label,
+      text: r.description, created_at: r.created_at, source: 'lead' });
+  }
+  items.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  return items.slice(0, lim);
+}
+
+// ── Team Hub: presence + leaderboard ──────────────────────────
+async function touchLastSeen(userId) {
+  if (!userId) return;
+  await pool.query(`UPDATE users SET last_seen_at=NOW() WHERE id=$1`, [userId])
+    .catch(e => console.warn('[db] non-fatal:', e && e.message));
+}
+async function getTeamPresence(teamId) {
+  const { rows } = await pool.query(
+    `SELECT u.display_name AS name, u.last_seen_at,
+            (u.last_seen_at IS NOT NULL AND u.last_seen_at > NOW() - INTERVAL '3 minutes') AS online
+       FROM team_members tm JOIN users u ON u.id=tm.user_id
+      WHERE tm.team_id=$1 AND tm.status='active'`, [teamId]);
+  return rows;
+}
+// Sales leaderboard from the team's leads + completed tasks. Transparent scoring:
+// total leads + hot*2 + tasksDone*3, ranked desc.
+async function getTeamLeaderboard(teamId) {
+  const [leadAgg, taskAgg, presence] = await Promise.all([
+    pool.query(
+      `SELECT created_by AS name,
+              COUNT(*) AS total,
+              COUNT(*) FILTER (WHERE LOWER(COALESCE(lead_type,'')) LIKE 'hot%') AS hot
+         FROM leads WHERE team_id=$1 AND COALESCE(created_by,'') <> ''
+        GROUP BY created_by`, [teamId]),
+    pool.query(
+      `SELECT assignee AS name, COUNT(*) AS done
+         FROM team_tasks WHERE team_id=$1 AND status='done' AND COALESCE(assignee,'') <> ''
+        GROUP BY assignee`, [teamId]),
+    getTeamPresence(teamId),
+  ]);
+  const map = {};
+  const key = n => String(n || '').trim().toLowerCase();
+  for (const m of presence) if (m.name) map[key(m.name)] = { name: m.name, total: 0, hot: 0, done: 0, online: !!m.online };
+  for (const r of leadAgg.rows) {
+    const k = key(r.name); if (!k) continue;
+    map[k] = map[k] || { name: r.name, total: 0, hot: 0, done: 0, online: false };
+    map[k].total = parseInt(r.total, 10) || 0;
+    map[k].hot   = parseInt(r.hot, 10) || 0;
+  }
+  for (const r of taskAgg.rows) {
+    const k = key(r.name); if (!k) continue;
+    map[k] = map[k] || { name: r.name, total: 0, hot: 0, done: 0, online: false };
+    map[k].done = parseInt(r.done, 10) || 0;
+  }
+  const list = Object.values(map).map(p => ({ ...p, score: p.total + p.hot * 2 + p.done * 3 }));
+  list.sort((a, b) => b.score - a.score || b.total - a.total);
+  return list;
+}
+
 // ── Pro entitlement + access codes ────────────────────────────
 const TRIAL_DAYS = 14;
 
@@ -2564,6 +2701,8 @@ module.exports = {
   copyLeadsToWorking, moveLeadsBucket, updateLeadFields, setLeadProducts,
   addPhoto, getPhotos, deletePhoto, getPhotoById, getLeadContacts,
   createTask, getTasks, getTaskById, updateTask, deleteTask,
+  addTeamMessage, getTeamMessages, logTeamActivity, getTeamActivity,
+  touchLastSeen, getTeamPresence, getTeamLeaderboard,
   entitlementOf, extendUserPro, createAccessCode, getAccessCodes, deleteAccessCode, redeemAccessCode,
   grantLeadAccess, revokeLeadAccess, getLeadAccess, claimFollowUp, reassignFollowUp,
   createUser, getUserByName, getUserByTelegramId, updateUserPin, updateUserName, updateUserDefaultArea,

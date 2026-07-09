@@ -808,6 +808,119 @@ router.delete('/admin/codes/:id', authMiddleware, adminOnly, async (req, res, ne
   catch (err) { next(err); }
 });
 
+// ============================================================
+//  Team Hub (Pro): tasks · activity · chat · leaderboard
+// ============================================================
+// Gate: caller must be on Pro (global admins always pass; guests are Lite).
+async function requirePro(req, res, next) {
+  try {
+    if (req.user.role === 'admin') { req.proUser = null; return next(); }
+    if (req.user.role === 'guest') return res.status(402).json({ error: 'Pro required', code: 'pro_required' });
+    const user = await db.getUserByName(req.user.username);
+    if (!db.entitlementOf(user).isPro) return res.status(402).json({ error: 'Pro required', code: 'pro_required' });
+    req.proUser = user;
+    return next();
+  } catch (err) { next(err); }
+}
+
+// Gate: resolve + require active membership of ?teamId=. Sets req.team = {teamId, user, member}.
+async function requireTeam(req, res, next) {
+  try {
+    const ctx = await resolveTeamContext(req);
+    if (!ctx) return res.status(400).json({ error: 'Pick a team first', code: 'no_team' });
+    if (ctx.forbidden) return res.status(403).json({ error: 'You are not a member of this team' });
+    req.team = ctx;
+    return next();
+  } catch (err) { next(err); }
+}
+
+// Lightweight presence heartbeat (any logged-in user). Powers "who's online".
+router.post('/presence', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const user = req.proUser || await db.getUserByName(req.user.username);
+    if (user) db.touchLastSeen(user.id).catch(() => {});
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ── Tasks ─────────────────────────────────────────────────────
+router.get('/tasks', authMiddleware, requirePro, requireTeam, async (req, res, next) => {
+  try { res.json(await db.getTasks(req.team.teamId, req.user.username)); }
+  catch (err) { next(err); }
+});
+
+router.post('/tasks', authMiddleware, noGuest, requirePro, requireTeam, async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const title = String(b.title || '').trim();
+    if (!title) return res.status(400).json({ error: 'Task title is required' });
+    const task = await db.createTask({
+      teamId: req.team.teamId, title, assignee: b.assignee, createdBy: req.user.username,
+      leadId: b.lead_id ? parseInt(b.lead_id, 10) : null, leadLabel: b.lead_label,
+      dueAt: b.due_at, status: b.status,
+    });
+    db.logTeamActivity(req.team.teamId, req.user.username, 'task_created', 'task', title,
+      { assignee: task.assignee }).catch(() => {});
+    res.json({ ok: true, task });
+  } catch (err) { next(err); }
+});
+
+router.patch('/tasks/:id', authMiddleware, noGuest, requirePro, requireTeam, async (req, res, next) => {
+  try {
+    const before = await db.getTaskById(req.params.id);
+    if (!before || Number(before.team_id) !== Number(req.team.teamId))
+      return res.status(404).json({ error: 'Task not found' });
+    const b = req.body || {};
+    const fields = {};
+    for (const k of ['title', 'assignee', 'lead_id', 'lead_label', 'due_at', 'status']) {
+      if (b[k] !== undefined) fields[k] = k === 'title' ? String(b[k]).trim() : b[k];
+    }
+    const task = await db.updateTask(req.params.id, fields);
+    if (b.status && b.status === 'done' && before.status !== 'done')
+      db.logTeamActivity(req.team.teamId, req.user.username, 'task_done', 'task', task.title, {}).catch(() => {});
+    res.json({ ok: true, task });
+  } catch (err) { next(err); }
+});
+
+router.delete('/tasks/:id', authMiddleware, noGuest, requirePro, requireTeam, async (req, res, next) => {
+  try {
+    const before = await db.getTaskById(req.params.id);
+    if (!before || Number(before.team_id) !== Number(req.team.teamId))
+      return res.status(404).json({ error: 'Task not found' });
+    res.json(await db.deleteTask(req.params.id));
+  } catch (err) { next(err); }
+});
+
+// ── Activity feed ─────────────────────────────────────────────
+router.get('/team/activity', authMiddleware, requirePro, requireTeam, async (req, res, next) => {
+  try { res.json(await db.getTeamActivity(req.team.teamId, req.query.limit)); }
+  catch (err) { next(err); }
+});
+
+// ── Chat ──────────────────────────────────────────────────────
+router.get('/team/messages', authMiddleware, requirePro, requireTeam, async (req, res, next) => {
+  try {
+    if (req.team.user) db.touchLastSeen(req.team.user.id).catch(() => {});
+    res.json(await db.getTeamMessages(req.team.teamId, req.query.after, req.query.limit));
+  } catch (err) { next(err); }
+});
+
+router.post('/team/messages', authMiddleware, noGuest, requirePro, requireTeam, async (req, res, next) => {
+  try {
+    const body = String((req.body || {}).body || '').trim();
+    if (!body) return res.status(400).json({ error: 'Empty message' });
+    const msg = await db.addTeamMessage(req.team.teamId, req.user.username, body, 'msg');
+    if (req.team.user) db.touchLastSeen(req.team.user.id).catch(() => {});
+    res.json({ ok: true, message: msg });
+  } catch (err) { next(err); }
+});
+
+// ── Leaderboard (+ presence) ──────────────────────────────────
+router.get('/team/leaderboard', authMiddleware, requirePro, requireTeam, async (req, res, next) => {
+  try { res.json(await db.getTeamLeaderboard(req.team.teamId)); }
+  catch (err) { next(err); }
+});
+
 // ── Lead sharing: owner, global admin, or team owner/admin ───
 async function requireLeadManage(req, res, next) {
   try {

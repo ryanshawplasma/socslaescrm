@@ -18,7 +18,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=42" />
+  <link rel="stylesheet" href="style.css?v=44" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -514,6 +514,11 @@
         </a>
 
         <div class="nav-section">Workspace</div>
+        <a class="nav-item" data-page="hub">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7l9 5 9-5-9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg>
+          <span class="nav-label">Team Hub</span>
+          <span class="nav-pill nav-pill-pro">Pro</span>
+        </a>
         <a class="nav-item" data-page="chat">
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7A8.38 8.38 0 0 1 4 11.5 8.5 8.5 0 0 1 12.5 3 8.38 8.38 0 0 1 21 11.5z"/></svg>
           <span class="nav-label">AI Chat</span>
@@ -933,6 +938,39 @@
 
         </section>
 
+        <!-- ── TEAM HUB (Pro) — tasks · activity · chat · board ── -->
+        <section id="page-hub" class="page">
+          <!-- Gate: filled by JS when the user is Lite or has no team -->
+          <div id="hub-gate" class="hidden"></div>
+
+          <div id="hub-main" class="hub hidden">
+            <div class="hub-head">
+              <div class="hub-team">
+                <div class="hub-team-avatar" id="hub-team-avatar">?</div>
+                <div>
+                  <div class="hub-team-name" id="hub-team-name">—</div>
+                  <div class="hub-team-meta" id="hub-team-meta"></div>
+                </div>
+              </div>
+              <div class="hub-online" id="hub-online" title="Who's online"></div>
+            </div>
+
+            <div class="hub-tabs" id="hub-tabs" role="tablist">
+              <button class="hub-tab active" data-tab="tasks"    onclick="hubShowTab('tasks')">Tasks<span class="hub-tab-badge hidden" id="hub-badge-tasks"></span></button>
+              <button class="hub-tab"        data-tab="activity" onclick="hubShowTab('activity')">Activity</button>
+              <button class="hub-tab"        data-tab="chat"     onclick="hubShowTab('chat')">Chat</button>
+              <button class="hub-tab"        data-tab="board"    onclick="hubShowTab('board')">Board</button>
+            </div>
+
+            <div class="hub-body">
+              <div id="hub-panel-tasks"    class="hub-panel"></div>
+              <div id="hub-panel-activity" class="hub-panel hidden"></div>
+              <div id="hub-panel-chat"     class="hub-panel hidden"></div>
+              <div id="hub-panel-board"    class="hub-panel hidden"></div>
+            </div>
+          </div>
+        </section>
+
         <!-- ── BROCHURE MAKER ────────────────────────────────── -->
         <section id="page-brochure" class="page">
           <div class="brochure-layout">
@@ -1133,7 +1171,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=41"></script>
+  <script src="app.js?v=43"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:2600, once:true };</script>
   <script src="dive-splash.js"></script>

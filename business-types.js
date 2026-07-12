@@ -26,6 +26,7 @@ const BUSINESS_TYPES = {
              product: 'Product', area: 'Area' },
     stages: {},   // the original — no relabels
     aiHint: 'a manufacturer selling to factories and industrial parties; leads are factories/parties',
+    example: 'M99 Kapoor Shoes, Rameshji, 9876543210 — hotmelt 500kg @120, follow up Tuesday',
   },
   retail: {
     icon: '🏪', label: 'Retail & Shops',
@@ -35,6 +36,7 @@ const BUSINESS_TYPES = {
     stages: { 'New Lead': 'New Shop', 'Sample Required': 'Sample Asked', 'Sample Sent': 'Sample Given',
               'Order Won': 'Order Won', 'Repeat Customer': 'Repeat Buyer' },
     aiHint: 'a supplier selling to retail shops (kirana, electronics, apparel); leads are shops, contacts are shop owners',
+    example: 'Sharma General Store, Ramesh bhai, 9876543210 — 20 boxes soap, follow up Tuesday',
   },
   distribution: {
     icon: '📦', label: 'Distribution / Wholesale',
@@ -43,6 +45,7 @@ const BUSINESS_TYPES = {
              product: 'Product', area: 'Area' },
     stages: { 'New Lead': 'New Party', 'Quotation': 'Rates Shared' },
     aiHint: 'a distributor/wholesaler/trading business; leads are parties/dealers buying stock',
+    example: 'Om Traders, Mehul bhai, 9876543210 — 50 cartons biscuits, rates shared, follow up Monday',
   },
   construction: {
     icon: '🏗️', label: 'Construction & Real Estate',
@@ -52,6 +55,7 @@ const BUSINESS_TYPES = {
     stages: { 'New Lead': 'New Enquiry', 'Sample Required': 'Site Visit Planned', 'Sample Sent': 'Site Visit Done',
               'Quotation': 'Proposal Sent', 'Order Won': 'Deal Closed', 'Repeat Customer': 'Repeat Client' },
     aiHint: 'a construction/real-estate business; leads are sites, builders, projects or property buyers',
+    example: 'Skyline Builders site at Baner, Anil, 9876543210 — cement + waterproofing quote, site visit Friday',
   },
   pharma: {
     icon: '💊', label: 'Pharma & Medical',
@@ -61,6 +65,7 @@ const BUSINESS_TYPES = {
     stages: { 'New Lead': 'New Doctor', 'Sample Required': 'Samples Asked', 'Sample Sent': 'Samples Given',
               'Quotation': 'Rate List Sent', 'Order Won': 'Prescribing', 'Repeat Customer': 'Regular Prescriber' },
     aiHint: 'a pharma/medical field-sales business; leads are doctors, chemists, clinics and hospitals; products are medicine brands',
+    example: 'Dr Mehta, Apollo Clinic Andheri, 9876543210 — wants samples of Azithro 250, visit Tuesday',
   },
   services: {
     icon: '💼', label: 'Services & Agencies',
@@ -70,6 +75,7 @@ const BUSINESS_TYPES = {
     stages: { 'New Lead': 'New Enquiry', 'Sample Required': 'Demo Requested', 'Sample Sent': 'Demo Done',
               'Quotation': 'Proposal Sent', 'Order Won': 'Contract Won', 'Repeat Customer': 'Retainer Client' },
     aiHint: 'a services business/agency (IT, marketing, consulting); leads are client companies; products are services',
+    example: 'Nexus Tech, Priya, 9876543210 — website + SEO proposal, demo Friday',
   },
   logistics: {
     icon: '🚚', label: 'Logistics & Transport',
@@ -79,6 +85,7 @@ const BUSINESS_TYPES = {
     stages: { 'New Lead': 'New Enquiry', 'Sample Required': 'Trial Asked', 'Sample Sent': 'Trial Shipment Done',
               'Quotation': 'Rates Shared', 'Order Won': 'Contract Won', 'Repeat Customer': 'Regular Client' },
     aiHint: 'a logistics/transport business; leads are shipper clients; products are routes and freight services',
+    example: 'Kwality Foods, Arjun, 9876543210 — Mumbai–Delhi weekly route, trial shipment Monday',
   },
   education: {
     icon: '🎓', label: 'Education & Coaching',
@@ -88,6 +95,7 @@ const BUSINESS_TYPES = {
     stages: { 'New Lead': 'New Enquiry', 'Sample Required': 'Demo Class Asked', 'Sample Sent': 'Demo Class Done',
               'Quotation': 'Fees Quoted', 'Negotiation': 'Follow-up', 'Order Won': 'Admitted', 'Repeat Customer': 'Renewed' },
     aiHint: 'an education/coaching institute; leads are student or parent enquiries; products are courses/batches',
+    example: 'Aarav Sharma, father Rajesh, 9876543210 — Class 10 maths enquiry, demo class Saturday',
   },
   hospitality: {
     icon: '🏨', label: 'Hotels & Restaurants',
@@ -97,6 +105,7 @@ const BUSINESS_TYPES = {
     stages: { 'New Lead': 'New Outlet', 'Sample Required': 'Sample Asked', 'Sample Sent': 'Tasting / Sample Done',
               'Quotation': 'Rates Shared', 'Repeat Customer': 'Regular Buyer' },
     aiHint: 'a supplier selling to hotels, restaurants, cafes and caterers (HoReCa); leads are outlets',
+    example: 'Cafe Blue Terrace, manager Rohit, 9876543210 — monthly coffee supply, tasting Thursday',
   },
   agro: {
     icon: '🌾', label: 'Agro & Farm Inputs',
@@ -106,6 +115,7 @@ const BUSINESS_TYPES = {
     stages: { 'New Lead': 'New Dealer', 'Sample Required': 'Demo Asked', 'Sample Sent': 'Field Demo Done',
               'Quotation': 'Rates Shared', 'Repeat Customer': 'Repeat Dealer' },
     aiHint: 'an agri-inputs business (seeds, fertilizer, pesticides, equipment); leads are dealers and farmers',
+    example: 'Kisan Agro Center, Balu bhai, 9876543210 — 100 bags urea, field demo Monday',
   },
   finance: {
     icon: '💰', label: 'Finance & Insurance',
@@ -115,6 +125,7 @@ const BUSINESS_TYPES = {
     stages: { 'Sample Required': 'Documents Requested', 'Sample Sent': 'Proposal Shared',
               'Quotation': 'Quote Shared', 'Order Won': 'Policy Issued', 'Repeat Customer': 'Renewal Client' },
     aiHint: 'a finance/insurance business (loans, policies, investments); leads are client prospects; products are financial products/policies',
+    example: 'Suresh Patel, 9876543210 — term insurance 1Cr quote, documents pending, call Wednesday',
   },
   custom: {
     icon: '⚙️', label: 'Custom',
@@ -123,6 +134,7 @@ const BUSINESS_TYPES = {
              product: 'Product', area: 'Area' },
     stages: {},
     aiHint: 'a general sales business; leads are prospects',
+    example: 'New lead: name, contact, what they want, follow-up day',
   },
 };
 
@@ -151,6 +163,22 @@ function resolveBusinessProfile(type, customJson) {
   };
 }
 
+// Words that may stand in for "party" in a typed command trigger for this
+// profile ("add shop …", "new doctor …", "create gym member …"): the full
+// entity phrase, its plural, and each word of the phrase (split on / & ,) —
+// lowercased, deduped, length-capped and REGEX-ESCAPED (custom entities are
+// user input; unescaped metacharacters would break or abuse the RegExp).
+// The literal fallbacks party|lead|customer stay ALWAYS-ON at the call site,
+// so the factory profile's behaviour is byte-identical to before.
+function entityTriggerWords(profile) {
+  const p = profile || BUSINESS_TYPES.factory;
+  const raw = [p.entity, p.entityPlural, ...String(p.entity || '').split(/[\/&,]/)]
+    .map(s => String(s || '').trim().toLowerCase())
+    .filter(w => w && w.length >= 3 && w.length <= 30);
+  const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return [...new Set(raw)].map(esc);
+}
+
 // A short vocabulary block injected into the AI parsing prompts so extraction
 // understands this business's words WITHOUT changing the JSON field contract.
 function businessVocabPrompt(profile) {
@@ -168,4 +196,4 @@ function businessVocabPrompt(profile) {
   ].join('\n');
 }
 
-module.exports = { BUSINESS_TYPES, BUSINESS_KEYS, CANON_STAGES, resolveBusinessProfile, businessVocabPrompt };
+module.exports = { BUSINESS_TYPES, BUSINESS_KEYS, CANON_STAGES, resolveBusinessProfile, businessVocabPrompt, entityTriggerWords };

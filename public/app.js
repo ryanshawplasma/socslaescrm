@@ -70,6 +70,7 @@ const BUSINESS_TYPES = {
     terms: { code: 'Factory #', name: 'Factory / Party Name', person: 'Person in Charge',
              product: 'Product', area: 'Area' },
     stages: {},   // the original — no relabels
+    example: 'M99 Kapoor Shoes, Rameshji, 9876543210 — hotmelt 500kg @120, follow up Tuesday',
   },
   retail: {
     icon: '🏪', label: 'Retail & Shops',
@@ -78,6 +79,7 @@ const BUSINESS_TYPES = {
              product: 'Item', area: 'Locality' },
     stages: { 'New Lead': 'New Shop', 'Sample Required': 'Sample Asked', 'Sample Sent': 'Sample Given',
               'Order Won': 'Order Won', 'Repeat Customer': 'Repeat Buyer' },
+    example: 'Sharma General Store, Ramesh bhai, 9876543210 — 20 boxes soap, follow up Tuesday',
   },
   distribution: {
     icon: '📦', label: 'Distribution / Wholesale',
@@ -85,6 +87,7 @@ const BUSINESS_TYPES = {
     terms: { code: 'Party Code', name: 'Party Name', person: 'Contact Person',
              product: 'Product', area: 'Area' },
     stages: { 'New Lead': 'New Party', 'Quotation': 'Rates Shared' },
+    example: 'Om Traders, Mehul bhai, 9876543210 — 50 cartons biscuits, rates shared, follow up Monday',
   },
   construction: {
     icon: '🏗️', label: 'Construction & Real Estate',
@@ -93,6 +96,7 @@ const BUSINESS_TYPES = {
              product: 'Material / Service', area: 'Location' },
     stages: { 'New Lead': 'New Enquiry', 'Sample Required': 'Site Visit Planned', 'Sample Sent': 'Site Visit Done',
               'Quotation': 'Proposal Sent', 'Order Won': 'Deal Closed', 'Repeat Customer': 'Repeat Client' },
+    example: 'Skyline Builders site at Baner, Anil, 9876543210 — cement + waterproofing quote, site visit Friday',
   },
   pharma: {
     icon: '💊', label: 'Pharma & Medical',
@@ -101,6 +105,7 @@ const BUSINESS_TYPES = {
              product: 'Brand / Product', area: 'Territory' },
     stages: { 'New Lead': 'New Doctor', 'Sample Required': 'Samples Asked', 'Sample Sent': 'Samples Given',
               'Quotation': 'Rate List Sent', 'Order Won': 'Prescribing', 'Repeat Customer': 'Regular Prescriber' },
+    example: 'Dr Mehta, Apollo Clinic Andheri, 9876543210 — wants samples of Azithro 250, visit Tuesday',
   },
   services: {
     icon: '💼', label: 'Services & Agencies',
@@ -109,6 +114,7 @@ const BUSINESS_TYPES = {
              product: 'Service', area: 'Area' },
     stages: { 'New Lead': 'New Enquiry', 'Sample Required': 'Demo Requested', 'Sample Sent': 'Demo Done',
               'Quotation': 'Proposal Sent', 'Order Won': 'Contract Won', 'Repeat Customer': 'Retainer Client' },
+    example: 'Nexus Tech, Priya, 9876543210 — website + SEO proposal, demo Friday',
   },
   logistics: {
     icon: '🚚', label: 'Logistics & Transport',
@@ -117,6 +123,7 @@ const BUSINESS_TYPES = {
              product: 'Route / Service', area: 'Zone' },
     stages: { 'New Lead': 'New Enquiry', 'Sample Required': 'Trial Asked', 'Sample Sent': 'Trial Shipment Done',
               'Quotation': 'Rates Shared', 'Order Won': 'Contract Won', 'Repeat Customer': 'Regular Client' },
+    example: 'Kwality Foods, Arjun, 9876543210 — Mumbai–Delhi weekly route, trial shipment Monday',
   },
   education: {
     icon: '🎓', label: 'Education & Coaching',
@@ -125,6 +132,7 @@ const BUSINESS_TYPES = {
              product: 'Course', area: 'Locality' },
     stages: { 'New Lead': 'New Enquiry', 'Sample Required': 'Demo Class Asked', 'Sample Sent': 'Demo Class Done',
               'Quotation': 'Fees Quoted', 'Negotiation': 'Follow-up', 'Order Won': 'Admitted', 'Repeat Customer': 'Renewed' },
+    example: 'Aarav Sharma, father Rajesh, 9876543210 — Class 10 maths enquiry, demo class Saturday',
   },
   hospitality: {
     icon: '🏨', label: 'Hotels & Restaurants',
@@ -133,6 +141,7 @@ const BUSINESS_TYPES = {
              product: 'Product', area: 'Area' },
     stages: { 'New Lead': 'New Outlet', 'Sample Required': 'Sample Asked', 'Sample Sent': 'Tasting / Sample Done',
               'Quotation': 'Rates Shared', 'Repeat Customer': 'Regular Buyer' },
+    example: 'Cafe Blue Terrace, manager Rohit, 9876543210 — monthly coffee supply, tasting Thursday',
   },
   agro: {
     icon: '🌾', label: 'Agro & Farm Inputs',
@@ -141,6 +150,7 @@ const BUSINESS_TYPES = {
              product: 'Product', area: 'Village / Area' },
     stages: { 'New Lead': 'New Dealer', 'Sample Required': 'Demo Asked', 'Sample Sent': 'Field Demo Done',
               'Quotation': 'Rates Shared', 'Repeat Customer': 'Repeat Dealer' },
+    example: 'Kisan Agro Center, Balu bhai, 9876543210 — 100 bags urea, field demo Monday',
   },
   finance: {
     icon: '💰', label: 'Finance & Insurance',
@@ -149,6 +159,7 @@ const BUSINESS_TYPES = {
              product: 'Product / Policy', area: 'Area' },
     stages: { 'Sample Required': 'Documents Requested', 'Sample Sent': 'Proposal Shared',
               'Quotation': 'Quote Shared', 'Order Won': 'Policy Issued', 'Repeat Customer': 'Renewal Client' },
+    example: 'Suresh Patel, 9876543210 — term insurance 1Cr quote, documents pending, call Wednesday',
   },
   custom: {
     icon: '⚙️', label: 'Custom',
@@ -156,6 +167,7 @@ const BUSINESS_TYPES = {
     terms: { code: 'Code', name: 'Name', person: 'Contact Person',
              product: 'Product', area: 'Area' },
     stages: {},
+    example: 'New lead: name, contact, what they want, follow-up day',
   },
 };
 const BUSINESS_KEYS = Object.keys(BUSINESS_TYPES);
@@ -226,7 +238,9 @@ const BIZTERM_KEYS = ['entity', 'entityPlural', 'code', 'name', 'person', 'produ
 
 function bizTermValue(token) {
   const [key, mod] = token.split('|');
-  let v = BIZTERM_KEYS.includes(key) ? T(key) : '';
+  let v = BIZTERM_KEYS.includes(key) ? T(key)
+        : key === 'example' ? (biz().example || '')   // per-business sample message
+        : '';
   return mod === 'lower' ? v.toLowerCase() : v;
 }
 
@@ -1345,7 +1359,7 @@ function renderLeadDestSelect() {
   section.style.display = '';
   const cur = getLeadDest();
   sel.innerHTML = `<option value="">👤 Personal (only me)</option>` +
-    teams.map(t => `<option value="${t.id}" ${String(t.id) === String(cur) ? 'selected' : ''}>🏢 ${escHtml(t.name)}</option>`).join('');
+    teams.map(t => `<option value="${t.id}" ${String(t.id) === String(cur) ? 'selected' : ''}>${(BUSINESS_TYPES[t.business_type] || BUSINESS_TYPES.factory).icon} ${escHtml(t.name)}</option>`).join('');
 }
 
 async function createLead(data) {
@@ -5499,9 +5513,10 @@ function renderOrgSwitcher() {
   el.innerHTML = `
     <select id="org-select" title="Switch workspace" onchange="switchOrg(this.value)">
       <option value="">${personalLabel}</option>
-      ${state.myTeams.map(t =>
-        `<option value="${t.id}" ${String(t.id) === String(state.activeOrgId) ? 'selected' : ''}>🏢 ${escHtml(t.name)}</option>`
-      ).join('')}
+      ${state.myTeams.map(t => {
+        const icon = (BUSINESS_TYPES[t.business_type] || BUSINESS_TYPES.factory).icon;
+        return `<option value="${t.id}" ${String(t.id) === String(state.activeOrgId) ? 'selected' : ''}>${icon} ${escHtml(t.name)}</option>`;
+      }).join('')}
       <option value="__discover__">🔍 Find / create a team…</option>
     </select>`;
 }
@@ -6743,10 +6758,13 @@ async function renderWorkspace() {
 
 function wsFillBanner() {
   const t = ws.activeTeam;
+  // This team's OWN business profile — never biz(), which follows the
+  // workspace you're currently viewing (Personal vs whatever team is active).
+  const p = resolveBizProfile(t.business_type, t.business_custom);
   document.getElementById('ws-team-avatar').textContent = (t.name || '?')[0].toUpperCase();
   document.getElementById('ws-team-name').textContent   = t.name;
   document.getElementById('ws-team-meta').textContent   =
-    `@${t.handle}  ·  ${t.team_code}  ·  Your role: ${t.role}`;
+    `@${t.handle}  ·  ${t.team_code}  ·  Your role: ${t.role}  ·  ${p.icon} ${p.label}`;
 }
 
 function wsApplyRoleVisibility() {
@@ -7158,20 +7176,28 @@ function wsRenderCreate() {
             oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9_]/g,'')" />
         </div>
       </div>
+      <div class="form-group" style="margin-bottom:16px">
+        <label>Business Type</label>
+        <select id="ws-create-biz" class="ws-input">
+          ${BUSINESS_KEYS.map(k => `<option value="${k}" ${k === 'factory' ? 'selected' : ''}>${escHtml(BUSINESS_TYPES[k].icon + ' ' + BUSINESS_TYPES[k].label)}</option>`).join('')}
+        </select>
+        <p style="font-size:12px;color:var(--text-muted);margin:6px 0 0;line-height:1.4">You can change this anytime in Settings.</p>
+      </div>
       <p id="ws-create-err" class="login-error"></p>
       <button class="btn btn-primary" onclick="wsCreateTeam()">Create Team</button>
     </div>`;
 }
 
 async function wsCreateTeam() {
-  const name   = (document.getElementById('ws-create-name').value   || '').trim();
-  const handle = (document.getElementById('ws-create-handle').value || '').trim();
-  const errEl  = document.getElementById('ws-create-err');
+  const name         = (document.getElementById('ws-create-name').value   || '').trim();
+  const handle       = (document.getElementById('ws-create-handle').value || '').trim();
+  const businessType = document.getElementById('ws-create-biz')?.value || 'factory';
+  const errEl        = document.getElementById('ws-create-err');
   errEl.textContent = '';
   if (name.length < 2)   { errEl.textContent = 'Team name must be at least 2 characters'; return; }
   if (handle.length < 3) { errEl.textContent = 'Handle must be at least 3 characters'; return; }
   try {
-    const team = await apiFetch('/api/teams', { method: 'POST', body: JSON.stringify({ name, handle }) });
+    const team = await apiFetch('/api/teams', { method: 'POST', body: JSON.stringify({ name, handle, businessType }) });
     toast(`Team "${name}" created!`, 'success');
     await refreshTeamsEverywhere(team && team.id);   // switcher + leads follow immediately
     await renderWorkspace();
@@ -7524,7 +7550,7 @@ function renderAiPanel(page) {
     <div id="ai-panel-${page}-messages" class="ai-panel-messages"></div>
     <div class="ai-panel-input-row">
       <textarea id="ai-input-${page}" rows="2"
-        placeholder="Type naturally… e.g. M99 Kapoor Shoes hotmelt 500 bags @120 hot follow up Friday"></textarea>
+        placeholder="Type naturally… e.g. ${escAttr(biz().example)}"></textarea>
       <button class="ai-mic-btn" id="ai-mic-btn-${page}" onclick="startVoiceCapture('${page}')" title="Voice input">🎤</button>
       <button class="btn btn-primary" style="padding:0 14px;height:38px;border-radius:10px" onclick="aiPanelSend('${page}')">Send</button>
     </div>`;
@@ -7915,40 +7941,53 @@ async function deleteVocabAlias(id) {
 let aiMode = 'understanding';
 const _modeGreeted = {};
 
-const CHAT_MODE_INFO = {
-  understanding: {
-    ph: 'Type, speak 🎤 or snap 📷 a business card…',
-    chips: null, // keep the default product chips
-  },
-  assistant: {
-    ph: 'Ask about your pipeline… e.g. "kitne hot leads hain?"',
-    hello: '💬 <b>Assistant</b> — ask me anything about your leads:<br>counts, follow-ups due, pipeline, revenue, who to call today.',
-    chips: [
-      ['🔥 Hot leads?',        'How many hot leads do I have and which ones?'],
-      ['📅 Due today',         'Which follow-ups are due today or overdue?'],
-      ['🏆 Pipeline summary',  'Give me a quick pipeline summary by stage'],
-      ['💰 Revenue potential', 'What is my revenue potential by product?'],
-      ['🎯 Who to call?',      'Who should I call first today and why?'],
-    ],
-  },
-  command: {
-    ph: 'e.g. "add party Sharma Traders Rakeshji 98765…" or "set M277 stage to won"',
-    hello: '⚡ <b>Command</b> — tell me what to do and I\'ll do it:<br>• <code>add party M901 Sharma Traders Rakeshji 9876543210 hotmelt 500@120 hot, surat</code><br>• <code>set M277 stage to won</code> · <code>follow up F12 next week</code><br>• <code>mark D2 hot</code> · <code>add note to M277: visited today</code> · <code>find surat leads</code>',
-    chips: [
-      ['➕ Add party',   'add party '],
-      ['📊 Set stage',   'set  stage to '],
-      ['📅 Follow-up',   'follow up  tomorrow'],
-      ['🌡 Temperature', 'mark  hot'],
-      ['📝 Add note',    'add note to : '],
-      ['🔍 Find',        'find '],
-    ],
-  },
-};
+// Per-mode composer placeholder / greeting / quick-chips. A FUNCTION — not a
+// module-load-time const — because the command mode's copy references
+// T('entity'); it must be re-evaluated against whatever business profile is
+// ACTIVE right now (Personal vs team, and that team's business_type) so
+// switching workspace/business type is reflected without a page reload.
+function chatModeInfo(mode) {
+  // Factory keeps the legacy word "party" — today's command wording is the
+  // regression oracle (and the server's replies match it). Every other
+  // business speaks its own entity word ('shop', 'doctor / chemist', …).
+  const entity     = biz().key === 'factory' ? 'party' : T('entity').toLowerCase();
+  const entityHtml = escHtml(entity);                  // custom entity terms are user text — escape before innerHTML
+  const info = {
+    understanding: {
+      ph: 'Type, speak 🎤 or snap 📷 a business card…',
+      chips: null, // keep the default product chips
+    },
+    assistant: {
+      ph: 'Ask about your pipeline… e.g. "kitne hot leads hain?"',
+      hello: '💬 <b>Assistant</b> — ask me anything about your leads:<br>counts, follow-ups due, pipeline, revenue, who to call today.',
+      chips: [
+        ['🔥 Hot leads?',        'How many hot leads do I have and which ones?'],
+        ['📅 Due today',         'Which follow-ups are due today or overdue?'],
+        ['🏆 Pipeline summary',  'Give me a quick pipeline summary by stage'],
+        ['💰 Revenue potential', 'What is my revenue potential by product?'],
+        ['🎯 Who to call?',      'Who should I call first today and why?'],
+      ],
+    },
+    command: {
+      ph: `e.g. "add ${entity} Sharma Traders Rakeshji 98765…" or "set M277 stage to won"`,
+      hello: `⚡ <b>Command</b> — tell me what to do and I'll do it:<br>• <code>add ${entityHtml} M901 Sharma Traders Rakeshji 9876543210 hotmelt 500@120 hot, surat</code><br>• <code>set M277 stage to won</code> · <code>follow up F12 next week</code><br>• <code>mark D2 hot</code> · <code>add note to M277: visited today</code> · <code>find surat leads</code>`,
+      chips: [
+        [`➕ Add ${entityHtml}`, `add ${entity} `],
+        ['📊 Set stage',   'set  stage to '],
+        ['📅 Follow-up',   'follow up  tomorrow'],
+        ['🌡 Temperature', 'mark  hot'],
+        ['📝 Add note',    'add note to : '],
+        ['🔍 Find',        'find '],
+      ],
+    },
+  };
+  return info[mode];
+}
 
 function renderChatChips(mode) {
   const bar = document.getElementById('chat-chips-bar');
   if (!bar) return;
-  const info = CHAT_MODE_INFO[mode];
+  const info = chatModeInfo(mode);
   if (!info?.chips) { // restore default understanding chips
     bar.innerHTML = `
       <button class="chat-chip chip-hot"  onclick="chatInsertChip('hot')">🔴 Hot</button>
@@ -7993,7 +8032,7 @@ function setAiMode(mode) {
   if (mode === 'understanding') { box.style.display = 'none'; cardArea.style.display = ''; }
   else                          { box.style.display = ''; cardArea.style.display = 'none'; }
 
-  const info = CHAT_MODE_INFO[mode];
+  const info = chatModeInfo(mode);
   const input = document.getElementById('chat-input');
   if (input && info?.ph) input.placeholder = info.ph;
   renderChatChips(mode);

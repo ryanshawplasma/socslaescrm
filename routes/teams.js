@@ -22,16 +22,23 @@ router.get('/my/teams', authMiddleware, async (req, res, next) => {
 
 // ── POST /api/teams — create team ─────────────────────────────
 router.post('/teams', authMiddleware, async (req, res, next) => {
-  const { name, handle } = req.body || {};
+  const { name, handle, businessType } = req.body || {};
   if (!name || name.trim().length < 2) return res.status(400).json({ error: 'Team name must be at least 2 characters' });
   if (!handle || !/^@?[a-z0-9_]{3,30}$/i.test(handle.replace(/^@/, '')))
     return res.status(400).json({ error: 'Handle must be 3–30 letters/numbers/underscores' });
+  if (businessType !== undefined && !BUSINESS_KEYS.includes(businessType))
+    return res.status(400).json({ error: 'Unknown business type' });
   try {
     const user = await db.getUserByName(req.user.username);
     if (!user) return res.status(404).json({ error: 'User not found' });
     const existing = await db.getTeamByHandle(handle);
     if (existing) return res.status(409).json({ error: 'Handle already taken, choose another' });
     const team = await db.createTeam(name, handle, user.id);
+    if (businessType && businessType !== 'factory') {
+      await db.updateTeam(team.id, { businessType });
+      team.business_type = businessType;
+    }
+    team.business_type = team.business_type || 'factory';
     res.json(team);
   } catch (err) { next(err); }
 });

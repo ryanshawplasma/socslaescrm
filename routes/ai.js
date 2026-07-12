@@ -5,7 +5,7 @@ const axios   = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const db      = require('../db');
 const cache   = require('../cache');
-const { resolveBusinessProfile, businessVocabPrompt } = require('../business-types');
+const { resolveBusinessProfile, businessVocabPrompt, entityTriggerWords } = require('../business-types');
 const { authMiddleware, adminOnly } = require('../middleware/auth');
 
 const router = express.Router();
@@ -144,6 +144,10 @@ async function resolveBusinessProfileFor(username, teamId) {
   } catch (_) {}
   return resolveBusinessProfile('factory');
 }
+
+// Factory keeps the legacy "party" wording — today's output is the regression
+// oracle; every other business speaks its own entity word.
+function legacyNoun(profile) { return (!profile || profile.key === 'factory') ? 'party' : profile.entity.toLowerCase(); }
 
 // Tolerant JSON extraction: strips code fences, falls back to the
 // first balanced {...} block if the model added prose around it.
@@ -363,17 +367,25 @@ function preprocessInput(text, teamVocab = [], personalVocab = []) {
 }
 
 // ── CRM Context Builder ───────────────────────────────────────
-async function buildCRMContext(cleanedText, teamId) {
+// profilePromise is accepted (not an awaited profile) so the business-profile
+// lookup keeps running concurrently with the two searches below instead of
+// serialising in front of them.
+async function buildCRMContext(cleanedText, teamId, profilePromise) {
   if (!teamId) return null;
   try {
-    const [businesses, contacts] = await Promise.all([
+    const [businesses, contacts, profile] = await Promise.all([
       db.searchBusinesses(cleanedText, teamId),
       db.searchContacts(cleanedText, teamId),
+      profilePromise,
     ]);
     if (!businesses.length && !contacts.length) return null;
+    // Factory keeps the legacy header (regression oracle); other businesses
+    // read their own plural ("KNOWN SHOPS (for context):").
+    const entityPlural = (!profile || profile.key === 'factory')
+      ? 'BUSINESSES' : String(profile.entityPlural || 'Businesses').toUpperCase();
     const lines = [];
     if (businesses.length) {
-      lines.push('KNOWN BUSINESSES (for context):');
+      lines.push(`KNOWN ${entityPlural} (for context):`);
       businesses.forEach(b => lines.push(`  ${b.factory_number} — ${b.factory_name}`));
     }
     if (contacts.length) {
@@ -385,17 +397,26 @@ async function buildCRMContext(cleanedText, teamId) {
 }
 
 // ── Clarification Engine ──────────────────────────────────────
-function clarificationEngine(fields, confidence, threshold = 0.70) {
-  const PRIORITY = ['factory_number', 'factory_name', 'person_in_charge', 'items', 'lead_type', 'follow_up', 'stage'];
-  const QUESTIONS = {
-    factory_number:   { q: 'What is the factory number for this lead?', why: 'The factory number is our primary identifier — I couldn\'t find a clear one in your message.' },
-    factory_name:     { q: 'What is the factory or business name?', why: 'I couldn\'t identify a clear company name in your message.' },
-    person_in_charge: { q: 'Who is the contact person at this factory?', why: 'I didn\'t catch the person\'s name clearly.' },
+// Questions are built per-request from the resolved business profile (e.g. a
+// pharma team reads "doctor / chemist" instead of "factory"). Templates are
+// worded so the factory profile renders byte-identical to the original copy.
+function buildClarifyQuestions(profile) {
+  const p = profile || resolveBusinessProfile('factory');
+  const entityLower = p.entity.toLowerCase();
+  return {
+    factory_number:   { q: `What is the ${entityLower} number for this lead?`, why: `The ${entityLower} number is our primary identifier — I couldn't find a clear one in your message.` },
+    factory_name:     { q: `What is the ${entityLower} or business name?`, why: 'I couldn\'t identify a clear company name in your message.' },
+    person_in_charge: { q: `Who is the contact person at this ${entityLower}?`, why: 'I didn\'t catch the person\'s name clearly.' },
     items:            { q: 'What product and quantity are we talking about?', why: 'The product details weren\'t clear enough for me to extract accurately.' },
     lead_type:        { q: 'How hot is this lead — Hot, Warm, or Cold?', why: 'I couldn\'t determine the lead temperature from your message.', options: ['Hot', 'Warm', 'Cold'] },
     follow_up:        { q: 'When should we follow up on this lead?', why: 'No follow-up date was mentioned.', options: ['Tomorrow', 'Next Week', 'In 2 Weeks'] },
     stage:            { q: 'What stage is this lead at?', why: 'The sales stage wasn\'t clearly mentioned.', options: ['New Lead', 'Sample Sent', 'Quotation', 'Negotiation', 'Order Won'] },
   };
+}
+
+function clarificationEngine(fields, confidence, profile, threshold = 0.70) {
+  const PRIORITY = ['factory_number', 'factory_name', 'person_in_charge', 'items', 'lead_type', 'follow_up', 'stage'];
+  const QUESTIONS = buildClarifyQuestions(profile);
 
   for (const field of PRIORITY) {
     const conf = confidence?.[field];
@@ -428,10 +449,13 @@ async function runUnderstandingPipeline(text, teamId, username, sessionId) {
   const { cleanedText, substitutions } = preprocessInput(text, teamVocab, personalVocab);
 
   // 2. CRM context + per-user learning context + business profile
+  // (profilePromise is shared so buildCRMContext can read the resolved
+  // profile without serialising the profile lookup in front of it)
+  const profilePromise = resolveBusinessProfileFor(username, teamId);
   const [crmContext, learning, profile] = await Promise.all([
-    buildCRMContext(cleanedText, teamId),
+    buildCRMContext(cleanedText, teamId, profilePromise),
     buildUserLearningContext(username, teamId),
-    resolveBusinessProfileFor(username, teamId),
+    profilePromise,
   ]);
   const augmented = crmContext ? `${cleanedText}\n\n[CRM CONTEXT]\n${crmContext}` : cleanedText;
 
@@ -445,7 +469,7 @@ async function runUnderstandingPipeline(text, teamId, username, sessionId) {
   const confidence = parsed._confidence || {};
 
   // 4. Clarification check
-  const clarification = clarificationEngine(parsed, confidence);
+  const clarification = clarificationEngine(parsed, confidence, profile);
 
   // 5. Audit log
   db.logAiAction(null, 'understand', 'text', text, parsed, username, teamId).catch(() => {});
@@ -491,7 +515,7 @@ router.post('/ai/understand/voice', authMiddleware, async (req, res, next) => {
 
     const { parsed, model, latency } = audioResult;
     const confidence    = parsed._confidence || {};
-    const clarification = clarificationEngine(parsed, confidence);
+    const clarification = clarificationEngine(parsed, confidence, profile);
     const sessionId     = uuidv4();
 
     db.logAiAction(null, 'understand_voice', 'voice', parsed._transcript || 'audio', parsed, req.user.username, teamId).catch(() => {});
@@ -519,7 +543,7 @@ router.post('/ai/understand/image', authMiddleware, async (req, res, next) => {
 
     const { parsed, model, latency } = imgResult;
     const confidence    = parsed._confidence || {};
-    const clarification = clarificationEngine(parsed, confidence);
+    const clarification = clarificationEngine(parsed, confidence, profile);
     const sessionId     = uuidv4();
 
     db.logAiAction(null, 'understand_image', 'image', parsed._image_text || 'image', parsed, req.user.username, teamId).catch(() => {});
@@ -651,15 +675,20 @@ function buildAssistantContext(leads) {
     lines.join('\n').slice(0, 9000);
 }
 
-const ASSISTANT_PROMPT_BASE =
-`You are the built-in assistant of SalesCRM, used by an adhesive sales team in India.
+// A module-level const can't see the request's business profile, so this is
+// built per-request — the "add ___" example follows the profile's entity noun
+// via legacyNoun (factory keeps the original "add party …" wording verbatim).
+function buildAssistantPromptBase(profile) {
+  const noun = legacyNoun(profile);
+  return `You are the built-in assistant of SalesCRM, used by an adhesive sales team in India.
 Answer questions about the user's CRM data below: counts, pipelines, follow-ups, who to call today, revenue potential (quantity × rate), best next actions.
 Rules:
 - Answer ONLY from the CRM snapshot. If the data doesn't contain the answer, say so.
 - Be concise: a short sentence or a list of at most 10 rows. Use the user's language (English or Hinglish).
 - Format with plain text, **bold** for emphasis, and "- " bullets. No tables, no HTML, no markdown headers.
-- If asked to change or add data, reply that they can use ⚡ Command mode (e.g. "add party Sharma Traders Rakeshji 98765…" or "set M277 stage to won").
+- If asked to change or add data, reply that they can use ⚡ Command mode (e.g. "add ${noun} Sharma Traders Rakeshji 98765…" or "set M277 stage to won").
 - Dates are dd/MM/yyyy.`;
+}
 
 router.post('/ai/assistant', authMiddleware, async (req, res, next) => {
   const { message, history = [], teamId } = req.body || {};
@@ -668,7 +697,7 @@ router.post('/ai/assistant', authMiddleware, async (req, res, next) => {
     let leads = [];
     try { leads = await leadsForRequest({ user: req.user, query: { teamId: teamId || '' } }); } catch (_) {}
     const profile = await resolveBusinessProfileFor(req.user.username, teamId);
-    const sys = ASSISTANT_PROMPT_BASE +
+    const sys = buildAssistantPromptBase(profile) +
       `\n\n${businessVocabPrompt(profile)}` +
       `\n\nTODAY: ${todayISTLabel()} (dd/MM/yyyy, IST).` +
       buildAssistantContext(leads);
@@ -706,6 +735,14 @@ Return ONLY JSON:
 
 const STAGE_BY_NUM = { 0: 'Lost', 1: 'New Lead', 2: 'Sample Required', 3: 'Sample Sent', 4: 'Quotation', 5: 'Negotiation', 6: 'Order Won', 7: 'Repeat Customer' };
 
+// Guest fast-path trigger — must stay synchronous (no DB work before the guest
+// check), and guests always resolve to the factory profile anyway, so it is a
+// module-level constant. party|lead|customer stay ALWAYS-ON first; factory's
+// entity words (factory|factories) extend them.
+const GUEST_CREATE_TRIGGER = new RegExp(
+  String.raw`\b(add|create|new|nayi|naya)\s+(party|lead|customer|` +
+  entityTriggerWords(resolveBusinessProfile('factory')).join('|') + String.raw`)\b`, 'i');
+
 router.post('/ai/command', authMiddleware, async (req, res, next) => {
   const { command, teamId, preview, destTeamId } = req.body || {};
   // preview:true → parse + validate + resolve the target, but DON'T write.
@@ -714,11 +751,14 @@ router.post('/ai/command', authMiddleware, async (req, res, next) => {
   const isPreview = !!preview;
   if (!command || !String(command).trim()) return res.status(400).json({ error: 'command required' });
   // Guests can't mutate — catch obvious add/create commands before spending AI quota
-  if (req.user.role === 'guest' && /\b(add|create|new|nayi|naya)\s+(party|lead|customer)\b/i.test(String(command))) {
+  if (req.user.role === 'guest' && GUEST_CREATE_TRIGGER.test(String(command))) {
     return res.status(403).json({ error: 'demo_only', message: 'Create an account to save data' });
   }
   try {
     const profile = await resolveBusinessProfileFor(req.user.username, teamId);
+    const entityLower = profile.entity.toLowerCase();
+    const noun    = legacyNoun(profile);
+    const nounCap = noun.charAt(0).toUpperCase() + noun.slice(1);
     const result = await gemini._generateWithFallback(
       COMMAND_PROMPT + `\n\n${businessVocabPrompt(profile)}\nTODAY: ${todayISTLabel()} (dd/MM/yyyy, IST).`,
       [{ text: String(command).slice(0, 600) }], 600, 'command');
@@ -749,12 +789,18 @@ router.post('/ai/command', authMiddleware, async (req, res, next) => {
     if (cmd.action === 'create_lead') {
       if (req.user.role === 'guest') return res.status(403).json({ error: 'demo_only', message: 'Create an account to save data' });
 
-      // Reuse the full understanding pipeline (vocab, learning, CRM context)
-      const cleaned = String(command).replace(/^\s*(add|create|new|nayi|naya)\s+(party|lead|customer)\b[:,\s]*/i, '').trim();
+      // Reuse the full understanding pipeline (vocab, learning, CRM context).
+      // The prefix stripper knows this profile's entity words too, so a retail
+      // team's "add shop Sharma Store …" strips cleanly instead of polluting
+      // the parsed name (party|lead|customer stay always-on first).
+      const createPrefixRe = new RegExp(
+        String.raw`^\s*(add|create|new|nayi|naya)\s+(party|lead|customer|` +
+        entityTriggerWords(profile).join('|') + String.raw`)\b[:,\s]*`, 'i');
+      const cleaned = String(command).replace(createPrefixRe, '').trim();
       const understanding = await runUnderstandingPipeline(cleaned || String(command), teamId, req.user.username, uuidv4());
       const parsed = understanding.parsed || understanding.fallback;
       if (!parsed || (!parsed.factory_number && !parsed.factory_name)) {
-        return res.json({ ok: false, message: 'What is the party\'s name or factory number? Try: "add party M901 Sharma Traders Rakeshji 9876543210 hotmelt 500@120 hot, surat"' });
+        return res.json({ ok: false, message: `What is the ${noun}'s name or ${entityLower} number? Try: "add ${noun} M901 Sharma Traders Rakeshji 9876543210 hotmelt 500@120 hot, surat"` });
       }
 
       const payload = {
@@ -790,7 +836,7 @@ router.post('/ai/command', authMiddleware, async (req, res, next) => {
       }
 
       if (isPreview) {
-        const pv = [`Add party <b>${payload.factory_name || payload.factory_number}</b>`];
+        const pv = [`Add ${noun} <b>${payload.factory_name || payload.factory_number}</b>`];
         if (payload.person_in_charge) pv.push(`👤 ${payload.person_in_charge}`);
         if (payload.items.length)     pv.push(`📦 ${payload.items.map(i => `${i.product} ${i.quantity}${i.rate ? '@₹' + i.rate : ''}`).join(', ')}`);
         if (payload.lead_type)        pv.push(`🌡 ${payload.lead_type}`);
@@ -801,14 +847,14 @@ router.post('/ai/command', authMiddleware, async (req, res, next) => {
 
       const result = await db.addLead(payload, req.user.username);
       if (result.conflict) {
-        return res.json({ ok: false, message: `⚠️ ${result.message} — that party already exists (row ${result.rowIndex}). Say "find ${payload.factory_number || payload.factory_name}" to see it.` });
+        return res.json({ ok: false, message: `⚠️ ${result.message} — that ${noun} already exists (row ${result.rowIndex}). Say "find ${payload.factory_number || payload.factory_name}" to see it.` });
       }
 
       db.logLeadActivity(result.rowIndex, payload.team_id, 'created',
-        `Party added via AI command by ${req.user.username}`, {}, req.user.username).catch(() => {});
+        `${nounCap} added via AI command by ${req.user.username}`, {}, req.user.username).catch(() => {});
       db.logAiAction(result.rowIndex, 'command_create', 'text', String(command).slice(0, 500), parsed, req.user.username, teamId).catch(() => {});
 
-      const bits = [`✅ Party added: <b>${payload.factory_name || payload.factory_number}</b>`];
+      const bits = [`✅ ${nounCap} added: <b>${payload.factory_name || payload.factory_number}</b>`];
       if (payload.person_in_charge) bits.push(`👤 ${payload.person_in_charge}`);
       if (payload.items.length)     bits.push(`📦 ${payload.items.map(i => `${i.product} ${i.quantity}${i.rate ? '@₹' + i.rate : ''}`).join(', ')}`);
       if (payload.lead_type)        bits.push(`🌡 ${payload.lead_type}`);
@@ -817,12 +863,12 @@ router.post('/ai/command', authMiddleware, async (req, res, next) => {
     }
 
     if (cmd.action === 'unsupported' || !['update_stage', 'set_followup', 'set_lead_type', 'add_note'].includes(cmd.action)) {
-      return res.json({ ok: false, message: cmd.reason || 'I can add a party, update stage, set follow-up, change temperature, or add a note. Deleting must be done from the Leads table.' });
+      return res.json({ ok: false, message: cmd.reason || `I can add a ${noun}, update stage, set follow-up, change temperature, or add a note. Deleting must be done from the Leads table.` });
     }
 
     // Locate the target lead among the user's visible leads
     const target = String(cmd.target || '').toLowerCase().trim();
-    if (!target) return res.json({ ok: false, message: 'Which lead? Mention the factory number or name (e.g. "set M277 stage to won").' });
+    if (!target) return res.json({ ok: false, message: `Which lead? Mention the ${entityLower} number or name (e.g. "set M277 stage to won").` });
     const lead = leads.find(l => String(l.factory_number || '').toLowerCase() === target)
       || leads.find(l => String(l.factory_name || '').toLowerCase().includes(target));
     if (!lead) return res.json({ ok: false, message: `No lead found for "${cmd.target}" in your view.` });

@@ -222,11 +222,66 @@ function showForgotPin(e) {
   box.style.display = box.style.display === 'none' ? '' : 'none';
 }
 
+// ── Invite deep-links (…?join=CODE) ───────────────────────────
+// An invite link must survive the login/register wall: the code is parked in
+// localStorage at boot, surfaced as a banner on the auth screens, and consumed
+// by initApp() right after the user is signed in (or right after they register).
+function capturePendingInvite() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const code = (params.get('join') || '').trim();
+    if (!code) return;
+    localStorage.setItem('crm_pending_join', code);
+    params.delete('join');
+    const qs = params.toString();
+    history.replaceState({}, '', location.pathname + (qs ? '?' + qs : ''));
+  } catch (_) {}
+}
+
+function pendingInviteCode() { return (localStorage.getItem('crm_pending_join') || '').trim(); }
+
+// Show/refresh the "you've been invited" note on both auth screens.
+function renderInviteBanners() {
+  const code = pendingInviteCode();
+  ['login-screen', 'register-screen'].forEach(id => {
+    const scr = document.getElementById(id);
+    if (!scr) return;
+    let b = scr.querySelector('.invite-banner');
+    if (!code) { b?.remove(); return; }
+    if (!b) {
+      b = document.createElement('div');
+      b.className = 'invite-banner';
+      scr.prepend(b);
+    }
+    b.innerHTML = `🎟 <b>Team invite detected</b> — sign in or create an account and you'll join the team automatically.`;
+  });
+}
+
+// Join the team an invite link promised, right after auth. Guests keep the
+// code parked so it still works once they create a real account.
+async function consumePendingInvite() {
+  const code = pendingInviteCode();
+  if (!code || state.role === 'guest') return;
+  localStorage.removeItem('crm_pending_join');
+  try {
+    const { team } = await apiFetch('/api/teams/join', { method: 'POST', body: JSON.stringify({ invite_code: code }) });
+    state.activeOrgId = String(team.id);
+    localStorage.setItem('crm_org_id', state.activeOrgId);
+    localStorage.setItem('ws_team_id', state.activeOrgId);
+    setLeadDest(String(team.id));
+    toast(`Welcome to ${team.name}! 🎉 You're in the team — new leads save here.`, 'success');
+  } catch (err) {
+    if (/already a member/i.test(err.message || '')) return;   // nothing to do
+    toast(`Couldn't accept the team invite: ${err.message}`, 'error');
+  }
+}
+
 function showLoginPage() {
   // Hide PIN unlock, show login screen
   document.getElementById('pin-unlock-screen').style.display = 'none';
   document.getElementById('login-screen').style.display      = '';
   document.getElementById('register-screen').style.display   = 'none';
+  renderInviteBanners();
   const overlay = document.getElementById('login-overlay');
   overlay.classList.remove('fade-out');   // clear any leftover dissolve state
   overlay.classList.remove('hidden');
@@ -318,6 +373,7 @@ function resetAccountScopedState() {
   localStorage.removeItem('ws_team_id');
   localStorage.removeItem('crm_lead_dest');
   localStorage.removeItem('crm_default_area');
+  _defaultWorkspaceApplied = false;   // next sign-in re-applies its default workspace
   state.activeOrgId  = '';
   state.myTeams      = [];
   state.leads        = [];
@@ -329,8 +385,21 @@ function resetAccountScopedState() {
   state.dbSelected.clear();
 }
 
+// Kill every background loop the app runs while signed in. Without this,
+// logout / session-expiry leaves the presence heartbeat, auto-refresh and hub
+// chat poll firing unauthenticated requests (endless 401s + "session expired"
+// noise) and the socket keeps the user looking "online" after they left.
+function stopBackgroundTimers() {
+  clearInterval(autoRefreshTimer);   autoRefreshTimer = null;
+  clearInterval(refreshLabelTimer);  refreshLabelTimer = null;
+  if (presenceTimer) { clearInterval(presenceTimer); presenceTimer = null; }
+  hubStopChatPoll();
+  if (_socket) { try { _socket.disconnect(); } catch (_) {} _socket = null; }
+}
+
 async function logout() {
-  clearInterval(autoRefreshTimer);
+  if (!confirm('Sign out of Dive?')) return;
+  stopBackgroundTimers();
   // Tell server to revoke session (best-effort)
   try {
     const token = localStorage.getItem('crm_token');
@@ -347,7 +416,7 @@ async function logout() {
 }
 
 function switchAccount() {
-  clearInterval(autoRefreshTimer);
+  stopBackgroundTimers();
   clearTokens();
   localStorage.removeItem('crm_role');
   localStorage.removeItem('crm_user');
@@ -962,11 +1031,14 @@ async function apiFetch(path, opts = {}) {
     if (refreshed) {
       res = await makeRequest();
     } else {
+      stopBackgroundTimers();   // stop the 401 storm from heartbeat/auto-refresh
       clearTokens();
       localStorage.removeItem('crm_role');
       localStorage.removeItem('crm_user');
       state.role = null;
       showLoginPage();
+      const errEl = document.getElementById('login-error');
+      if (errEl) errEl.textContent = 'Your session expired — please sign in again.';
       throw new Error('Session expired. Please log in again.');
     }
   }
@@ -1098,8 +1170,19 @@ function startAutoRefresh() {
   // workspace, chat, ai-debug) must NOT be re-rendered on the timer — doing so
   // flashes a loading state and wipes scroll/selection ("the table jumps").
   const LIVE_PAGES = ['dashboard', 'leads', 'pipeline', 'followups', 'reports'];
+  clearInterval(autoRefreshTimer);    // never stack timers if initApp runs twice
+  clearInterval(refreshLabelTimer);
   autoRefreshTimer = setInterval(async () => {
     try {
+      // A user whose join request was approved while they waited should see the
+      // team appear without a manual reload — cheap re-check while team-less.
+      if (state.role !== 'guest' && !(state.myTeams || []).length) {
+        await loadMyTeams();
+        if (state.myTeams.length) {
+          renderOrgSwitcher();
+          toast(`You've been added to ${state.myTeams[0].name}! 🎉`, 'success');
+        }
+      }
       await Promise.all([loadLeads(), loadStats()]);
       lastRefreshed = new Date();
       // Don't re-render out from under the user mid-interaction: skip while a
@@ -5102,10 +5185,17 @@ async function loadMyTeams() {
 //    every salesperson's data — a single team would hide leads entered elsewhere.
 //  • Salespeople who belong to a team default into it, so their new leads merge
 //    into the shared team pool. Their solo leads stay reachable under "Personal".
+// The admin reset fires ONCE per sign-in — loadMyTeams() now also runs
+// mid-session (workspace visits, joins, leaves) and must not yank an admin out
+// of a team they deliberately switched into.
+let _defaultWorkspaceApplied = false;
 function applyDefaultWorkspace() {
   if (state.role === 'admin') {
-    state.activeOrgId = '';
-    localStorage.removeItem('crm_org_id');
+    if (!_defaultWorkspaceApplied) {
+      _defaultWorkspaceApplied = true;
+      state.activeOrgId = '';
+      localStorage.removeItem('crm_org_id');
+    }
     return;
   }
   if (!state.activeOrgId && state.myTeams.length) {
@@ -5151,8 +5241,19 @@ async function switchOrg(id) {
   } catch (err) { toast(err.message, 'error'); }
 }
 
+// After ANY team-membership change (create / join / leave / approval) the
+// header switcher, state.myTeams and the visible leads must all agree — one
+// helper so no flow can forget a piece. Pass a team id to also switch into it,
+// '' to switch to Personal, or omit to keep the current workspace.
+async function refreshTeamsEverywhere(switchToId) {
+  await loadMyTeams();
+  renderOrgSwitcher();
+  if (switchToId !== undefined) await switchOrg(switchToId == null ? '' : String(switchToId));
+}
+
 async function initApp() {
   try {
+    await consumePendingInvite();   // invite link → auto-join right after auth
     await loadMyTeams();
     renderOrgSwitcher();
     // Sync profile prefs (default area) from the server, non-blocking
@@ -5775,6 +5876,7 @@ async function init() {
   initChatViewport();
   initAiBubble();
   initInstallPrompt();
+  capturePendingInvite();   // park ?join=CODE so it survives the login/register wall
   // Show overlay while we check auth state
   document.getElementById('login-overlay').classList.remove('hidden');
   document.getElementById('app').classList.add('hidden');
@@ -6316,9 +6418,14 @@ function wsTeamApiFetch(path, opts = {}) {
 }
 
 async function renderWorkspace() {
-  // Load my teams
+  // Load my teams — through loadMyTeams() so the global state.myTeams, the
+  // stale-workspace guard and the header org switcher stay in sync with what
+  // this page shows (visiting Workspace also picks up an approval that
+  // happened while you were away).
   try {
-    ws.myTeams = await apiFetch('/api/my/teams');
+    await loadMyTeams();
+    ws.myTeams = state.myTeams || [];
+    renderOrgSwitcher();
   } catch (_) { ws.myTeams = []; }
 
   if (!ws.myTeams.length) {
@@ -6622,19 +6729,17 @@ function wsRenderSearch() {
 
       <div class="ws-divider">or join with an invite code</div>
       <div style="display:flex;gap:8px;margin-top:16px">
-        <input id="ws-inv-input" type="text" class="ws-input" placeholder="Enter invite code" style="flex:1" />
+        <input id="ws-inv-input" type="text" class="ws-input" placeholder="Enter invite code" style="flex:1"
+          onkeydown="if(event.key==='Enter')wsJoinByCode()" />
         <button class="btn btn-primary" onclick="wsJoinByCode()">Join</button>
       </div>
       <p id="ws-join-err" class="login-error"></p>
     </div>`;
 
-  // If URL has ?join=code, auto-fill
-  const params = new URLSearchParams(location.search);
-  const autoCode = params.get('join');
-  if (autoCode) {
-    document.getElementById('ws-inv-input').value = autoCode;
-    history.replaceState({}, '', location.pathname);
-  }
+  // A parked invite code (from a ?join= link) pre-fills the box as a fallback —
+  // normally consumePendingInvite() already used it right after sign-in.
+  const autoCode = pendingInviteCode();
+  if (autoCode) document.getElementById('ws-inv-input').value = autoCode;
 }
 
 async function wsDoSearch() {
@@ -6665,6 +6770,7 @@ async function wsJoinByCode() {
   try {
     const { team } = await apiFetch('/api/teams/join', { method: 'POST', body: JSON.stringify({ invite_code: code }) });
     toast(`Joined ${team.name}! Welcome to the team.`, 'success');
+    await refreshTeamsEverywhere(team.id);   // switcher + leads follow immediately
     await renderWorkspace();
   } catch (err) { errEl.textContent = err.message; }
 }
@@ -6674,6 +6780,7 @@ async function wsRequestJoin(teamId, teamName) {
     const { auto_approved } = await apiFetch(`/api/teams/${teamId}/request`, { method: 'POST', body: JSON.stringify({ message: '' }) });
     if (auto_approved) {
       toast(`Joined ${teamName}! Welcome.`, 'success');
+      await refreshTeamsEverywhere(teamId);
       await renderWorkspace();
     } else {
       toast(`Join request sent to ${teamName}. Waiting for approval.`);
@@ -6722,9 +6829,7 @@ async function discoverRequestJoin(teamId, name, btn) {
     if (auto_approved) {
       toast(`Joined ${name}! New leads will save here.`, 'success');
       dismissTeamsDiscover();
-      await loadMyTeams();
-      renderOrgSwitcher();
-      await switchOrg(String(teamId));      // view it + make it the Save-to default
+      await refreshTeamsEverywhere(teamId);   // view it + make it the Save-to default
     } else {
       toast(`Request sent to ${name} — waiting for the admin to approve.`, 'success');
       if (btn) btn.textContent = 'Requested ✓';
@@ -6781,8 +6886,9 @@ async function wsCreateTeam() {
   if (name.length < 2)   { errEl.textContent = 'Team name must be at least 2 characters'; return; }
   if (handle.length < 3) { errEl.textContent = 'Handle must be at least 3 characters'; return; }
   try {
-    await apiFetch('/api/teams', { method: 'POST', body: JSON.stringify({ name, handle }) });
+    const team = await apiFetch('/api/teams', { method: 'POST', body: JSON.stringify({ name, handle }) });
     toast(`Team "${name}" created!`, 'success');
+    await refreshTeamsEverywhere(team && team.id);   // switcher + leads follow immediately
     await renderWorkspace();
   } catch (err) { errEl.textContent = err.message; }
 }
@@ -6849,10 +6955,15 @@ async function wsSaveSettings() {
 async function wsLeaveTeam() {
   if (!confirm(`Leave "${ws.activeTeam.name}"? You'll need an invite to rejoin.`)) return;
   try {
-    await wsTeamApiFetch(`/api/teams/${ws.activeTeam.id}/leave`, { method: 'POST' });
+    const leftId = String(ws.activeTeam.id);
+    await wsTeamApiFetch(`/api/teams/${leftId}/leave`, { method: 'POST' });
     ws.activeTeam = null;
     localStorage.removeItem('ws_team_id');
+    // New leads must not keep targeting a team you just left.
+    if (localStorage.getItem('crm_lead_dest') === leftId) localStorage.removeItem('crm_lead_dest');
     toast('Left team');
+    // If you were viewing that team, fall back to Personal; otherwise just resync.
+    await refreshTeamsEverywhere(String(state.activeOrgId) === leftId ? '' : undefined);
     await renderWorkspace();
   } catch (err) { toast(err.message, 'error'); }
 }

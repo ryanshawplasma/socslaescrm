@@ -4420,3 +4420,8 @@ body.bubble-dragging .ai-bubble-trash { opacity: 1; transform: translateX(-50%) 
   .hub-newtask button{grid-column:1 / -1}
   .hub-board{grid-template-columns:1fr; gap:14px}
 }
+
+/* ── Invite deep-link banner (login/register screens) ───────── */
+.invite-banner{background:var(--primary-glow, rgba(99,102,241,.12)); border:1px solid var(--primary-muted, rgba(99,102,241,.35));
+  color:var(--text); border-radius:10px; padding:10px 12px; font-size:13px; line-height:1.45; margin-bottom:14px}
+.invite-banner b{color:var(--primary)}

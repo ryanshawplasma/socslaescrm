@@ -2,6 +2,7 @@
 
 const express = require('express');
 const db      = require('../db');
+const { BUSINESS_KEYS } = require('../business-types');
 const {
   authMiddleware,
   teamMemberMiddleware,
@@ -60,9 +61,11 @@ router.get('/teams/:id', authMiddleware, async (req, res, next) => {
 
 // ── PATCH /api/teams/:id ──────────────────────────────────────
 router.patch('/teams/:id', authMiddleware, teamMemberMiddleware, teamAdminMiddleware, async (req, res, next) => {
-  const { name, handle, publicSearch, autoApprove } = req.body || {};
+  const { name, handle, publicSearch, autoApprove, businessType, businessCustom } = req.body || {};
+  if (businessType !== undefined && !BUSINESS_KEYS.includes(businessType))
+    return res.status(400).json({ error: 'Unknown business type' });
   try {
-    await db.updateTeam(req.teamId, { name, handle, publicSearch, autoApprove });
+    await db.updateTeam(req.teamId, { name, handle, publicSearch, autoApprove, businessType, businessCustom });
     res.json({ success: true });
   } catch (err) { next(err); }
 });

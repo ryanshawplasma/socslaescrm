@@ -3,6 +3,7 @@
 // ============================================================
 const { Pool } = require('pg');
 const crypto   = require('crypto');
+const { BUSINESS_KEYS } = require('./business-types');
 
 // pg v8.13+ changed SSL: sslmode=require now maps to verify-full unless uselibpqcompat is set.
 // Strip original sslmode, then add uselibpqcompat=true&sslmode=require so pg uses libpq
@@ -246,6 +247,16 @@ async function initSchema() {
     // Give every account a 14-day Pro trial the first time this ships. Idempotent:
     // only rows with no pro_until yet are touched, so it never re-grants on reboot.
     await client.query(`UPDATE users SET pro_until = NOW() + INTERVAL '14 days', plan_kind = 'trial' WHERE pro_until IS NULL`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+
+    // ── Business type (per-team + per-user "what kind of business") ─────
+    // Relabels display words + primes the AI vocabulary; NEVER changes the
+    // stored field names. Default 'factory' everywhere so existing data and
+    // users behave exactly as before. 'custom' carries user-defined terms in
+    // business_custom as a JSON string.
+    await client.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS business_type   TEXT DEFAULT 'factory'`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS business_custom TEXT DEFAULT ''`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS business_type   TEXT DEFAULT 'factory'`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS business_custom TEXT DEFAULT ''`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // Dev-assigned access codes: redeem one to extend Pro by `days`.
     await client.query(`
@@ -1259,6 +1270,17 @@ async function setUserDesignation(userId, designation) {
   return { ok: true };
 }
 
+// Set a user's Personal-workspace business type + custom terms. businessType is
+// validated against BUSINESS_KEYS (falls back to 'factory'); the custom JSON is
+// stored verbatim as a string (caller caps its length).
+async function setUserBusiness(userId, businessType, businessCustomJsonString) {
+  const type   = BUSINESS_KEYS.includes(businessType) ? businessType : 'factory';
+  const custom = String(businessCustomJsonString || '').slice(0, 2000);
+  await pool.query(`UPDATE users SET business_type = $2, business_custom = $3 WHERE id = $1`,
+    [userId, type, custom]);
+  return { ok: true };
+}
+
 // How many active admins exist — used to protect against demoting the last one.
 async function getAdminCount() {
   const { rows } = await pool.query(`SELECT COUNT(*)::int AS n FROM users WHERE role = 'admin'`);
@@ -1740,12 +1762,31 @@ async function getPublicTeams(limit = 12) {
   return rows;
 }
 
-async function updateTeam(id, { name, handle, publicSearch, autoApprove }) {
+// Normalise a business_custom value for storage: accept an object or a JSON
+// string, return a JSON string capped at ~2000 chars ('' when empty).
+function normBusinessCustom(v) {
+  if (v === undefined || v === null || v === '') return '';
+  let str;
+  if (typeof v === 'string') str = v;
+  else { try { str = JSON.stringify(v); } catch (_) { str = ''; } }
+  str = String(str || '').trim();
+  if (str === '{}') return '';
+  return str.slice(0, 2000);
+}
+
+async function updateTeam(id, { name, handle, publicSearch, autoApprove, businessType, businessCustom }) {
   const sets = []; const vals = []; let i = 1;
   if (name         !== undefined) { sets.push(`name=$${i++}`);          vals.push(name); }
   if (handle       !== undefined) { sets.push(`handle=$${i++}`);        vals.push(handle.replace(/^@/, '')); }
   if (publicSearch !== undefined) { sets.push(`public_search=$${i++}`); vals.push(publicSearch); }
   if (autoApprove  !== undefined) { sets.push(`auto_approve=$${i++}`);  vals.push(autoApprove); }
+  // business type: only persist a recognised key; custom terms stored as JSON.
+  if (businessType   !== undefined && BUSINESS_KEYS.includes(businessType)) {
+    sets.push(`business_type=$${i++}`);   vals.push(businessType);
+  }
+  if (businessCustom !== undefined) {
+    sets.push(`business_custom=$${i++}`); vals.push(normBusinessCustom(businessCustom));
+  }
   if (!sets.length) return;
   vals.push(id);
   await pool.query(`UPDATE teams SET ${sets.join(',')} WHERE id=$${i}`, vals);
@@ -1804,6 +1845,7 @@ async function removeTeamMember(teamId, userId) {
 async function getUserTeams(userId) {
   const { rows } = await pool.query(
     `SELECT t.id, t.name, t.handle, t.team_code, t.invite_code, t.auto_approve,
+       t.business_type, t.business_custom,
        tm.role, tm.status, tm.joined_at
      FROM teams t JOIN team_members tm ON tm.team_id=t.id
      WHERE tm.user_id=$1 AND tm.status='active'
@@ -2707,7 +2749,7 @@ module.exports = {
   grantLeadAccess, revokeLeadAccess, getLeadAccess, claimFollowUp, reassignFollowUp,
   createUser, getUserByName, getUserByTelegramId, updateUserPin, updateUserName, updateUserDefaultArea,
   getAllUsers, deleteUser, verifyUserPin, verifyUserPassword, setUserPassword, seedAdminUser,
-  setUserRole, setUserDesignation, getAdminCount,
+  setUserRole, setUserDesignation, setUserBusiness, getAdminCount,
   setMustChangePassword, setMustChangePasswordForAll,
   saveWebAuthnCred, getWebAuthnCred, getUserByWebAuthnCredId,
   getLeadCoordinates, updateLeadCoords,

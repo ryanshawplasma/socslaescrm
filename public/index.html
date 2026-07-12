@@ -18,7 +18,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=45" />
+  <link rel="stylesheet" href="style.css?v=46" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -455,6 +455,37 @@
           <input id="p-default-area" type="text" placeholder="e.g. Mumbai, Surat" />
         </div>
         <div class="form-group" style="margin-bottom:16px">
+          <label>Business Type <span style="font-weight:400;color:var(--text-muted)">(for your Personal workspace)</span></label>
+          <select id="profile-biz" onchange="toggleProfileBizCustom()"></select>
+          <p style="font-size:12px;color:var(--text-muted);margin:6px 0 0;line-height:1.4">Changes the words Dive uses — what a lead is called, field names and stage names. Data is never changed.</p>
+          <div id="profile-biz-custom" class="biz-custom-grid hidden">
+            <div class="form-group">
+              <label>What do you call a lead?</label>
+              <input id="profile-biz-entity" type="text" placeholder="e.g. Client" />
+            </div>
+            <div class="form-group">
+              <label>Code field</label>
+              <input id="profile-biz-code" type="text" placeholder="e.g. Client Code" />
+            </div>
+            <div class="form-group">
+              <label>Name field</label>
+              <input id="profile-biz-name" type="text" placeholder="e.g. Client Name" />
+            </div>
+            <div class="form-group">
+              <label>Person field</label>
+              <input id="profile-biz-person" type="text" placeholder="e.g. Contact Person" />
+            </div>
+            <div class="form-group">
+              <label>Product field</label>
+              <input id="profile-biz-product" type="text" placeholder="e.g. Product" />
+            </div>
+            <div class="form-group">
+              <label>Area field</label>
+              <input id="profile-biz-area" type="text" placeholder="e.g. Area" />
+            </div>
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:16px">
           <label>Account Password</label>
           <button type="button" class="btn btn-ghost full-width" onclick="showSetPasswordModal({ migration: false })" style="justify-content:center">🔑 Change Password</button>
         </div>
@@ -781,9 +812,9 @@
               </div>
 
               <div class="route-section">
-                <div class="route-label">Factories to Visit</div>
+                <div class="route-label" data-bizterm-tpl="{entityPlural} to Visit">Factories to Visit</div>
                 <div id="factory-checklist" class="factory-checklist">
-                  <p class="route-hint">Loading factories…</p>
+                  <p class="route-hint" data-bizterm-tpl="Loading {entityPlural|lower}…">Loading factories…</p>
                 </div>
               </div>
 
@@ -810,7 +841,7 @@
             <div class="map-wrap">
               <div id="crm-map"></div>
               <div id="pin-mode-banner" class="pin-mode-banner hidden">
-                <span>📍 Click anywhere on the map to place this factory's pin</span>
+                <span data-bizterm-tpl="📍 Click anywhere on the map to place this {entity|lower}'s pin">📍 Click anywhere on the map to place this factory's pin</span>
                 <button onclick="cancelPinMode()">✕ Cancel</button>
               </div>
             </div>
@@ -1075,11 +1106,11 @@
             </div>
           </div>
           <div class="form-group">
-            <label>Factory Number</label>
+            <label data-bizterm="code">Factory Number</label>
             <input id="f-factory_number" type="text" placeholder="M277" />
           </div>
           <div class="form-group">
-            <label>Factory Name</label>
+            <label data-bizterm="name">Factory Name</label>
             <input id="f-factory_name" type="text" placeholder="Ramesh Industries" />
           </div>
           <div class="form-group full-width" id="contacts-form-group">
@@ -1092,7 +1123,7 @@
           <div class="form-group full-width" id="items-form-group">
             <label style="display:flex;align-items:center;justify-content:space-between">
               <span>Products</span>
-              <button type="button" class="btn btn-ghost" style="font-size:11px;padding:2px 8px" onclick="addItemRow()">+ Add Product</button>
+              <button type="button" class="btn btn-ghost" style="font-size:11px;padding:2px 8px" onclick="addItemRow()" data-bizterm-tpl="+ Add {product}">+ Add Product</button>
             </label>
             <div id="items-editor"></div>
           </div>
@@ -1115,7 +1146,7 @@
             <input id="f-follow_up" type="date" />
           </div>
           <div class="form-group">
-            <label>Area</label>
+            <label data-bizterm="area">Area</label>
             <input id="f-area" type="text" placeholder="Mumbai" />
           </div>
           <div class="form-group">
@@ -1171,7 +1202,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=44"></script>
+  <script src="app.js?v=45"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:2600, once:true };</script>
   <script src="dive-splash.js"></script>

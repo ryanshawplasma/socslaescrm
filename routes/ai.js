@@ -5,6 +5,7 @@ const axios   = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const db      = require('../db');
 const cache   = require('../cache');
+const { resolveBusinessProfile, businessVocabPrompt } = require('../business-types');
 const { authMiddleware, adminOnly } = require('../middleware/auth');
 
 const router = express.Router();
@@ -74,8 +75,12 @@ function todayISTLabel() {
   });
 }
 
-function buildSystemPrompt(vocab = [], extra = '') {
-  let prompt = CRM_SYSTEM_PROMPT +
+function buildSystemPrompt(vocab = [], extra = '', bizVocab = '') {
+  let prompt = CRM_SYSTEM_PROMPT;
+  // Business-type vocabulary sits near the top so the model reads the domain
+  // wording before the field rules. For 'factory' it simply restates the norm.
+  if (bizVocab) prompt += '\n\n' + bizVocab;
+  prompt +=
     `\n\nTODAY'S DATE: ${todayISTLabel()} (dd/MM/yyyy, IST timezone). Resolve ALL relative dates against this: ` +
     `"kal"/"tomorrow" = today+1 day, "parso" = today+2, "next week" = today+7, "in 2 weeks" = today+14, ` +
     `a weekday name = the NEXT occurrence of that weekday. Always output follow_up as dd/MM/yyyy.`;
@@ -122,6 +127,22 @@ async function buildUserLearningContext(username, teamId) {
   const out = { text: parts.join('\n\n'), corrections: corrections.length, profiled: !!(style && style.total >= 3) };
   cache.put(cacheKey, out, 300);
   return out;
+}
+
+// Resolve the business profile for a request: a team's type when teamId is set,
+// otherwise the caller's Personal-workspace type. Always safe — any failure or
+// missing record falls back to the 'factory' profile so nothing changes.
+async function resolveBusinessProfileFor(username, teamId) {
+  try {
+    if (teamId) {
+      const team = await db.getTeamById(parseInt(teamId, 10));
+      if (team) return resolveBusinessProfile(team.business_type, team.business_custom);
+    } else if (username) {
+      const user = await db.getUserByName(username);
+      if (user) return resolveBusinessProfile(user.business_type, user.business_custom);
+    }
+  } catch (_) {}
+  return resolveBusinessProfile('factory');
 }
 
 // Tolerant JSON extraction: strips code fences, falls back to the
@@ -208,12 +229,12 @@ class GeminiProvider {
     return null;
   }
 
-  async generate(userText, vocab = [], extra = '') {
-    return this._generateWithFallback(buildSystemPrompt(vocab, extra), [{ text: userText }], 2000, 'text');
+  async generate(userText, vocab = [], extra = '', bizVocab = '') {
+    return this._generateWithFallback(buildSystemPrompt(vocab, extra, bizVocab), [{ text: userText }], 2000, 'text');
   }
 
-  async generateFromAudio(audioBase64, mimeType = 'audio/ogg', vocab = [], extra = '') {
-    const voicePrompt = buildSystemPrompt(vocab, extra) +
+  async generateFromAudio(audioBase64, mimeType = 'audio/ogg', vocab = [], extra = '', bizVocab = '') {
+    const voicePrompt = buildSystemPrompt(vocab, extra, bizVocab) +
       '\n\nThe user sent a VOICE NOTE — it may be in Hindi, English, or Hinglish (mixed). ' +
       'First transcribe the audio carefully (keep product names and numbers exact), then extract CRM fields from the transcription. ' +
       'Add a "_transcript" key to the JSON containing your exact transcription of the audio.';
@@ -223,8 +244,8 @@ class GeminiProvider {
     ], 2500, 'voice');
   }
 
-  async generateFromImage(imageBase64, mimeType = 'image/jpeg', caption = '', vocab = [], extra = '') {
-    const imagePrompt = buildSystemPrompt(vocab, extra) +
+  async generateFromImage(imageBase64, mimeType = 'image/jpeg', caption = '', vocab = [], extra = '', bizVocab = '') {
+    const imagePrompt = buildSystemPrompt(vocab, extra, bizVocab) +
       '\n\nThe user sent a PHOTO — it may be a business card, shop/factory signboard, letterhead, product label, ' +
       'or a handwritten note (possibly in Hindi/Devanagari). Read ALL text in the image and extract CRM fields from it. ' +
       'Business cards: the company name → factory_name, the person\'s name → person_in_charge, phone → contact, city → area. ' +
@@ -406,15 +427,16 @@ async function runUnderstandingPipeline(text, teamId, username, sessionId) {
   ]);
   const { cleanedText, substitutions } = preprocessInput(text, teamVocab, personalVocab);
 
-  // 2. CRM context + per-user learning context
-  const [crmContext, learning] = await Promise.all([
+  // 2. CRM context + per-user learning context + business profile
+  const [crmContext, learning, profile] = await Promise.all([
     buildCRMContext(cleanedText, teamId),
     buildUserLearningContext(username, teamId),
+    resolveBusinessProfileFor(username, teamId),
   ]);
   const augmented = crmContext ? `${cleanedText}\n\n[CRM CONTEXT]\n${crmContext}` : cleanedText;
 
   // 3. Gemini
-  const result = await gemini.generate(augmented, [], learning.text);
+  const result = await gemini.generate(augmented, [], learning.text, businessVocabPrompt(profile));
   if (!result) {
     return { error: 'Could not parse — try again with more detail.', fallback: localParse(cleanedText) };
   }
@@ -459,11 +481,12 @@ router.post('/ai/understand/voice', authMiddleware, async (req, res, next) => {
   const { audioBase64, mimeType = 'audio/webm', teamId } = req.body || {};
   if (!audioBase64) return res.status(400).json({ error: 'audioBase64 required' });
   try {
-    const [vocab, learning] = await Promise.all([
+    const [vocab, learning, profile] = await Promise.all([
       db.getVocab(teamId || null).catch(() => []),
       buildUserLearningContext(req.user.username, teamId),
+      resolveBusinessProfileFor(req.user.username, teamId),
     ]);
-    const audioResult = await gemini.generateFromAudio(audioBase64, mimeType, vocab, learning.text);
+    const audioResult = await gemini.generateFromAudio(audioBase64, mimeType, vocab, learning.text, businessVocabPrompt(profile));
     if (!audioResult) return res.status(422).json({ error: 'Could not parse audio — try speaking more clearly or use text instead.' });
 
     const { parsed, model, latency } = audioResult;
@@ -486,11 +509,12 @@ router.post('/ai/understand/image', authMiddleware, async (req, res, next) => {
   const { imageBase64, mimeType = 'image/jpeg', caption = '', teamId } = req.body || {};
   if (!imageBase64) return res.status(400).json({ error: 'imageBase64 required' });
   try {
-    const [vocab, learning] = await Promise.all([
+    const [vocab, learning, profile] = await Promise.all([
       db.getVocab(teamId || null).catch(() => []),
       buildUserLearningContext(req.user.username, teamId),
+      resolveBusinessProfileFor(req.user.username, teamId),
     ]);
-    const imgResult = await gemini.generateFromImage(imageBase64, mimeType, String(caption).slice(0, 500), vocab, learning.text);
+    const imgResult = await gemini.generateFromImage(imageBase64, mimeType, String(caption).slice(0, 500), vocab, learning.text, businessVocabPrompt(profile));
     if (!imgResult) return res.status(422).json({ error: 'Could not read the image — try a clearer, well-lit photo.' });
 
     const { parsed, model, latency } = imgResult;
@@ -643,7 +667,9 @@ router.post('/ai/assistant', authMiddleware, async (req, res, next) => {
   try {
     let leads = [];
     try { leads = await leadsForRequest({ user: req.user, query: { teamId: teamId || '' } }); } catch (_) {}
+    const profile = await resolveBusinessProfileFor(req.user.username, teamId);
     const sys = ASSISTANT_PROMPT_BASE +
+      `\n\n${businessVocabPrompt(profile)}` +
       `\n\nTODAY: ${todayISTLabel()} (dd/MM/yyyy, IST).` +
       buildAssistantContext(leads);
 
@@ -692,8 +718,9 @@ router.post('/ai/command', authMiddleware, async (req, res, next) => {
     return res.status(403).json({ error: 'demo_only', message: 'Create an account to save data' });
   }
   try {
+    const profile = await resolveBusinessProfileFor(req.user.username, teamId);
     const result = await gemini._generateWithFallback(
-      COMMAND_PROMPT + `\nTODAY: ${todayISTLabel()} (dd/MM/yyyy, IST).`,
+      COMMAND_PROMPT + `\n\n${businessVocabPrompt(profile)}\nTODAY: ${todayISTLabel()} (dd/MM/yyyy, IST).`,
       [{ text: String(command).slice(0, 600) }], 600, 'command');
     if (!result) return res.status(422).json({ error: 'Could not understand the command — try rephrasing.' });
     const cmd = result.parsed || {};
@@ -847,8 +874,9 @@ router.post('/parse', authMiddleware, async (req, res, next) => {
   const { text, teamId } = req.body || {};
   if (!text) return res.status(400).json({ error: 'text required' });
   try {
-    const vocab  = teamId ? await db.getVocab(teamId) : [];
-    const result = await gemini.generate(text, vocab);
+    const vocab   = teamId ? await db.getVocab(teamId) : [];
+    const profile = await resolveBusinessProfileFor(req.user.username, teamId);
+    const result  = await gemini.generate(text, vocab, '', businessVocabPrompt(profile));
     const parsed = result ? result.parsed : localParse(text);
     const leads  = await db.getLeads();
     const pNum   = String(parsed.factory_number || '').trim().toLowerCase();
@@ -869,8 +897,9 @@ router.post('/parse/voice', authMiddleware, async (req, res, next) => {
   const { audioBase64, mimeType = 'audio/webm' } = req.body || {};
   if (!audioBase64) return res.status(400).json({ error: 'audioBase64 required' });
   try {
-    const vocab  = await db.getVocab(null).catch(() => []);
-    const result = await gemini.generateFromAudio(audioBase64, mimeType, vocab);
+    const vocab   = await db.getVocab(null).catch(() => []);
+    const profile = await resolveBusinessProfileFor(req.user.username, null);
+    const result  = await gemini.generateFromAudio(audioBase64, mimeType, vocab, '', businessVocabPrompt(profile));
     if (!result) return res.status(422).json({ error: 'Could not parse audio — try speaking more clearly or use text instead.' });
     const { parsed } = result;
     const leads = await db.getLeads();

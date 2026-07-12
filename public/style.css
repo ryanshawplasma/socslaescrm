@@ -2119,6 +2119,11 @@ tr.row-cold:hover td { background: #dbeafe; }
 .ws-search-wrap { max-width: 580px; }
 .ws-input { width: 100%; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text); font-size: 13px; font-family: inherit; }
 .ws-input:focus { outline: 2px solid var(--primary); border-color: transparent; }
+
+/* ── Business-type custom terms grid (Team settings + Profile modal) ── */
+.biz-custom-grid { display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); gap: 10px 12px; margin-top: 10px; }
+#profile-modal .biz-custom-grid .form-group { padding: 0; }
+@media (max-width: 640px) { .biz-custom-grid { grid-template-columns: 1fr; } }
 .ws-divider { text-align: center; position: relative; margin: 20px 0 0; color: var(--text-muted); font-size: 13px; }
 .ws-divider::before, .ws-divider::after { content: ''; position: absolute; top: 50%; width: calc(50% - 70px); height: 1px; background: var(--border); }
 .ws-divider::before { left: 0; } .ws-divider::after { right: 0; }

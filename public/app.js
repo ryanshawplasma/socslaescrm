@@ -6,6 +6,7 @@ const state = {
   stats:       null,
   page:        'dashboard',
   role:        localStorage.getItem('crm_role') || null,
+  me:          null,   // /api/users/me payload (business_type/business_custom, default_area, ...) — stashed by initApp
   myTeams:     [],
   activeOrgId: localStorage.getItem('crm_org_id') || '',
   search:      '',
@@ -49,6 +50,210 @@ const STAGE_NUMBERS = {
   'Quotation': '4', 'Negotiation': '5', 'Order Won': '6',
   'Repeat Customer': '7', 'Lost': '0',
 };
+
+// ============================================================
+//  Business Types — CLIENT MIRROR of business-types.js (server copy).
+//  Dive works for many businesses, not just factories. A team (or a user's
+//  Personal workspace) picks ONE of these types; it changes the words the
+//  app uses (what a lead is called, field labels, pipeline stage names).
+//  IT NEVER CHANGES THE SCHEMA — factory_number/factory_name/... stay the
+//  storage field names for every business; this is a display layer only.
+//
+//  If you edit business-types.js, mirror the change here too (and vice
+//  versa). aiHint is server-only (AI-prompt vocabulary) and intentionally
+//  omitted from this copy — the client never needs it.
+// ============================================================
+const BUSINESS_TYPES = {
+  factory: {
+    icon: '🏭', label: 'Manufacturing / Factories',
+    entity: 'Factory', entityPlural: 'Factories',
+    terms: { code: 'Factory #', name: 'Factory / Party Name', person: 'Person in Charge',
+             product: 'Product', area: 'Area' },
+    stages: {},   // the original — no relabels
+  },
+  retail: {
+    icon: '🏪', label: 'Retail & Shops',
+    entity: 'Shop', entityPlural: 'Shops',
+    terms: { code: 'Shop Code', name: 'Shop Name', person: 'Owner',
+             product: 'Item', area: 'Locality' },
+    stages: { 'New Lead': 'New Shop', 'Sample Required': 'Sample Asked', 'Sample Sent': 'Sample Given',
+              'Order Won': 'Order Won', 'Repeat Customer': 'Repeat Buyer' },
+  },
+  distribution: {
+    icon: '📦', label: 'Distribution / Wholesale',
+    entity: 'Party', entityPlural: 'Parties',
+    terms: { code: 'Party Code', name: 'Party Name', person: 'Contact Person',
+             product: 'Product', area: 'Area' },
+    stages: { 'New Lead': 'New Party', 'Quotation': 'Rates Shared' },
+  },
+  construction: {
+    icon: '🏗️', label: 'Construction & Real Estate',
+    entity: 'Site', entityPlural: 'Sites',
+    terms: { code: 'Site Code', name: 'Site / Builder Name', person: 'Site Contact',
+             product: 'Material / Service', area: 'Location' },
+    stages: { 'New Lead': 'New Enquiry', 'Sample Required': 'Site Visit Planned', 'Sample Sent': 'Site Visit Done',
+              'Quotation': 'Proposal Sent', 'Order Won': 'Deal Closed', 'Repeat Customer': 'Repeat Client' },
+  },
+  pharma: {
+    icon: '💊', label: 'Pharma & Medical',
+    entity: 'Doctor / Chemist', entityPlural: 'Doctors & Chemists',
+    terms: { code: 'Code', name: 'Doctor / Chemist Name', person: 'Contact Person',
+             product: 'Brand / Product', area: 'Territory' },
+    stages: { 'New Lead': 'New Doctor', 'Sample Required': 'Samples Asked', 'Sample Sent': 'Samples Given',
+              'Quotation': 'Rate List Sent', 'Order Won': 'Prescribing', 'Repeat Customer': 'Regular Prescriber' },
+  },
+  services: {
+    icon: '💼', label: 'Services & Agencies',
+    entity: 'Client', entityPlural: 'Clients',
+    terms: { code: 'Client Code', name: 'Client / Company Name', person: 'Contact Person',
+             product: 'Service', area: 'Area' },
+    stages: { 'New Lead': 'New Enquiry', 'Sample Required': 'Demo Requested', 'Sample Sent': 'Demo Done',
+              'Quotation': 'Proposal Sent', 'Order Won': 'Contract Won', 'Repeat Customer': 'Retainer Client' },
+  },
+  logistics: {
+    icon: '🚚', label: 'Logistics & Transport',
+    entity: 'Client', entityPlural: 'Clients',
+    terms: { code: 'Client Code', name: 'Client / Company Name', person: 'Contact Person',
+             product: 'Route / Service', area: 'Zone' },
+    stages: { 'New Lead': 'New Enquiry', 'Sample Required': 'Trial Asked', 'Sample Sent': 'Trial Shipment Done',
+              'Quotation': 'Rates Shared', 'Order Won': 'Contract Won', 'Repeat Customer': 'Regular Client' },
+  },
+  education: {
+    icon: '🎓', label: 'Education & Coaching',
+    entity: 'Student', entityPlural: 'Students',
+    terms: { code: 'Enquiry #', name: 'Student / Parent Name', person: 'Parent / Guardian',
+             product: 'Course', area: 'Locality' },
+    stages: { 'New Lead': 'New Enquiry', 'Sample Required': 'Demo Class Asked', 'Sample Sent': 'Demo Class Done',
+              'Quotation': 'Fees Quoted', 'Negotiation': 'Follow-up', 'Order Won': 'Admitted', 'Repeat Customer': 'Renewed' },
+  },
+  hospitality: {
+    icon: '🏨', label: 'Hotels & Restaurants',
+    entity: 'Outlet', entityPlural: 'Outlets',
+    terms: { code: 'Outlet Code', name: 'Hotel / Restaurant Name', person: 'Manager / Owner',
+             product: 'Product', area: 'Area' },
+    stages: { 'New Lead': 'New Outlet', 'Sample Required': 'Sample Asked', 'Sample Sent': 'Tasting / Sample Done',
+              'Quotation': 'Rates Shared', 'Repeat Customer': 'Regular Buyer' },
+  },
+  agro: {
+    icon: '🌾', label: 'Agro & Farm Inputs',
+    entity: 'Dealer', entityPlural: 'Dealers',
+    terms: { code: 'Dealer Code', name: 'Dealer / Farmer Name', person: 'Contact Person',
+             product: 'Product', area: 'Village / Area' },
+    stages: { 'New Lead': 'New Dealer', 'Sample Required': 'Demo Asked', 'Sample Sent': 'Field Demo Done',
+              'Quotation': 'Rates Shared', 'Repeat Customer': 'Repeat Dealer' },
+  },
+  finance: {
+    icon: '💰', label: 'Finance & Insurance',
+    entity: 'Client', entityPlural: 'Clients',
+    terms: { code: 'Client Code', name: 'Client Name', person: 'Contact Person',
+             product: 'Product / Policy', area: 'Area' },
+    stages: { 'Sample Required': 'Documents Requested', 'Sample Sent': 'Proposal Shared',
+              'Quotation': 'Quote Shared', 'Order Won': 'Policy Issued', 'Repeat Customer': 'Renewal Client' },
+  },
+  custom: {
+    icon: '⚙️', label: 'Custom',
+    entity: 'Lead', entityPlural: 'Leads',
+    terms: { code: 'Code', name: 'Name', person: 'Contact Person',
+             product: 'Product', area: 'Area' },
+    stages: {},
+  },
+};
+const BUSINESS_KEYS = Object.keys(BUSINESS_TYPES);
+
+// Resolve a profile: valid type key + custom-term overrides merged in (mirrors
+// resolveBusinessProfile() in business-types.js — keep both in sync). Custom
+// terms only apply to the 'custom' type. Always safe — unknown/missing keys
+// fall back to 'factory' so nothing existing ever changes behaviour.
+function resolveBizProfile(type, customJson) {
+  const key = BUSINESS_KEYS.includes(type) ? type : 'factory';
+  const base = BUSINESS_TYPES[key];
+  if (key !== 'custom') return { key, ...base };
+  let custom = {};
+  try { custom = typeof customJson === 'string' ? JSON.parse(customJson || '{}') : (customJson || {}); } catch (_) {}
+  return {
+    key, ...base,
+    entity: String(custom.entity || base.entity).slice(0, 30),
+    entityPlural: String(custom.entityPlural || custom.entity || base.entityPlural).slice(0, 30),
+    terms: {
+      code:    String(custom.code    || base.terms.code).slice(0, 30),
+      name:    String(custom.name    || base.terms.name).slice(0, 40),
+      person:  String(custom.person  || base.terms.person).slice(0, 30),
+      product: String(custom.product || base.terms.product).slice(0, 30),
+      area:    String(custom.area    || base.terms.area).slice(0, 30),
+    },
+  };
+}
+
+// The ACTIVE business profile: the current team's (when viewing a team
+// workspace) else the signed-in user's Personal profile. Falls back to
+// 'factory' automatically — via resolveBizProfile — until data has loaded.
+function biz() {
+  if (state.activeOrgId) {
+    const team = (state.myTeams || []).find(t => String(t.id) === String(state.activeOrgId));
+    return resolveBizProfile(team && team.business_type, team && team.business_custom);
+  }
+  return resolveBizProfile(state.me && state.me.business_type, state.me && state.me.business_custom);
+}
+
+// Term lookup on the active profile: T('entity'), T('entityPlural'),
+// T('code'), T('name'), T('person'), T('product'), T('area').
+function T(key) {
+  const p = biz();
+  if (key === 'entity' || key === 'entityPlural') return p[key];
+  return p.terms[key] || '';
+}
+
+// Display-only relabel of a canonical stage name. NEVER use this for stored
+// values or filter comparisons — leads.stage / STAGE_NUMBERS keys never
+// change; this is purely what gets painted on screen.
+function stageLabel(canonicalStage) {
+  return biz().stages[canonicalStage] || canonicalStage;
+}
+
+// ── Static-DOM business-term relabeling ──────────────────────────────────
+// index.html has some labels/headers/placeholders that are plain static
+// markup (not built by a render function that re-runs on every navigation).
+// Mark those nodes with data-bizterm="<T() key>" (whole text = one term) or
+// data-bizterm-tpl="...{key}..." (a sentence with one or more {key}/{key|lower}
+// tokens — e.g. "{entityPlural} to Visit"), and data-bizterm-ph / data-bizterm-ph-tpl
+// for the same on an input's placeholder. applyBusinessTerms() fills them all in
+// from the active business profile. It's cheap and idempotent — safe to call on
+// every renderPage(), which is exactly where it's wired in (top of renderPage()),
+// so switching page / workspace / business type always keeps these in sync.
+// Assignment goes through .textContent / .placeholder (never innerHTML), so this
+// is XSS-safe even though custom business-type terms are user-supplied text.
+const BIZTERM_KEYS = ['entity', 'entityPlural', 'code', 'name', 'person', 'product', 'area'];
+
+function bizTermValue(token) {
+  const [key, mod] = token.split('|');
+  let v = BIZTERM_KEYS.includes(key) ? T(key) : '';
+  return mod === 'lower' ? v.toLowerCase() : v;
+}
+
+function fillBizTemplate(tpl) {
+  return String(tpl || '').replace(/\{([\w]+(?:\|\w+)?)\}/g, (_, token) => bizTermValue(token));
+}
+
+function applyBusinessTerms() {
+  document.querySelectorAll('[data-bizterm]').forEach(el => {
+    el.textContent = T(el.getAttribute('data-bizterm'));
+  });
+  document.querySelectorAll('[data-bizterm-tpl]').forEach(el => {
+    el.textContent = fillBizTemplate(el.getAttribute('data-bizterm-tpl'));
+  });
+  document.querySelectorAll('[data-bizterm-ph]').forEach(el => {
+    el.placeholder = T(el.getAttribute('data-bizterm-ph'));
+  });
+  document.querySelectorAll('[data-bizterm-ph-tpl]').forEach(el => {
+    el.placeholder = fillBizTemplate(el.getAttribute('data-bizterm-ph-tpl'));
+  });
+  // #f-stage is the one static canonical-stage <option> list in index.html (the
+  // Add/Edit lead modal). Relabel the visible text only — `value` stays the
+  // canonical STAGE_NUMBERS string the form actually submits.
+  document.querySelectorAll('#f-stage option[value]').forEach(opt => {
+    if (opt.value) opt.textContent = stageLabel(opt.value);
+  });
+}
 
 // ── Doughnut center-text plugin ──────────────────────────────
 if (typeof Chart !== 'undefined') Chart.register({
@@ -1246,6 +1451,20 @@ const IMPORT_FIELDS = [
   ['created_by',       'Salesman (admin only)'],
 ];
 
+// Display label for an IMPORT_FIELDS key, business-term aware. IMPORT_FIELDS
+// itself stays a plain module-level const (canonical keys + default labels,
+// used for column order and as the alias/lookup source) because it's
+// evaluated once at script load — before the active business profile is
+// known. Routing the handful of business-term fields through T() here (at
+// render time, inside renderImportMap()) keeps that fast/simple while still
+// reflecting the active business type in the mapping UI.
+function importFieldLabel(key) {
+  const overrides = { factory_number: T('code'), factory_name: T('name'), person_in_charge: T('person') };
+  if (overrides[key]) return overrides[key];
+  const entry = IMPORT_FIELDS.find(([k]) => k === key);
+  return entry ? entry[1] : key;
+}
+
 const IMPORT_ALIASES = {
   factory_number:   ['factorynumber','factoryno','factno','fnumber','fno','code','partycode','leadno','leadid'],
   factory_name:     ['factoryname','factory','partyname','party','company','companyname','business','businessname','firm','firmname','customer','customername','name','account'],
@@ -1439,7 +1658,7 @@ function renderImportMap() {
 
   const fieldOptions = IMPORT_FIELDS
     .filter(([v]) => v !== 'created_by' || state.role === 'admin')
-    .map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+    .map(([v]) => `<option value="${v}">${escHtml(importFieldLabel(v))}</option>`).join('');
 
   document.getElementById('import-map-head').innerHTML = `
     <tr>${headers.map((h, i) => `
@@ -1607,7 +1826,7 @@ async function runImport() {
   const errEl = document.getElementById('import-map-error');
   errEl.textContent = '';
   if (!mapping.includes('factory_name') && !mapping.includes('factory_number')) {
-    errEl.textContent = 'Map at least the Factory/Party Name or Factory # column.';
+    errEl.textContent = `Map at least the ${T('name')} or ${T('code')} column.`;
     return;
   }
 
@@ -1774,6 +1993,7 @@ function initChatViewport() {
 }
 
 function renderPage(page) {
+  applyBusinessTerms();      // refresh static business-term nodes (labels/placeholders/stage options)
   if (page === 'dashboard')  renderDashboard();
   if (page === 'leads')      renderLeads();
   if (page === 'database')   renderDatabase();
@@ -2148,7 +2368,7 @@ function loadFactoryMarkers() {
       m.bindPopup(`
         <div style="min-width:160px">
           <b>${l.factory_name || l.factory_number}</b><br>
-          <span style="color:#64748b;font-size:12px">${l.factory_number} · ${l.stage || '—'}</span><br>
+          <span style="color:#64748b;font-size:12px">${l.factory_number} · ${l.stage ? stageLabel(l.stage) : '—'}</span><br>
           <span style="font-size:12px">${l.person_in_charge || ''}</span>
           <br><br>
           <button onclick="startPinMode(${l.rowIndex},'${(l.factory_name||l.factory_number).replace(/'/g,'')}');document.querySelector('.leaflet-popup-close-button')?.click()"
@@ -2165,7 +2385,7 @@ function renderFactoryChecklist() {
   if (!container) return;
 
   if (!state.leads.length) {
-    container.innerHTML = '<p class="route-hint">No factories in CRM yet.</p>';
+    container.innerHTML = `<p class="route-hint">No ${escHtml(T('entityPlural').toLowerCase())} in CRM yet.</p>`;
     return;
   }
 
@@ -2322,7 +2542,7 @@ async function optimizeRoute() {
     `).join('');
 
     if (result.skipped?.length)
-      toast(`${result.skipped.length} factory skipped (no coordinates)`, 'warning');
+      toast(`${result.skipped.length} ${T('entity').toLowerCase()} skipped (no coordinates)`, 'warning');
 
     _leafletMap.fitBounds(_routeLayer.getBounds(), { padding: [50, 50] });
 
@@ -2350,7 +2570,7 @@ function clearRoute() {
 // ============================================================
 function stageBadge(lead) {
   const n     = String(lead.stage_number ?? '');
-  const label = lead.stage || '—';
+  const label = lead.stage ? stageLabel(lead.stage) : '—';
   // Guests (and rows not in the working set) get a static badge; everyone else
   // gets a one-tap stage changer. stopPropagation so it doesn't also open the
   // row's lead-detail sheet.
@@ -2423,7 +2643,7 @@ function buildTable(leads, cols, actions = true, selectable = false, rowClickFn 
 
   const colDefs = {
     factory_number:   ['#',          l => l.factory_number   || '—'],
-    factory_name:     ['Factory',    l => l.factory_name     || '—'],
+    factory_name:     [T('entity'),  l => l.factory_name     || '—'],
     person_in_charge: ['Person',     l => l.person_in_charge || '—'],
     contact:          ['Contact',    l => l.contact          || '—'],
     product:          ['Product',    l => { const n = leadProductNames(l); if (!n.length) return '—';
@@ -2444,7 +2664,7 @@ function buildTable(leads, cols, actions = true, selectable = false, rowClickFn 
   const heads = cols.map(c => {
     const label = colDefs[c] ? colDefs[c][0] : c;
     const arrow = state.sortKey === c ? (state.sortDir === 'asc' ? ' ▲' : ' ▼') : '';
-    return `<th class="sortable" onclick="sortBy('${c}')">${label}${arrow}</th>`;
+    return `<th class="sortable" onclick="sortBy('${c}')">${escHtml(label)}${arrow}</th>`;
   }).join('');
 
   const allSel = leads.length && leads.every(l => state.selectedLeads.has(Number(l.rowIndex)));
@@ -2574,13 +2794,15 @@ function renderDashboard() {
     card('blue',  'total',  'Total Leads', s.total,  'All time') +
     card('amber', 'active', 'Active',      s.active, 'In pipeline') +
     card('green', 'won',    'Won',         s.won,    `${winRate}% win rate`) +
-    card('red',   'lost',   'Lost',        s.lost,   'Marked Lost');
+    card('red',   'lost',   stageLabel('Lost'), s.lost, `Marked ${stageLabel('Lost')}`);
 
-  // Pipeline by Stage — doughnut with center total
+  // Pipeline by Stage — doughnut with center total. Colors/data stay keyed by
+  // the canonical stage string; only the displayed labels array is relabeled.
+  const stageKeys = Object.keys(s.by_stage);
   renderChart('chart-stage', 'doughnut',
-    Object.keys(s.by_stage),
+    stageKeys.map(stageLabel),
     Object.values(s.by_stage),
-    Object.keys(s.by_stage).map(k => STAGE_COLORS[k] || '#94a3b8'),
+    stageKeys.map(k => STAGE_COLORS[k] || '#94a3b8'),
     { centerText: { value: s.total, label: 'leads' } }
   );
 
@@ -2791,7 +3013,7 @@ function renderDatabaseTable() {
   wrap.innerHTML = `<div class="table-scroll"><table class="crm-table">
     <thead><tr>
       <th class="db-check-col"><input type="checkbox" ${allChecked ? 'checked' : ''} onchange="toggleDbSelectAll(this.checked)"></th>
-      <th>#</th><th>Factory</th><th>Person</th><th>Contact</th><th>Product</th><th>Area</th><th></th>
+      <th>#</th><th>${escHtml(T('entity'))}</th><th>Person</th><th>Contact</th><th>Product</th><th>Area</th><th></th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`;
@@ -2884,7 +3106,7 @@ async function moveLeadToDatabase(rowIndex) {
 // applied to the leads already in your working sheet. Only touches leads you can
 // edit, and only fields that actually change.
 async function cleanupImportedLeads() {
-  if (!confirm('Clean up your leads?\n\n• Proper-Case the factory name, person and area (mixed-case you typed by hand stays)\n• Snap each product onto your Products catalog\n\nOnly the leads you can edit are changed.')) return;
+  if (!confirm(`Clean up your leads?\n\n• Proper-Case the ${T('entity').toLowerCase()} name, person and area (mixed-case you typed by hand stays)\n• Snap each product onto your Products catalog\n\nOnly the leads you can edit are changed.`)) return;
   const btn = document.getElementById('btn-cleanup');
   if (btn) { btn.disabled = true; btn.textContent = '✨ Cleaning…'; }
   try {
@@ -2941,7 +3163,9 @@ function populateFilters() {
     ...state.leads.flatMap(leadProductNames),
     ...(state.myProducts || []).map(p => p.name),
   ].filter(Boolean))].sort();
-  stageEl.innerHTML   = '<option value="">All Stages</option>'   + stages.map(s => `<option ${s===state.filterStage?'selected':''}>${s}</option>`).join('');
+  // value stays the canonical stage string (what filteredLeads() compares
+  // against); only the visible option text is relabeled.
+  stageEl.innerHTML   = '<option value="">All Stages</option>'   + stages.map(s => `<option value="${escAttr(s)}" ${s===state.filterStage?'selected':''}>${escHtml(stageLabel(s))}</option>`).join('');
   productEl.innerHTML = '<option value="">All Products</option>' + products.map(p => `<option ${p===state.filterProduct?'selected':''}>${escHtml(p)}</option>`).join('');
 
   // Division filter — only shown once the catalog defines divisions.
@@ -2999,7 +3223,14 @@ function clearGroupFilter() {
   renderLeadsView();
 }
 
-const GROUP_LABELS = { active: 'Active (in pipeline)', won: 'Won', lost: 'Lost' };
+// 'lost' is routed through stageLabel() since it names the canonical Lost
+// stage bucket — computed fresh (not a module-level const) so it always
+// reflects the active business profile, even though no business type
+// currently overrides 'Lost'.
+function groupLabel(group) {
+  if (group === 'lost') return stageLabel('Lost');
+  return { active: 'Active (in pipeline)', won: 'Won' }[group] || group;
+}
 
 function renderGroupChip() {
   const host = document.getElementById('leads-active-filter');
@@ -3007,7 +3238,7 @@ function renderGroupChip() {
   if (!state.filterGroup) { host.innerHTML = ''; return; }
   host.innerHTML = `
     <span class="active-filter-chip">
-      Showing <b>${GROUP_LABELS[state.filterGroup] || state.filterGroup}</b>
+      Showing <b>${escHtml(groupLabel(state.filterGroup))}</b>
       <button type="button" onclick="clearGroupFilter()" aria-label="Clear filter">✕</button>
     </span>`;
 }
@@ -3157,9 +3388,9 @@ function buildCards(leads) {
         ${showOwner ? line('🙋', escHtml(l.created_by || '')) : ''}
         <div class="lead-card-foot">
           ${state.role === 'guest'
-            ? `<span class="lead-card-stage" style="--stg:${stageCol}">${escHtml(l.stage || '—')}</span>`
+            ? `<span class="lead-card-stage" style="--stg:${stageCol}">${escHtml(l.stage ? stageLabel(l.stage) : '—')}</span>`
             : `<button type="button" class="lead-card-stage lead-card-stage-btn" style="--stg:${stageCol}" title="Tap to change stage"
-                 onclick="event.stopPropagation(); openStagePicker(${l.rowIndex})">${escHtml(l.stage || '—')} ▾</button>`}
+                 onclick="event.stopPropagation(); openStagePicker(${l.rowIndex})">${escHtml(l.stage ? stageLabel(l.stage) : '—')} ▾</button>`}
         </div>
       </div>`;
   }).join('');
@@ -3192,7 +3423,7 @@ function openLeadDetail(rowIndex) {
     const col = STAGE_COLORS[s] || '#64748b';
     const active = l.stage === s;
     return `<button class="ld-stage-pill ${active ? 'active' : ''}" data-stage="${escAttr(s)}" style="--stg:${col}"
-      ${canEdit ? `onclick="setLeadStage(${l.rowIndex}, '${escAttr(s)}')"` : 'disabled'}>${escHtml(s)}</button>`;
+      ${canEdit ? `onclick="setLeadStage(${l.rowIndex}, '${escAttr(s)}')"` : 'disabled'}>${escHtml(stageLabel(s))}</button>`;
   }).join('');
 
   const contactRows = contacts.length ? contacts.map(c => {
@@ -3250,9 +3481,9 @@ function openLeadDetail(rowIndex) {
         </div>
         ${lists ? `<div class="ld-section"><div class="ld-label">Lists</div>${lists}</div>` : ''}
         <div class="ld-section">
-          <div class="ld-label">📸 Factory pics</div>
+          <div class="ld-label">📸 ${escHtml(T('entity'))} pics</div>
           <div id="ld-photos" class="ld-photos"><div class="ld-empty">Loading…</div></div>
-          ${canEdit ? `<button class="btn btn-secondary btn-sm ld-photo-add" onclick="capturePhotoForLead(${l.rowIndex})">📷 Add factory pic</button>` : ''}
+          ${canEdit ? `<button class="btn btn-secondary btn-sm ld-photo-add" onclick="capturePhotoForLead(${l.rowIndex})">📷 Add ${escHtml(T('entity').toLowerCase())} pic</button>` : ''}
         </div>
         <div class="ld-section">
           <div class="ld-label">📝 Notes</div>
@@ -3302,7 +3533,7 @@ async function setLeadStage(rowIndex, newStage) {
   renderPage(state.page);
   try {
     await updateLead(rowIndex, { ...l });
-    toast(`Stage → ${newStage}`);
+    toast(`Stage → ${stageLabel(newStage)}`);
     try { await loadStats(); if (state.page === 'dashboard') renderDashboard(); } catch (_) {}
   } catch (err) {
     l.stage = prevStage; l.stage_number = prevNum;   // rollback
@@ -3341,7 +3572,7 @@ function openStagePicker(rowIndex) {
     const col = STAGE_COLORS[s] || '#64748b';
     const active = l.stage === s;
     return `<button class="sp-pill ${active ? 'active' : ''}" style="--stg:${col}"
-      onclick="closeStagePicker(); setLeadStage(${rowIndex}, '${escAttr(s)}');">${escHtml(s)}</button>`;
+      onclick="closeStagePicker(); setLeadStage(${rowIndex}, '${escAttr(s)}');">${escHtml(stageLabel(s))}</button>`;
   }).join('');
   const html = `
   <div class="stage-picker-overlay" id="stage-picker-overlay" onclick="if(event.target===this)closeStagePicker()">
@@ -3373,10 +3604,10 @@ async function loadLeadPhotos(rowIndex) {
   const box = document.getElementById('ld-photos');
   if (!box) return;
   // Demo/unsaved leads have no real row id — nothing to fetch, don't 500.
-  if (!Number.isInteger(Number(rowIndex))) { box.innerHTML = '<div class="ld-empty">No factory pics yet.</div>'; return; }
+  if (!Number.isInteger(Number(rowIndex))) { box.innerHTML = `<div class="ld-empty">No ${escHtml(T('entity').toLowerCase())} pics yet.</div>`; return; }
   try {
     const photos = await apiFetch(`/api/leads/${rowIndex}/photos` + orgQuery());
-    if (!photos.length) { box.innerHTML = '<div class="ld-empty">No factory pics yet.</div>'; return; }
+    if (!photos.length) { box.innerHTML = `<div class="ld-empty">No ${escHtml(T('entity').toLowerCase())} pics yet.</div>`; return; }
     const canDel = state.role !== 'guest';
     // Read the data-URL from the <img>'s own src at click time rather than
     // inlining the (hundreds-of-KB base64) string into an onclick attribute.
@@ -3439,19 +3670,20 @@ async function handleLeadPhotoFile(rowIndex, file) {
     const dataUrl = await downscaleImageFile(file);
     await apiFetch(`/api/leads/${rowIndex}/photos` + orgQuery(), {
       method: 'POST',
+      // Stored caption stays a fixed string regardless of business type (display-only sweep — not a UI label).
       body: JSON.stringify({ image: dataUrl, caption: 'Factory pic' }),
     });
-    toast('Factory pic saved');
+    toast(`${T('entity')} pic saved`);
     await loadLeadPhotos(rowIndex);
   } catch (err) {
     toast('Could not save pic: ' + err.message, 'error');
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = label || '📷 Add factory pic'; }
+    if (btn) { btn.disabled = false; btn.textContent = label || `📷 Add ${T('entity').toLowerCase()} pic`; }
   }
 }
 
 async function deleteLeadPhoto(rowIndex, photoId) {
-  if (!confirm('Delete this factory pic? This cannot be undone.')) return;
+  if (!confirm(`Delete this ${T('entity').toLowerCase()} pic? This cannot be undone.`)) return;
   try {
     await apiFetch(`/api/leads/${rowIndex}/photos/${photoId}` + orgQuery(), { method: 'DELETE' });
     toast('Pic deleted');
@@ -3464,7 +3696,7 @@ function viewLeadPhoto(src) {
   const ov = document.createElement('div');
   ov.className = 'photo-viewer';
   ov.onclick = () => ov.remove();
-  ov.innerHTML = `<img src="${escAttr(src)}" alt="Factory pic" /><button class="photo-viewer-close" aria-label="Close">✕</button>`;
+  ov.innerHTML = `<img src="${escAttr(src)}" alt="${escAttr(T('entity'))} pic" /><button class="photo-viewer-close" aria-label="Close">✕</button>`;
   document.body.appendChild(ov);
 }
 
@@ -3478,7 +3710,7 @@ function renderPipeline() {
     const color = STAGE_COLORS[s] || '#64748b';
     return `<div class="pipeline-stat">
       <div class="pipeline-stat-num" style="color:${color}">${count}</div>
-      <div class="pipeline-stat-label">${s}</div>
+      <div class="pipeline-stat-label">${escHtml(stageLabel(s))}</div>
     </div>`;
   }).join('');
   document.getElementById('pipeline-kanban').innerHTML = buildKanban(state.leads, false);
@@ -3516,7 +3748,7 @@ function buildKanban(leads, draggable = false) {
 
     return `<div class="kanban-col">
       <div class="kanban-col-header" style="background:${color}">
-        ${s} <span class="kanban-col-count">${cards.length}</span>
+        ${escHtml(stageLabel(s))} <span class="kanban-col-count">${cards.length}</span>
       </div>
       <div class="kanban-cards" ${dropAttrs}>${cardHtml}</div>
     </div>`;
@@ -3552,7 +3784,7 @@ async function dropCard(event, newStage) {
   const stageNum = STAGE_NUMBERS[newStage] ?? '';
   try {
     await updateLead(lead.rowIndex, { ...lead, stage: newStage, stage_number: stageNum });
-    toast(`Moved to ${newStage}`);
+    toast(`Moved to ${stageLabel(newStage)}`);
     await refresh();
   } catch (err) {
     toast('Stage update failed: ' + err.message, 'error');
@@ -3608,13 +3840,15 @@ function renderReports() {
   const s = state.stats;
   if (!s || !s.by_stage) return;
 
-  // Conversion Funnel — horizontal bar with % in tooltip
+  // Conversion Funnel — horizontal bar with % in tooltip. Keys stay canonical
+  // for the by_stage/STAGE_COLORS lookups; only the chart's labels are relabeled.
   const stageOrder   = ['New Lead','Sample Required','Sample Sent','Quotation','Negotiation','Order Won','Repeat Customer','Lost'];
-  const funnelLabels = stageOrder.filter(st => s.by_stage[st]);
-  const funnelData   = funnelLabels.map(st => s.by_stage[st]);
+  const funnelKeys   = stageOrder.filter(st => s.by_stage[st]);
+  const funnelLabels = funnelKeys.map(stageLabel);
+  const funnelData   = funnelKeys.map(st => s.by_stage[st]);
   const funnelTotal  = funnelData.reduce((a,b) => a + b, 0);
   renderChart('chart-funnel', 'hbar', funnelLabels, funnelData,
-    funnelLabels.map(st => STAGE_COLORS[st] || '#94a3b8'),
+    funnelKeys.map(st => STAGE_COLORS[st] || '#94a3b8'),
     {
       label: 'Leads',
       tooltipCallbacks: {
@@ -3669,11 +3903,11 @@ function renderReports() {
     <div class="win-loss-grid">
       <div class="wl-cell">
         <div class="wl-num wl-green">${s.won}</div>
-        <div class="wl-label">Won (Order Won + Repeat)</div>
+        <div class="wl-label">Won (${escHtml(stageLabel('Order Won'))} + Repeat)</div>
       </div>
       <div class="wl-cell">
         <div class="wl-num wl-red">${s.lost}</div>
-        <div class="wl-label">Lost</div>
+        <div class="wl-label">${escHtml(stageLabel('Lost'))}</div>
       </div>
       <div class="wl-cell">
         <div class="wl-num wl-amber">${rate}%</div>
@@ -4060,6 +4294,7 @@ async function openProfileModal() {
   document.getElementById('p-default-area').value = localStorage.getItem('crm_default_area') || '';
   try {
     const me = await apiFetch('/api/users/me');
+    state.me = me;
     document.getElementById('p-name').value = me.display_name || '';
     // Server value wins — default area follows the account across devices
     if (me.default_area != null && me.default_area !== '') {
@@ -4069,11 +4304,39 @@ async function openProfileModal() {
   } catch (_) {
     document.getElementById('p-name').value = localStorage.getItem('crm_user') || '';
   }
+  renderProfileBizFields();
   document.getElementById('profile-modal-overlay').classList.remove('hidden');
 }
 
 function closeProfileModal() {
   document.getElementById('profile-modal-overlay').classList.add('hidden');
+}
+
+// Business-type picker inside the Profile modal — this is the PERSONAL
+// workspace's profile (state.me), independent of whatever team is active.
+function renderProfileBizFields() {
+  const sel = document.getElementById('profile-biz');
+  if (!sel) return;
+  const type = (state.me && BUSINESS_KEYS.includes(state.me.business_type)) ? state.me.business_type : 'factory';
+  sel.innerHTML = BUSINESS_KEYS.map(k =>
+    `<option value="${k}" ${k === type ? 'selected' : ''}>${escHtml(BUSINESS_TYPES[k].icon + ' ' + BUSINESS_TYPES[k].label)}</option>`
+  ).join('');
+  let custom = {};
+  try { custom = (state.me && state.me.business_custom) ? JSON.parse(state.me.business_custom) : {}; } catch (_) {}
+  const cBase = BUSINESS_TYPES.custom;
+  document.getElementById('profile-biz-entity').value  = custom.entity  || cBase.entity;
+  document.getElementById('profile-biz-code').value    = custom.code    || cBase.terms.code;
+  document.getElementById('profile-biz-name').value    = custom.name    || cBase.terms.name;
+  document.getElementById('profile-biz-person').value  = custom.person  || cBase.terms.person;
+  document.getElementById('profile-biz-product').value = custom.product || cBase.terms.product;
+  document.getElementById('profile-biz-area').value    = custom.area    || cBase.terms.area;
+  toggleProfileBizCustom();
+}
+
+function toggleProfileBizCustom() {
+  const sel = document.getElementById('profile-biz');
+  const wrap = document.getElementById('profile-biz-custom');
+  if (sel && wrap) wrap.classList.toggle('hidden', sel.value !== 'custom');
 }
 
 async function handleProfileSubmit(e) {
@@ -4088,6 +4351,16 @@ async function handleProfileSubmit(e) {
   if (pin && !/^\d{4,6}$/.test(pin)) { errEl.textContent = 'PIN must be 4–6 digits'; return; }
   const defaultArea = document.getElementById('p-default-area').value.trim();
   localStorage.setItem('crm_default_area', defaultArea);
+  const businessType = document.getElementById('profile-biz')?.value || 'factory';
+  const cBase = BUSINESS_TYPES.custom;
+  const businessCustom = businessType === 'custom' ? JSON.stringify({
+    entity:  (document.getElementById('profile-biz-entity').value  || '').trim() || cBase.entity,
+    code:    (document.getElementById('profile-biz-code').value    || '').trim() || cBase.terms.code,
+    name:    (document.getElementById('profile-biz-name').value    || '').trim() || cBase.terms.name,
+    person:  (document.getElementById('profile-biz-person').value  || '').trim() || cBase.terms.person,
+    product: (document.getElementById('profile-biz-product').value || '').trim() || cBase.terms.product,
+    area:    (document.getElementById('profile-biz-area').value    || '').trim() || cBase.terms.area,
+  }) : null;
   try {
     const result = await apiFetch('/api/users/me/profile', {
       method: 'PATCH',
@@ -4099,9 +4372,19 @@ async function handleProfileSubmit(e) {
       localStorage.setItem('crm_role',  result.role);
       state.role = result.role;
     }
+    // The server preserves the existing business_custom when businessCustom is
+    // omitted (switching away from 'custom' doesn't erase saved terms), and
+    // echoes back the authoritative values — trust its response as-is rather
+    // than re-deriving business_custom locally.
+    const bizResult = await apiFetch('/api/me/business', {
+      method: 'PATCH',
+      body: JSON.stringify({ businessType, ...(businessCustom ? { businessCustom } : {}) }),
+    });
+    state.me = { ...(state.me || {}), ...(bizResult || {}) };
     applyRoleUI();
     closeProfileModal();
     toast('Profile updated!');
+    renderPage(state.page);
   } catch (err) {
     errEl.textContent = err.message;
   }
@@ -4149,9 +4432,10 @@ function renderContactsEditor(contacts) {
   const rows = (contacts && contacts.length)
     ? contacts.map(c => ({ person_name: c.person_name || '', contact: c.contact || '', designation: c.designation || '' }))
     : [{ person_name: '', contact: '', designation: '' }];
+  const personPh = escAttr(T('person'));
   editor.innerHTML = rows.map((c, i) => `
     <div class="contact-row" data-idx="${i}">
-      <input type="text" class="c-name" placeholder="Person name" value="${escAttr(c.person_name)}" />
+      <input type="text" class="c-name" placeholder="${personPh}" value="${escAttr(c.person_name)}" />
       <input type="tel" class="c-phone" placeholder="Phone" value="${escAttr(c.contact)}" />
       <input type="text" class="c-desig" placeholder="Role (optional)" value="${escAttr(c.designation)}" />
       ${i > 0 ? `<button type="button" class="remove-contact" onclick="removeContactRow(this)">✕</button>` : '<span class="contact-row-spacer"></span>'}
@@ -4166,7 +4450,7 @@ function addContactRow() {
   div.className = 'contact-row';
   div.dataset.idx = idx;
   div.innerHTML = `
-    <input type="text" class="c-name" placeholder="Person name" value="" />
+    <input type="text" class="c-name" placeholder="${escAttr(T('person'))}" value="" />
     <input type="tel" class="c-phone" placeholder="Phone" value="" />
     <input type="text" class="c-desig" placeholder="Role (optional)" value="" />
     <button type="button" class="remove-contact" onclick="removeContactRow(this)">✕</button>`;
@@ -5259,6 +5543,7 @@ async function initApp() {
     // Sync profile prefs (default area) from the server, non-blocking
     if (state.role !== 'guest') {
       apiFetch('/api/users/me').then(me => {
+        state.me = me;
         if (me?.default_area) localStorage.setItem('crm_default_area', me.default_area);
       }).catch(() => {});
     }
@@ -6308,11 +6593,11 @@ function buildChatPreview({ parsed, action, existingRow }) {
         ${p.lead_type ? `<span class="chat-preview-badge" style="background:${badgeColor}">${p.lead_type}</span>` : ''}
       </div>
       <table class="chat-preview-table">
-        <tr><td>Factory #</td><td><b>${p.factory_number || '—'}</b></td></tr>
-        <tr><td>Factory</td><td><b>${p.factory_name || '—'}</b></td></tr>
+        <tr><td>${escHtml(T('code'))}</td><td><b>${p.factory_number || '—'}</b></td></tr>
+        <tr><td>${escHtml(T('entity'))}</td><td><b>${p.factory_name || '—'}</b></td></tr>
         ${p.person_in_charge ? `<tr><td>Contact</td><td>${p.person_in_charge}</td></tr>` : ''}
         ${p.area ? `<tr><td>Area</td><td>${p.area}</td></tr>` : ''}
-        ${p.stage ? `<tr><td>Stage</td><td>${p.stage}</td></tr>` : ''}
+        ${p.stage ? `<tr><td>Stage</td><td>${escHtml(stageLabel(p.stage))}</td></tr>` : ''}
         ${p.follow_up ? `<tr><td>Follow-up</td><td>${p.follow_up}</td></tr>` : ''}
       </table>
       <div class="chat-preview-items">${itemsHtml}</div>
@@ -6897,6 +7182,10 @@ async function wsCreateTeam() {
 
 function wsRenderSettings() {
   const t = ws.activeTeam;
+  const bizType = BUSINESS_KEYS.includes(t.business_type) ? t.business_type : 'factory';
+  let bizCustom = {};
+  try { bizCustom = t.business_custom ? JSON.parse(t.business_custom) : {}; } catch (_) {}
+  const cBase = BUSINESS_TYPES.custom;
   document.getElementById('ws-panel-settings').innerHTML = `
     <div class="ws-search-wrap">
       <h3 style="margin-bottom:16px;font-size:16px;font-weight:600">Team Settings</h3>
@@ -6921,6 +7210,39 @@ function wsRenderSettings() {
           Auto-approve join requests (no manual approval needed)
         </label>
       </div>
+      <div class="form-group" style="margin-bottom:20px">
+        <label>Business Type</label>
+        <select id="ws-set-biz" class="ws-input" onchange="wsToggleBizCustom()">
+          ${BUSINESS_KEYS.map(k => `<option value="${k}" ${k === bizType ? 'selected' : ''}>${escHtml(BUSINESS_TYPES[k].icon + ' ' + BUSINESS_TYPES[k].label)}</option>`).join('')}
+        </select>
+        <p style="font-size:12px;color:var(--text-muted);margin:6px 0 0;line-height:1.4">Changes the words Dive uses — what a lead is called, field names and stage names. Data is never changed.</p>
+        <div id="ws-set-biz-custom" class="biz-custom-grid ${bizType === 'custom' ? '' : 'hidden'}">
+          <div class="form-group">
+            <label>What do you call a lead?</label>
+            <input id="ws-set-biz-entity" type="text" class="ws-input" value="${escAttr(bizCustom.entity || cBase.entity)}" />
+          </div>
+          <div class="form-group">
+            <label>Code field</label>
+            <input id="ws-set-biz-code" type="text" class="ws-input" value="${escAttr(bizCustom.code || cBase.terms.code)}" />
+          </div>
+          <div class="form-group">
+            <label>Name field</label>
+            <input id="ws-set-biz-name" type="text" class="ws-input" value="${escAttr(bizCustom.name || cBase.terms.name)}" />
+          </div>
+          <div class="form-group">
+            <label>Person field</label>
+            <input id="ws-set-biz-person" type="text" class="ws-input" value="${escAttr(bizCustom.person || cBase.terms.person)}" />
+          </div>
+          <div class="form-group">
+            <label>Product field</label>
+            <input id="ws-set-biz-product" type="text" class="ws-input" value="${escAttr(bizCustom.product || cBase.terms.product)}" />
+          </div>
+          <div class="form-group">
+            <label>Area field</label>
+            <input id="ws-set-biz-area" type="text" class="ws-input" value="${escAttr(bizCustom.area || cBase.terms.area)}" />
+          </div>
+        </div>
+      </div>
       <p id="ws-set-err" class="login-error"></p>
       <div style="display:flex;gap:8px">
         <button class="btn btn-primary" onclick="wsSaveSettings()">Save Settings</button>
@@ -6928,25 +7250,54 @@ function wsRenderSettings() {
     </div>`;
 }
 
+function wsToggleBizCustom() {
+  const sel  = document.getElementById('ws-set-biz');
+  const wrap = document.getElementById('ws-set-biz-custom');
+  if (sel && wrap) wrap.classList.toggle('hidden', sel.value !== 'custom');
+}
+
 async function wsSaveSettings() {
   const name         = (document.getElementById('ws-set-name').value   || '').trim();
   const handle       = (document.getElementById('ws-set-handle').value || '').trim();
   const publicSearch = document.getElementById('ws-set-public').checked;
   const autoApprove  = document.getElementById('ws-set-auto').checked;
+  const businessType = document.getElementById('ws-set-biz').value;
   const errEl        = document.getElementById('ws-set-err');
   errEl.textContent  = '';
   if (name.length < 2)   { errEl.textContent = 'Name too short'; return; }
   if (handle.length < 3) { errEl.textContent = 'Handle too short'; return; }
+  const cBase = BUSINESS_TYPES.custom;
+  const businessCustom = businessType === 'custom' ? JSON.stringify({
+    entity:  (document.getElementById('ws-set-biz-entity').value  || '').trim() || cBase.entity,
+    code:    (document.getElementById('ws-set-biz-code').value    || '').trim() || cBase.terms.code,
+    name:    (document.getElementById('ws-set-biz-name').value    || '').trim() || cBase.terms.name,
+    person:  (document.getElementById('ws-set-biz-person').value  || '').trim() || cBase.terms.person,
+    product: (document.getElementById('ws-set-biz-product').value || '').trim() || cBase.terms.product,
+    area:    (document.getElementById('ws-set-biz-area').value    || '').trim() || cBase.terms.area,
+  }) : null;
   try {
     await wsTeamApiFetch(`/api/teams/${ws.activeTeam.id}`, {
-      method: 'PATCH', body: JSON.stringify({ name, handle, publicSearch, autoApprove }),
+      method: 'PATCH',
+      body: JSON.stringify({ name, handle, publicSearch, autoApprove, businessType, ...(businessCustom ? { businessCustom } : {}) }),
     });
-    ws.activeTeam.name         = name;
-    ws.activeTeam.handle       = handle;
-    ws.activeTeam.public_search = publicSearch;
-    ws.activeTeam.auto_approve  = autoApprove;
+    ws.activeTeam.name            = name;
+    ws.activeTeam.handle          = handle;
+    ws.activeTeam.public_search   = publicSearch;
+    ws.activeTeam.auto_approve    = autoApprove;
+    ws.activeTeam.business_type = businessType;
+    // The server preserves the existing business_custom when the PATCH omits it
+    // (switching away from 'custom' doesn't erase saved terms) — only overwrite
+    // the local copy when we actually sent a fresh value.
+    if (businessType === 'custom') ws.activeTeam.business_custom = businessCustom;
+    // Keep the header switcher's / state.myTeams' copy of this team in sync too.
+    const inList = (state.myTeams || []).find(mt => String(mt.id) === String(ws.activeTeam.id));
+    if (inList) {
+      inList.business_type = businessType;
+      if (businessType === 'custom') inList.business_custom = businessCustom;
+    }
     wsFillBanner();
     toast('Settings saved!', 'success');
+    renderPage(state.page);   // refresh any visible labels driven by the new business type
   } catch (err) { errEl.textContent = err.message; }
 }
 
@@ -7270,15 +7621,19 @@ function buildAiPreview({ parsed, action, existingRow }, page) {
 
   const fieldRow = (label, field, value, confVal) => `
     <div class="ai-field-row">
-      <span class="ai-field-label">${label}</span>
+      <span class="ai-field-label">${escHtml(label)}</span>
       <input class="ai-field-input ${confClass(confVal)}" value="${escAttr(value || '')}"
         onchange="aiFieldChange('${uuid}','${field}',this.value)" />
       <span class="ai-conf-dot" title="${confVal !== undefined ? Math.round((confVal||0)*100)+'% confident' : ''}"
         style="background:${confDotColor(confVal)}"></span>
     </div>`;
 
+  // Some of these aren't canonical STAGE_NUMBERS keys (e.g. "Prospecting") —
+  // stageLabel() passes those through unchanged. An explicit value= is required
+  // so the relabeled text (for non-factory business types) doesn't become the
+  // submitted <select> value — it must stay this original canonical-ish string.
   const stageOptions = ['New Lead','Prospecting','Demo Scheduled','Negotiation','Order Placed','Order Won','Repeat Customer','Lost']
-    .map(s => `<option ${p.stage === s ? 'selected' : ''}>${escHtml(s)}</option>`).join('');
+    .map(s => `<option value="${escAttr(s)}" ${p.stage === s ? 'selected' : ''}>${escHtml(stageLabel(s))}</option>`).join('');
 
   const itemsHtml = (p.items || []).map((it, i) => `
     <div class="ai-item-row" id="${uuid}-item-${i}">
@@ -7303,8 +7658,8 @@ function buildAiPreview({ parsed, action, existingRow }, page) {
           <button class="ai-type-pill ${typeFor('Cold')}" onclick="aiSetLeadType('${uuid}','Cold')">🔵 Cold</button>
         </div>
       </div>
-      ${fieldRow('Factory #', 'factory_number', p.factory_number, conf.factory_number)}
-      ${fieldRow('Factory', 'factory_name', p.factory_name, conf.factory_name)}
+      ${fieldRow(T('code'), 'factory_number', p.factory_number, conf.factory_number)}
+      ${fieldRow(T('entity'), 'factory_name', p.factory_name, conf.factory_name)}
       ${fieldRow('Contact', 'person_in_charge', p.person_in_charge, conf.person_in_charge)}
       ${fieldRow('Phone', 'contact', p.contact, conf.contact)}
       ${fieldRow('Area', 'area', p.area, conf.area)}
@@ -7668,20 +8023,26 @@ function renderUnderstandingCard(data) {
   if (!cardArea) return;
 
   const FIELD_LABELS = {
-    factory_number: 'Factory #', factory_name: 'Business', person_in_charge: 'Contact',
+    factory_number: T('code'), factory_name: 'Business', person_in_charge: 'Contact',
     contact: 'Phone', stage: 'Stage', follow_up: 'Follow-up', area: 'Area',
     notes: 'Notes', lead_type: 'Lead Type',
   };
 
   const SHOW_FIELDS = ['factory_number', 'factory_name', 'person_in_charge', 'contact', 'lead_type', 'stage', 'follow_up', 'area', 'notes'];
 
+  // NOTE: the 'stage' value cell intentionally stays the raw canonical string,
+  // not stageLabel(val) — it's contenteditable and aiFieldCorrected() treats any
+  // blur where the text differs from parsed.stage as a user correction, which
+  // would silently overwrite the canonical stage with the display label the
+  // instant a non-factory business type relabels it. Only the (non-editable)
+  // field label is business-term aware.
   const fieldsHtml = SHOW_FIELDS.map(f => {
     const val  = parsed[f] || '';
     const conf = confidence?.[f];
     const cls  = confBadgeClass(conf);
     if (!val && !conf) return '';
     return `<tr>
-      <td class="ai-card-label">${FIELD_LABELS[f] || f}</td>
+      <td class="ai-card-label">${escHtml(FIELD_LABELS[f] || f)}</td>
       <td class="ai-card-value"><span class="ai-field-val" data-field="${f}" contenteditable="true"
           onblur="aiFieldCorrected('${f}', this)">${escHtml(val || '—')}</span></td>
       <td><span class="${cls}" title="Confidence">${confLabel(conf)}</span></td>
@@ -8011,7 +8372,7 @@ function cmdHtml(msg) {
 function cmdFindResults(results) {
   if (!results || !results.length) return '';
   return '<br>' + results.map(r =>
-    `• <b>${escHtml(r.factory_number || '—')}</b> ${escHtml(r.factory_name || '')} — ${escHtml(r.stage || '—')}${r.lead_type ? ' · ' + escHtml(r.lead_type) : ''}${r.follow_up ? ' · FU ' + escHtml(r.follow_up) : ''}`
+    `• <b>${escHtml(r.factory_number || '—')}</b> ${escHtml(r.factory_name || '')} — ${escHtml(r.stage ? stageLabel(r.stage) : '—')}${r.lead_type ? ' · ' + escHtml(r.lead_type) : ''}${r.follow_up ? ' · FU ' + escHtml(r.follow_up) : ''}`
   ).join('<br>');
 }
 

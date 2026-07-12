@@ -3,8 +3,9 @@
 const express = require('express');
 const { pool } = require('../db');
 const db      = require('../db');
+const { BUSINESS_KEYS } = require('../business-types');
 const {
-  authMiddleware, adminOnly,
+  authMiddleware, adminOnly, noGuest,
   signAccessToken,
   teamMemberMiddleware, teamAdminMiddleware,
   requirePermission, PERMISSIONS,
@@ -204,7 +205,31 @@ router.get('/users/me', authMiddleware, async (req, res, next) => {
     const { id, display_name, role, telegram_user_id, created_at, default_area, designation } = user;
     res.json({ id, display_name, role, telegram_user_id, created_at,
       default_area: default_area || '', designation: designation || '',
+      business_type: user.business_type || 'factory', business_custom: user.business_custom || '',
       has_password: !!user.password_hash });
+  } catch (err) { next(err); }
+});
+
+// ── PATCH /api/me/business ────────────────────────────────────
+// Set the caller's Personal-workspace business type + custom terms. This router
+// is mounted under /api, so the path here omits the prefix.
+router.patch('/me/business', authMiddleware, noGuest, async (req, res, next) => {
+  const { businessType, businessCustom } = req.body || {};
+  if (businessType !== undefined && !BUSINESS_KEYS.includes(businessType))
+    return res.status(400).json({ error: 'Unknown business type' });
+  try {
+    const user = await db.getUserByName(req.user.username);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const type = businessType !== undefined ? businessType : (user.business_type || 'factory');
+    // businessCustom may be an object or a string; store a JSON string ≤2000
+    // chars. When omitted, keep whatever the user already had.
+    let custom;
+    if (businessCustom === undefined)            custom = user.business_custom || '';
+    else if (typeof businessCustom === 'string') custom = businessCustom;
+    else { try { custom = JSON.stringify(businessCustom); } catch (_) { custom = ''; } }
+    custom = String(custom || '').slice(0, 2000);
+    await db.setUserBusiness(user.id, type, custom);
+    res.json({ success: true, business_type: type, business_custom: custom });
   } catch (err) { next(err); }
 });
 

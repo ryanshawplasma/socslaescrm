@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "salescrm-preview",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--use-system-ca", "-e", "process.env.TELEGRAM_TOKEN='000000:FAKE_PREVIEW_TOKEN';process.env.PORT=process.env.PORT||'4173';require('./index.js')"],
+      "port": 4173,
+      "autoPort": true
+    }
+  ]
+}

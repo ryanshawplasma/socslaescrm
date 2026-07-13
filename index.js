@@ -141,6 +141,14 @@ async function startServer() {
     console.log(`   Telegram    : ⏸ frozen (archived under _archive/telegram)`);
     if (!process.env.JWT_SECRET) console.warn('   ⚠️  JWT_SECRET is not set — using an insecure default. Set it in production!');
     if (!process.env.ADMIN_PASS) console.warn('   ⚠️  ADMIN_PASS is not set — the seeded admin uses the default password. Set it in production!');
+    // Warm the pg connection pool + hottest tables so the FIRST real request
+    // doesn't pay cold-connection + cold-cache latency (measured ~1–3s on the
+    // first /api/stats and /api/leads after a fresh boot). Non-blocking.
+    Promise.all([
+      db.pool.query('SELECT 1'),
+      db.pool.query('SELECT count(*) FROM leads'),
+      db.pool.query('SELECT count(*) FROM users'),
+    ]).then(() => console.log('   DB pool     : warmed')).catch(() => {});
   });
 }
 

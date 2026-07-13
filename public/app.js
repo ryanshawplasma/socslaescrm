@@ -281,29 +281,76 @@ function applyBusinessTerms() {
   });
 }
 
-// ── Doughnut center-text plugin ──────────────────────────────
-if (typeof Chart !== 'undefined') Chart.register({
-  id: 'doughnutCenter',
-  afterDatasetsDraw(chart) {
-    if (chart.config.type !== 'doughnut') return;
-    const cfg = chart.config.options.plugins?.doughnutCenter;
-    if (!cfg?.enabled) return;
-    const { ctx, chartArea } = chart;
-    if (!chartArea) return;
-    const cx = chartArea.left + chartArea.width / 2;
-    const cy = chartArea.top  + chartArea.height / 2;
-    const dark = document.documentElement.getAttribute('data-theme') === 'dark';
-    ctx.save();
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = "bold 22px 'Inter', system-ui, sans-serif";
-    ctx.fillStyle = dark ? '#e6edf3' : '#0f172a';
-    ctx.fillText(String(cfg.value ?? ''), cx, cy - 9);
-    ctx.font = "11px 'Inter', system-ui, sans-serif";
-    ctx.fillStyle = '#8b949e';
-    ctx.fillText(cfg.label ?? '', cx, cy + 10);
-    ctx.restore();
-  },
-});
+// ── Lazy library loaders ─────────────────────────────────────
+// chart.js (~200KB), xlsx (~880KB) and leaflet (~150KB) used to be render-
+// blocking <script>s in <head>. They're each only needed on specific surfaces
+// (dashboard/reports charts, import, map), so we load them on demand — keeping
+// them off the startup critical path. Each loader is memoized so concurrent
+// callers share one download.
+const _libPromises = {};
+function loadScriptOnce(key, src) {
+  if (_libPromises[key]) return _libPromises[key];
+  _libPromises[key] = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src; s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => { _libPromises[key] = null; reject(new Error('Failed to load ' + src)); };
+    document.head.appendChild(s);
+  });
+  return _libPromises[key];
+}
+// Self-hosted under /vendor (with a ?v cache-buster) — same-origin so they load
+// fast, get cached by the service worker for offline, and carry no external-CDN
+// dependency. Bump the ?v when upgrading a vendored library.
+function ensureXLSX() {
+  return (typeof XLSX !== 'undefined')
+    ? Promise.resolve()
+    : loadScriptOnce('xlsx', '/vendor/xlsx.full.min.js?v=1');
+}
+function ensureChart() {
+  if (typeof Chart !== 'undefined') { registerChartPlugins(); return Promise.resolve(); }
+  return loadScriptOnce('chart', '/vendor/chart.umd.min.js?v=1')
+    .then(registerChartPlugins);
+}
+function ensureLeaflet() {
+  if (typeof L !== 'undefined') return Promise.resolve();
+  if (!document.getElementById('leaflet-css')) {
+    const link = document.createElement('link');
+    link.id = 'leaflet-css'; link.rel = 'stylesheet';
+    link.href = '/vendor/leaflet.css?v=1';
+    document.head.appendChild(link);
+  }
+  return loadScriptOnce('leaflet', '/vendor/leaflet.js?v=1');
+}
+
+// ── Doughnut center-text plugin — registered once, after chart.js loads ──────
+let _chartPluginsRegistered = false;
+function registerChartPlugins() {
+  if (_chartPluginsRegistered || typeof Chart === 'undefined') return;
+  _chartPluginsRegistered = true;
+  Chart.register({
+    id: 'doughnutCenter',
+    afterDatasetsDraw(chart) {
+      if (chart.config.type !== 'doughnut') return;
+      const cfg = chart.config.options.plugins?.doughnutCenter;
+      if (!cfg?.enabled) return;
+      const { ctx, chartArea } = chart;
+      if (!chartArea) return;
+      const cx = chartArea.left + chartArea.width / 2;
+      const cy = chartArea.top  + chartArea.height / 2;
+      const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+      ctx.save();
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = "bold 22px 'Inter', system-ui, sans-serif";
+      ctx.fillStyle = dark ? '#e6edf3' : '#0f172a';
+      ctx.fillText(String(cfg.value ?? ''), cx, cy - 9);
+      ctx.font = "11px 'Inter', system-ui, sans-serif";
+      ctx.fillStyle = '#8b949e';
+      ctx.fillText(cfg.label ?? '', cx, cy + 10);
+      ctx.restore();
+    },
+  });
+}
 
 // ============================================================
 //  AUTH — token management
@@ -1631,8 +1678,9 @@ function importFileSelected(input) {
   const file = input.files && input.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = e => {
+  reader.onload = async e => {
     try {
+      await ensureXLSX();   // lazy-load the spreadsheet parser on first import
       const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array', cellDates: false });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
@@ -1653,6 +1701,7 @@ async function importFromGoogleSheet() {
   btn.disabled = true; btn.textContent = 'Fetching…';
   try {
     const { csv } = await apiFetch('/api/import/sheet', { method: 'POST', body: JSON.stringify({ url }) });
+    await ensureXLSX();   // lazy-load the spreadsheet parser on first import
     const wb = XLSX.read(csv, { type: 'string' });
     const ws = wb.Sheets[wb.SheetNames[0]];
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
@@ -2491,13 +2540,14 @@ function createFactoryIcon(label, leadType, number) {
 }
 
 // ── Map init ───────────────────────────────────────────────────
-function renderMap() {
+async function renderMap() {
   if (_leafletMap) {
     _leafletMap.invalidateSize();
     Object.values(agentData).forEach(a => upsertAgentMarker(a));
     renderFactoryChecklist();
     return;
   }
+  await ensureLeaflet();   // lazy-load Leaflet + its CSS the first time the map opens
 
   const map = L.map('crm-map', { zoomControl: true });
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -3038,7 +3088,11 @@ function renderDashboard() {
 function renderChart(id, type, labels, data, colors, opts = {}) {
   const ctx = document.getElementById(id);
   if (!ctx) return;
-  if (typeof Chart === 'undefined') return; // charting CDN failed to load — skip, don't break the rest of the app
+  // chart.js is lazy-loaded — if it isn't in yet, fetch it and redraw when ready.
+  if (typeof Chart === 'undefined') {
+    ensureChart().then(() => renderChart(id, type, labels, data, colors, opts)).catch(() => {});
+    return;
+  }
 
   // Skip the expensive destroy+recreate when nothing changed (e.g. a 60s
   // auto-refresh that returned identical numbers) — keep the existing chart.

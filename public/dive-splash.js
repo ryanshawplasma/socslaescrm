@@ -175,7 +175,7 @@
     video.setAttribute('autoplay', '');
     video.setAttribute('playsinline', '');
     video.setAttribute('webkit-playsinline', 'true');
-    video.setAttribute('preload', 'auto');
+    video.setAttribute('preload', 'metadata');
     video.setAttribute('disablePictureInPicture', '');
     video.setAttribute('disableRemotePlayback', '');
     video.setAttribute('tabindex', '-1');

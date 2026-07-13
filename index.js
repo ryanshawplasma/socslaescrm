@@ -48,17 +48,19 @@ app.disable('x-powered-by');
 app.use(['/api/ai', '/api/leads/import'], express.json({ limit: '25mb' }));
 app.use(express.json({ limit: '5mb' }));
 
-// Content-Security-Policy. The frontend uses inline event handlers / styles
-// (so 'unsafe-inline' is required) plus a few pinned CDN deps: chart.js & xlsx
-// (jsdelivr), leaflet & simplewebauthn (unpkg), Google Fonts. Map tiles and
-// uploaded/base64 images come over https/data/blob.
+// Content-Security-Policy. Inline event handlers/styles need 'unsafe-inline'.
+// External hosts: simplewebauthn (unpkg), Google Fonts, and Razorpay Checkout —
+// its script (checkout.razorpay.com), its XHR/telemetry (api + lumberjack) and
+// its payment iframe (frame-src). chart.js/xlsx/leaflet are self-hosted under
+// /vendor. Map tiles and uploaded/base64 images come over https/data/blob.
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com",
+  "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com https://checkout.razorpay.com",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com",
   "font-src 'self' https://fonts.gstatic.com data:",
   "img-src 'self' data: blob: https:",
-  "connect-src 'self'",
+  "connect-src 'self' https://api.razorpay.com https://lumberjack.razorpay.com",
+  "frame-src https://api.razorpay.com https://checkout.razorpay.com",
   "worker-src 'self' blob:",
   "frame-ancestors 'self'",
   "base-uri 'self'",

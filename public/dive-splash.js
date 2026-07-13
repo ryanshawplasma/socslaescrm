@@ -209,9 +209,12 @@
     brand.appendChild(tag);
     brand.appendChild(cta);
 
+    // Launch video ONLY — the brand overlay (logo, "Dive" wordmark, tagline and
+    // "Tap to enter" button) and its scrim are intentionally not mounted, so the
+    // video plays clean and full-screen. The timers below still run on the
+    // detached brand/cta elements (harmless no-ops) so auto-dismiss + tap/Enter
+    // to skip keep working exactly as before.
     overlay.appendChild(video);
-    overlay.appendChild(scrim);
-    overlay.appendChild(brand);
 
     // ── Video: play only the last `tail` seconds, looping seamlessly ───────
     var tailStart = 0;

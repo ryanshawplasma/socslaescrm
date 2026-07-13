@@ -715,6 +715,46 @@ function switchAccount() {
 }
 
 // ── PIN Unlock screen ─────────────────────────────────────────
+// ── Idle re-lock ──────────────────────────────────────────────
+// The app keeps you signed in on a known device, but after a long gap since it
+// was last used it re-asks for your quick-unlock PIN (or biometric) on open.
+// Within the window it still auto-logs-in — no prompt. "Last used" is kept
+// fresh by a heartbeat while the app is visible and when it's backgrounded.
+const IDLE_LOCK_MS = 60 * 60 * 1000;   // 1 hour
+
+function touchActivity() {
+  try { localStorage.setItem('crm_last_active', String(Date.now())); } catch (_) {}
+}
+function idleExceeded() {
+  const t = parseInt(localStorage.getItem('crm_last_active'), 10);
+  if (!t) return true;                 // unknown last-active → treat as idle (safer)
+  return (Date.now() - t) > IDLE_LOCK_MS;
+}
+// A usable second factor exists on this device: a quick-unlock PIN, or a
+// registered biometric on a browser that actually supports WebAuthn.
+function hasUnlockFactor() {
+  if (localStorage.getItem('crm_device_has_pin') === 'true') return true;
+  const bioUser = localStorage.getItem('biometric_enabled');
+  const user    = localStorage.getItem('crm_user');
+  const bioOk   = !!(window.SimpleWebAuthnBrowser
+    && window.SimpleWebAuthnBrowser.browserSupportsWebAuthn
+    && window.SimpleWebAuthnBrowser.browserSupportsWebAuthn());
+  return !!bioUser && bioUser === user && bioOk;
+}
+// Wire the heartbeat + background/return handling once, at startup.
+function initIdleLock() {
+  const active = () => state.role && state.role !== 'guest';
+  setInterval(() => { if (document.visibilityState === 'visible' && active()) touchActivity(); }, 60000);
+  document.addEventListener('visibilitychange', () => {
+    if (!active()) return;
+    if (document.visibilityState === 'hidden') { touchActivity(); return; }
+    // Returned to the foreground: if we've been idle past the window and a factor
+    // is set, reload so checkAndShowAuth() presents the lock screen; else resume.
+    if (idleExceeded() && hasUnlockFactor()) location.reload();
+    else touchActivity();
+  });
+}
+
 async function checkAndShowAuth() {
   // Resume guest/demo session if still valid
   const guestToken = localStorage.getItem('crm_access');
@@ -737,13 +777,17 @@ async function checkAndShowAuth() {
   //    straight into the app, no welcome tap needed. Only if that refresh
   //    fails do we show the greeting/continue screen as a fallback.
   if (rt && savedUser) {
-    if (devicePin) {
-      showPinUnlockScreen(savedUser, true);
+    // Re-lock (PIN/biometric) ONLY after a long idle gap; within the window we
+    // keep the fast auto-login even when a PIN is set. Devices with no PIN and
+    // no usable biometric are never blocked here.
+    if (idleExceeded() && hasUnlockFactor()) {
+      showPinUnlockScreen(savedUser, devicePin, true);
       return;
     }
     const ok = await tryRefreshWithRetries();
     if (ok) {
       state.role = localStorage.getItem('crm_role') || 'sales';
+      touchActivity();
       hideLoginPage();
       await initApp();
       return;
@@ -770,7 +814,7 @@ async function checkAndShowAuth() {
   showLoginPage();
 }
 
-function showPinUnlockScreen(username, hasPIN) {
+function showPinUnlockScreen(username, hasPIN, lock = false) {
   const name    = username || 'there';
   const bioAvail = !!(window.SimpleWebAuthnBrowser && window.SimpleWebAuthnBrowser.browserSupportsWebAuthn
     && window.SimpleWebAuthnBrowser.browserSupportsWebAuthn());
@@ -795,9 +839,14 @@ function showPinUnlockScreen(username, hasPIN) {
     sub.textContent = bioAvail ? `Enter your ${digits}-digit PIN, or use biometric` : `Enter your ${digits}-digit PIN`;
   } else {
     padWrap.classList.add('hidden');
-    contBtn.classList.remove('hidden');
+    // In an enforced idle-lock with no PIN, require biometric — hide the one-tap
+    // Continue so the lock can't be bypassed (the "use password" link stays as a
+    // fallback). Otherwise this is just the friendly welcome-back / retry screen.
+    contBtn.classList.toggle('hidden', lock);
     contBtn.textContent = 'Continue as ' + name + ' →';
-    sub.textContent = bioAvail ? 'Unlock with biometric, or continue' : 'Tap continue to open your account';
+    sub.textContent = bioAvail
+      ? (lock ? 'Unlock with biometric to continue' : 'Unlock with biometric, or continue')
+      : (lock ? 'Unlock to continue' : 'Tap continue to open your account');
   }
   bioBtn.classList.toggle('hidden', !bioAvail);
 
@@ -5831,6 +5880,7 @@ async function refreshTeamsEverywhere(switchToId) {
 }
 
 async function initApp() {
+  touchActivity();   // any successful entry (login/unlock/auto) resets the idle timer
   try {
     await consumePendingInvite();   // invite link → auto-join right after auth
     await loadMyTeams();
@@ -6600,6 +6650,7 @@ async function init() {
   initChatViewport();
   initAiBubble();
   initInstallPrompt();
+  initIdleLock();           // heartbeat + re-lock after a long idle gap
   capturePendingInvite();   // park ?join=CODE so it survives the login/register wall
   // Show overlay while we check auth state
   document.getElementById('login-overlay').classList.remove('hidden');

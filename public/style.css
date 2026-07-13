@@ -283,6 +283,19 @@ body {
   height: var(--app-vh, 100dvh);
 }
 
+/* iOS keyboard safety on the chat page (drawer layout only, toggled by
+   applyChatViewport). Locking the document stops iOS from scrolling the topbar
+   /understanding card away when the keyboard opens; the drawer is sized to the
+   keyboard-aware --app-vh so its lower half never hides behind the keyboard. */
+html.chat-vp-lock { overflow: hidden; }
+html.chat-vp-lock body {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  overflow: hidden;
+}
+html.chat-vp-lock #sidebar { height: var(--app-vh, 100vh); }
+
 /* ── Sidebar ───────────────────────────────────────────── */
 #sidebar {
   width: var(--sidebar-w);

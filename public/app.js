@@ -2175,8 +2175,20 @@ function navigate(page) {
 function applyChatViewport() {
   const vv   = window.visualViewport;
   const root = document.documentElement;
-  if (!vv || state.page !== 'chat') { root.style.removeProperty('--app-vh'); return; }
+  if (!vv || state.page !== 'chat') {
+    root.style.removeProperty('--app-vh');
+    root.classList.remove('chat-vp-lock');
+    return;
+  }
   root.style.setProperty('--app-vh', Math.round(vv.height) + 'px');
+  // On phones/tablets (the drawer layout) the on-screen keyboard shrinks the
+  // visual viewport, and iOS then scrolls the WHOLE document to reveal the
+  // focused input — pushing the topbar (with the ☰ that opens the sidebar) off
+  // the top and shifting the understanding card. Locking the document (CSS via
+  // this class) stops that scroll; #app + the drawer are sized to --app-vh so
+  // nothing hides behind the keyboard. Desktop keeps its normal layout.
+  const drawerLayout = window.matchMedia('(max-width: 1024px)').matches;
+  root.classList.toggle('chat-vp-lock', drawerLayout);
 }
 function initChatViewport() {
   const vv = window.visualViewport;

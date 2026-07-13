@@ -3672,7 +3672,7 @@ function buildCards(leads) {
     const prod = itemLines.length
       ? itemLines.map(t => `<span class="lead-item-chip">${escHtml(t)}</span>`).join('')
       : '';
-    const line = (icon, val) => val ? `<div class="lead-card-line"><span>${icon}</span> ${val}</div>` : '';
+    const line = (icon, val, clip) => val ? `<div class="lead-card-line${clip ? ' lead-card-line-clip' : ''}"><span>${icon}</span> ${val}</div>` : '';
     return `
       <div class="lead-card ${typeCls}" onclick="openLeadDetail(${l.rowIndex})" tabindex="0"
            onkeydown="if(event.key==='Enter'){openLeadDetail(${l.rowIndex})}">
@@ -3681,11 +3681,11 @@ function buildCards(leads) {
           ${typeTag}
         </div>
         ${l.factory_number && l.factory_name ? `<div class="lead-card-num">${escHtml(l.factory_number)}</div>` : ''}
-        ${line('👤', person)}
+        ${line('👤', person, true)}
         ${line('📦', prod)}
-        ${line('📍', escHtml(l.area || ''))}
+        ${line('📍', escHtml(l.area || ''), true)}
         ${line('📅', l.follow_up ? escHtml(l.follow_up) : '')}
-        ${showOwner ? line('🙋', escHtml(l.created_by || '')) : ''}
+        ${showOwner ? line('🙋', escHtml(l.created_by || ''), true) : ''}
         <div class="lead-card-foot">
           ${state.role === 'guest'
             ? `<span class="lead-card-stage" style="--stg:${stageCol}">${escHtml(l.stage ? stageLabel(l.stage) : '—')}</span>`

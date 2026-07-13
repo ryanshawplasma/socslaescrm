@@ -94,8 +94,20 @@ async function leadsForRequest(req, bucket = 'working') {
   }
 
   if (ctx) {
-    const leads   = bucketFilter(await db.getLeadsByTeam(ctx.teamId), bucket);
     const manager = req.user.role === 'admin' || TEAM_MANAGER_ROLES.includes(ctx.member.role);
+    // Managers/admins see every lead of their team members — including ones a
+    // rep kept in their Personal workspace (team_id NULL) — so nothing a
+    // salesperson enters is invisible to their manager. Regular reps see only
+    // team-tagged leads (memberNames omitted).
+    let memberNames = null;
+    if (manager) {
+      const members = await db.getTeamMembers(ctx.teamId);
+      memberNames = (members || [])
+        .filter(m => m.status === 'active')
+        .map(m => String(m.display_name || '').toLowerCase())
+        .filter(Boolean);
+    }
+    const leads   = bucketFilter(await db.getLeadsByTeam(ctx.teamId, memberNames), bucket);
     const shared  = manager ? null : await db.getAccessibleLeadIds(req.user.username);
     let mapped    = leads.map(l => ({
       ...l,

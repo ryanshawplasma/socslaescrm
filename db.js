@@ -1967,13 +1967,23 @@ async function getJoinRequestByUserTeam(teamId, userId) {
   return rows[0] || null;
 }
 
-async function getLeadsByTeam(teamId) {
+// Team leads. When `memberNames` (an array of lowercased display names) is
+// passed — only for team managers/admins — the result ALSO includes leads those
+// members created in their Personal workspace (team_id IS NULL), so a manager
+// sees every lead of their people, not just the ones tagged to the team.
+// Regular members call this with no memberNames and see only team-tagged leads.
+async function getLeadsByTeam(teamId, memberNames = null) {
+  const includePersonal = Array.isArray(memberNames) && memberNames.length > 0;
+  const where  = includePersonal
+    ? `WHERE team_id=$1 OR (team_id IS NULL AND LOWER(created_by) = ANY($2::text[]))`
+    : `WHERE team_id=$1`;
+  const params = includePersonal ? [teamId, memberNames] : [teamId];
   const { rows } = await pool.query(`
     SELECT id AS "rowIndex", factory_number, factory_name, person_in_charge, contact, designation,
       product, quantity, rate, stage, follow_up, notes, area,
       lead_type, created_by, assigned_to, last_updated, mapped_stage, stage_number,
       lat, lng, team_id, visibility, COALESCE(bucket,'working') AS bucket
-    FROM leads WHERE team_id=$1 ORDER BY id ASC`, [teamId]
+    FROM leads ${where} ORDER BY id ASC`, params
   );
   if (!rows.length) return [];
   const ids = rows.map(r => r.rowIndex);

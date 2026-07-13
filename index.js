@@ -6,6 +6,7 @@ const express = require('express');
 const { Server } = require('socket.io');
 const fs      = require('fs');
 const path    = require('path');
+const axios   = require('axios');
 const db      = require('./db');
 
 const { globalErrorHandler } = require('./middleware/errors');
@@ -149,7 +150,25 @@ async function startServer() {
       db.pool.query('SELECT count(*) FROM leads'),
       db.pool.query('SELECT count(*) FROM users'),
     ]).then(() => console.log('   DB pool     : warmed')).catch(() => {});
+    startKeepWarm();
   });
+}
+
+// ── Keep-warm self-ping ───────────────────────────────────────
+// Render free instances spin down after ~15 min with no inbound traffic, so the
+// next visitor pays a 30–50s cold start. We hit our OWN public URL every 10 min
+// so the instance never goes idle. RENDER_EXTERNAL_URL is set automatically on
+// Render; set KEEP_WARM_URL to override the target, or KEEP_WARM_URL=off to
+// disable. No-op locally (neither var set), so dev is unaffected.
+function startKeepWarm() {
+  const raw = (process.env.KEEP_WARM_URL || process.env.RENDER_EXTERNAL_URL || '').trim();
+  if (!raw || raw.toLowerCase() === 'off') return;
+  const base = raw.replace(/\/+$/, '');
+  const url  = /\/health$/.test(base) ? base : base + '/health';
+  const ping = () => axios.get(url, { timeout: 8000 })
+    .catch(err => console.warn('[keep-warm] ping failed:', err && err.message));
+  setInterval(ping, 10 * 60 * 1000);   // 10 min < Render's ~15 min idle window
+  console.log(`   Keep-warm   : ${url} every 10m`);
 }
 
 startServer().catch(err => {

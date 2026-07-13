@@ -141,6 +141,15 @@ router.get('/leads', authMiddleware, async (req, res, next) => {
 // ── POST /api/leads ───────────────────────────────────────────
 router.post('/leads', authMiddleware, noGuest, async (req, res, next) => {
   try {
+    // Team scoping: honor a client-supplied team_id only for active members —
+    // otherwise a user could write into any team, and a stale dest lands in an
+    // ex-team. Mirrors the import path's membership check.
+    if (req.body.team_id) {
+      const tid = parseInt(req.body.team_id, 10);
+      const user = await db.getUserByName(req.user.username);
+      const member = user && await db.getTeamMember(tid, user.id);
+      req.body.team_id = (member && member.status === 'active') ? tid : null;
+    }
     const result = await db.addLead(req.body, req.user?.username || '');
     if (result.conflict) return res.status(409).json(result);
     // Log activity
@@ -246,7 +255,11 @@ router.post('/leads/import', authMiddleware, noGuest, async (req, res, next) => 
 // { normalized, unmatched:[strings] }. Accepts ONLY catalog names from the AI;
 // truly-unknown strings are kept as-is and saved for admin review.
 async function normalizeImportProducts(rows, username, teamId) {
-  const raws = [...new Set(rows.map(r => String(r.product || '').trim()).filter(Boolean))];
+  const raws = [...new Set(rows.flatMap(r => {
+    const list = [String(r.product || '').trim()];
+    if (Array.isArray(r.items)) for (const it of r.items) list.push(String((it && it.product) || '').trim());
+    return list;
+  }).filter(Boolean))];
   if (!raws.length) return { normalized: 0, unmatched: [] };
 
   const catalog = await db.getProductsForContext(username, teamId);
@@ -284,9 +297,20 @@ async function normalizeImportProducts(rows, username, teamId) {
   let normalized = 0;
   for (const r of rows) {
     const raw = String(r.product || '').trim();
-    if (!raw) continue;
-    const canon = resolvedLower[raw.toLowerCase()];
-    if (canon && canon !== raw) { r.product = canon; normalized++; }
+    if (raw) {
+      const canon = resolvedLower[raw.toLowerCase()];
+      if (canon && canon !== raw) { r.product = canon; normalized++; }
+    }
+    // Multi-product rows: keep items[] in sync with the same resolution map,
+    // so leads.product never diverges from the items[] the UI reads.
+    if (Array.isArray(r.items)) {
+      for (const it of r.items) {
+        const iraw = String((it && it.product) || '').trim();
+        if (!iraw) continue;
+        const ic = resolvedLower[iraw.toLowerCase()];
+        if (ic && ic !== iraw) { it.product = ic; normalized++; }
+      }
+    }
   }
   const unmatched = raws.filter(x => !resolvedLower[x.toLowerCase()]);
   return { normalized, unmatched };

@@ -300,6 +300,10 @@ async function initSchema() {
       )
     `).catch(e => console.warn('[db] non-fatal:', e && e.message));
     await client.query(`CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    // granted_at stamps the moment Pro was actually granted for this order — the
+    // single-flip guard (markPaymentGranted) that makes the grant idempotent and
+    // a transient grant failure recoverable, independent of the paid flip.
+    await client.query(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS granted_at TIMESTAMPTZ`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // Referral code lives on the user row (lazily generated). Partial-unique so
     // many NULLs coexist while every real code stays one-of-a-kind.
@@ -823,7 +827,7 @@ async function addLead(data, createdBy = '') {
   // Dedupe within the SAME bucket only — a working lead may mirror a Database
   // entry (that's exactly what "copy to my leads" produces).
   const { rows: existing } = await pool.query(
-    `SELECT id, factory_number, factory_name FROM leads WHERE COALESCE(bucket,'working')=$1`, [bucket]);
+    `SELECT id, factory_number, factory_name FROM leads WHERE COALESCE(bucket,'working')=$1 AND team_id IS NOT DISTINCT FROM $2`, [bucket, data.team_id || null]);
   for (const row of existing) {
     const rNum  = String(row.factory_number || '').trim().toLowerCase();
     const rName = String(row.factory_name   || '').trim().toLowerCase();
@@ -912,7 +916,7 @@ async function importLeads(rows, defaultCreatedBy, teamId, listId, bucket = 'wor
   // Dedupe only within the destination bucket — importing into the Database
   // never collides with the working sheet and vice-versa.
   const { rows: existing } = await pool.query(
-    `SELECT factory_number, factory_name FROM leads WHERE COALESCE(bucket,'working')=$1`, [dest]);
+    `SELECT factory_number, factory_name FROM leads WHERE COALESCE(bucket,'working')=$1 AND team_id IS NOT DISTINCT FROM $2`, [dest, teamId || null]);
   const nums  = new Set(existing.map(r => String(r.factory_number || '').trim().toLowerCase()).filter(Boolean));
   const names = new Set(existing.map(r => String(r.factory_name   || '').trim().toLowerCase()).filter(Boolean));
 
@@ -1004,7 +1008,7 @@ async function updateLead(rowIndex, data) {
   let   idx        = 2;
 
   for (const f of fields) {
-    if (data[f] !== undefined && data[f] !== null && data[f] !== '') {
+    if (data[f] !== undefined && data[f] !== null) {
       setClauses.push(`${f} = $${idx}`);
       params.push(data[f]);
       idx++;
@@ -1019,7 +1023,7 @@ async function updateLead(rowIndex, data) {
   params.push(rowIndex);
   await pool.query(`UPDATE leads SET ${setClauses.join(', ')} WHERE id = $${idx}`, params);
 
-  if (Array.isArray(data.items) && data.items.length) {
+  if (Array.isArray(data.items)) {
     await pool.query(`DELETE FROM lead_items WHERE lead_id = $1`, [rowIndex]);
     for (const item of data.items) {
       await pool.query(
@@ -1027,7 +1031,7 @@ async function updateLead(rowIndex, data) {
         [rowIndex, item.product || '', item.quantity || '', item.rate || '']
       );
     }
-    const first = data.items[0];
+    const first = data.items[0] || { product: '', quantity: '', rate: '' };
     await pool.query(
       `UPDATE leads SET product = $1, quantity = $2, rate = $3 WHERE id = $4`,
       [first.product || '', first.quantity || '', first.rate || '', rowIndex]
@@ -1036,19 +1040,17 @@ async function updateLead(rowIndex, data) {
 
   if (Array.isArray(data.contacts)) {
     const validContacts = data.contacts.filter(c => c.person_name || c.contact);
-    if (validContacts.length) {
-      const primary = validContacts[0];
+    const primary = validContacts[0] || { person_name: '', contact: '', designation: '' };
+    await pool.query(
+      `UPDATE leads SET person_in_charge = $1, contact = $2, designation = $3 WHERE id = $4`,
+      [primary.person_name || '', primary.contact || '', primary.designation || '', rowIndex]
+    );
+    await pool.query(`DELETE FROM lead_contacts WHERE lead_id = $1`, [rowIndex]);
+    for (const c of validContacts.slice(1)) {
       await pool.query(
-        `UPDATE leads SET person_in_charge = $1, contact = $2, designation = $3 WHERE id = $4`,
-        [primary.person_name || '', primary.contact || '', primary.designation || '', rowIndex]
+        `INSERT INTO lead_contacts (lead_id, person_name, contact, designation) VALUES ($1,$2,$3,$4)`,
+        [rowIndex, c.person_name || '', c.contact || '', c.designation || '']
       );
-      await pool.query(`DELETE FROM lead_contacts WHERE lead_id = $1`, [rowIndex]);
-      for (const c of validContacts.slice(1)) {
-        await pool.query(
-          `INSERT INTO lead_contacts (lead_id, person_name, contact, designation) VALUES ($1,$2,$3,$4)`,
-          [rowIndex, c.person_name || '', c.contact || '', c.designation || '']
-        );
-      }
     }
   }
 
@@ -2637,6 +2639,20 @@ async function markPaymentPaid(orderId, paymentId) {
   return rows[0] || null;
 }
 
+// Single-flip grant guard: only the caller that flips granted_at NULL→NOW() gets
+// a row back, so the Pro grant runs exactly once even across concurrent verify
+// retries. Decoupled from markPaymentPaid so a paid-but-ungranted order can still
+// be completed on a later retry.
+async function markPaymentGranted(orderId) {
+  const { rows } = await pool.query(
+    `UPDATE payments
+        SET granted_at = NOW()
+      WHERE order_id = $1 AND granted_at IS NULL
+      RETURNING *`,
+    [String(orderId || '')]);
+  return rows[0] || null;
+}
+
 // ── Referral program ──────────────────────────────────────────
 // Pure code generator: 'DIVE-' + 6 chars from A–Z0–9, seeded by crypto random
 // bytes. The DB unique index is the real collision backstop. Exported so it can
@@ -3015,7 +3031,7 @@ module.exports = {
   touchLastSeen, getTeamPresence, getTeamLeaderboard,
   entitlementOf, extendUserPro, createAccessCode, getAccessCodes, deleteAccessCode, redeemAccessCode,
   // Monetization: Razorpay payments + referral program
-  createPayment, getPaymentByOrderId, markPaymentPaid,
+  createPayment, getPaymentByOrderId, markPaymentPaid, markPaymentGranted,
   genReferralCode, getOrCreateReferralCode, findUserByReferralCode,
   countCreditedReferrals, createReferral, extendUserProDaysPreservingKind,
   applyRegistrationReferral,

@@ -172,28 +172,48 @@ router.post('/pay/verify', authMiddleware, noGuest, async (req, res, next) => {
       return res.status(403).json({ error: 'This payment belongs to another account' });
     }
 
-    // 3. Idempotent: an already-settled order grants nothing further.
-    if (payment.status === 'paid') {
-      return res.json({ success: true, plan: payment.plan_kind, daysAdded: GRANT_DAYS, alreadyProcessed: true });
-    }
-
-    // 4. Settle first (atomic, single-flip), then grant. markPaymentPaid only
-    //    returns a row for the caller that actually flips created→paid, so a
-    //    concurrent second verify gets null here and grants nothing — no double
-    //    grant. Worst case is paid-but-under-granted (recoverable), never double.
+    // 3. Settle first (atomic, single-flip). markPaymentPaid only returns a row
+    //    for the caller that actually flips created→paid. A caller that finds the
+    //    order already paid — the DB read at step 2, or a lost settle race — still
+    //    falls through to the grant guard below, so a paid-but-ungranted order left
+    //    behind by an earlier failed grant is completed on this retry.
     const settled = await db.markPaymentPaid(razorpay_order_id, razorpay_payment_id);
-    if (!settled) {
+
+    // Already paid AND already granted → nothing left to do.
+    if (!settled && payment.granted_at) {
       return res.json({ success: true, plan: payment.plan_kind, daysAdded: GRANT_DAYS, alreadyProcessed: true });
     }
 
-    if (payment.plan_kind === 'team' && payment.team_id) {
-      const members = await db.getTeamMembers(payment.team_id);
-      for (const m of members.filter(x => x.status === 'active')) {
-        try { await db.extendUserPro(m.user_id, GRANT_DAYS, 'team'); }
-        catch (e) { console.warn('[pay] grant skipped for member', m.user_id, e && e.message); }
+    // 4. Win the grant flip. markPaymentGranted flips granted_at NULL→NOW() for
+    //    exactly one caller, so the Pro grant runs at most once across concurrent
+    //    or repeated verifies. A caller that loses the flip found it already
+    //    granted — respond idempotently without re-granting.
+    const wonGrant = await db.markPaymentGranted(razorpay_order_id);
+    if (!wonGrant) {
+      return res.json({ success: true, plan: payment.plan_kind, daysAdded: GRANT_DAYS, alreadyProcessed: true });
+    }
+
+    // 5. Grant Pro. granted_at is now set; if any grant throws we roll it back to
+    //    NULL so a future retry can win the flip again and complete the grant — a
+    //    paid order is never left permanently under-granted.
+    try {
+      if (payment.plan_kind === 'team' && payment.team_id) {
+        // Cap to the seats actually billed (getTeamMembers is deterministic).
+        const members   = await db.getTeamMembers(payment.team_id);
+        const active     = members.filter(x => x.status === 'active');
+        const paidSeats  = parseInt(payment.seats, 10) || active.length;
+        for (const m of active.slice(0, paidSeats)) {
+          await db.extendUserPro(m.user_id, GRANT_DAYS, 'team');
+        }
+      } else {
+        await db.extendUserPro(user.id, GRANT_DAYS, 'individual');
       }
-    } else {
-      await db.extendUserPro(user.id, GRANT_DAYS, 'individual');
+    } catch (e) {
+      // Best-effort rollback so the order stays recoverable on a later retry.
+      await db.pool.query(`UPDATE payments SET granted_at = NULL WHERE order_id = $1`, [razorpay_order_id])
+        .catch(err => console.error('[pay] failed to roll back granted_at for', razorpay_order_id, err && err.message));
+      console.error('[pay] Pro grant failed for order', razorpay_order_id, e && e.message);
+      return res.status(500).json({ error: 'Payment recorded but activating Pro failed — please retry in a moment.' });
     }
 
     res.json({ success: true, plan: payment.plan_kind, daysAdded: GRANT_DAYS });

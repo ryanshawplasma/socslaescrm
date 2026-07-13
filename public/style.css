@@ -825,7 +825,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 999;
+  z-index: 9500;
   backdrop-filter: blur(6px);
 }
 
@@ -1747,7 +1747,7 @@ tr.row-cold:hover td { background: #dbeafe; }
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1001;
+  z-index: 9500;
   backdrop-filter: blur(6px);
 }
 #profile-modal-overlay.hidden { display: none; }
@@ -3085,8 +3085,9 @@ tr.row-cold:hover td { background: #dbeafe; }
 
 /* ── Sidebar shell ─────────────────────────────────────────── */
 #sidebar {
-  background: var(--sidebar-bg);
-  border-right: 1px solid rgba(255,255,255,.05);
+  background-color: var(--sidebar-bg);
+  background-image: linear-gradient(rgba(255,255,255,.06), rgba(255,255,255,.06));
+  border-right: 1px solid rgba(255,255,255,.07);
 }
 
 /* Brand */

@@ -498,16 +498,16 @@ function renderInviteBanners() {
 async function consumePendingInvite() {
   const code = pendingInviteCode();
   if (!code || state.role === 'guest') return;
-  localStorage.removeItem('crm_pending_join');
   try {
     const { team } = await apiFetch('/api/teams/join', { method: 'POST', body: JSON.stringify({ invite_code: code }) });
+    localStorage.removeItem('crm_pending_join');
     state.activeOrgId = String(team.id);
     localStorage.setItem('crm_org_id', state.activeOrgId);
     localStorage.setItem('ws_team_id', state.activeOrgId);
     setLeadDest(String(team.id));
     toast(`Welcome to ${team.name}! 🎉 You're in the team — new leads save here.`, 'success');
   } catch (err) {
-    if (/already a member/i.test(err.message || '')) return;   // nothing to do
+    if (/already a member/i.test(err.message || '')) { localStorage.removeItem('crm_pending_join'); return; }   // nothing to do
     toast(`Couldn't accept the team invite: ${err.message}`, 'error');
   }
 }
@@ -861,6 +861,13 @@ async function offerDeviceSetup(loginData) {
     // If this account has no PIN on this device, drop any stale length left by a
     // previous account so the unlock screen never shows the wrong # of boxes.
     if (!hasPIN) localStorage.removeItem('crm_pin_len');
+  } else {
+    // Untrusted login — clear any previous account's device/PIN flags so they
+    // never leak into this session.
+    localStorage.removeItem('crm_device_id');
+    localStorage.removeItem('crm_device_trusted');
+    localStorage.removeItem('crm_device_has_pin');
+    localStorage.removeItem('crm_pin_len');
   }
 
   hideLoginPage();
@@ -1695,6 +1702,7 @@ function importLoaded(name, aoa) {
 // right after load; also re-runnable by clicking the badge.
 async function aiRefineImportMapping() {
   if (!_import) return;
+  const target = _import;
   const badge = document.getElementById('import-ai-badge');
   const { headers, rows } = _import;
   if (badge) { badge.style.display = ''; badge.className = 'import-ai-badge loading'; badge.textContent = '✨ AI is reading your columns…'; }
@@ -1702,7 +1710,7 @@ async function aiRefineImportMapping() {
     const body = { headers, rows: rows.slice(0, 8) };
     if (getLeadDest()) body.teamId = getLeadDest();
     const res = await apiFetch('/api/import/ai-map', { method: 'POST', body: JSON.stringify(body) });
-    if (!_import || !Array.isArray(res.mapping) || res.mapping.length !== headers.length) {
+    if (_import !== target || !Array.isArray(res.mapping) || res.mapping.length !== headers.length) {
       if (badge) badge.style.display = 'none';
       return;
     }
@@ -2899,7 +2907,7 @@ function emptyState(msg = 'No data') {
 }
 
 function escAttr(v) {
-  return String(v || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  return String(v || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
 }
 
 // ============================================================
@@ -3906,15 +3914,15 @@ function buildKanban(leads, draggable = false) {
     const cardHtml = cards.length
       ? cards.map(l => {
           const cardClass = TYPE_CARD_CLASS[l.lead_type] || '';
-          const typeTag   = l.lead_type ? `<span class="kanban-type-tag">${TYPE_EMOJI[l.lead_type] || ''} ${l.lead_type}</span>` : '';
+          const typeTag   = l.lead_type ? `<span class="kanban-type-tag">${TYPE_EMOJI[l.lead_type] || ''} ${escHtml(l.lead_type)}</span>` : '';
           return `
           <div class="kanban-card ${cardClass}"
                ${draggable ? `draggable="true" ondragstart="dragStart(event,${l.rowIndex})"` : ''}
                onclick="openLeadDetail(${l.rowIndex})">
-            <div class="kanban-card-name">${l.factory_name || l.factory_number || '—'} ${typeTag}</div>
+            <div class="kanban-card-name">${escHtml(l.factory_name || l.factory_number || '—')} ${typeTag}</div>
             <div class="kanban-card-meta">${(() => { const n = leadProductNames(l); return n.length ? escHtml(n.slice(0,2).join(', ')) + (n.length > 2 ? ` +${n.length-2}` : '') : ''; })()}</div>
-            ${l.follow_up ? `<div class="kanban-card-meta" style="margin-top:4px">📅 ${l.follow_up}</div>` : ''}
-            ${l.area ? `<div class="kanban-card-meta">📍 ${l.area}</div>` : ''}
+            ${l.follow_up ? `<div class="kanban-card-meta" style="margin-top:4px">📅 ${escHtml(l.follow_up)}</div>` : ''}
+            ${l.area ? `<div class="kanban-card-meta">📍 ${escHtml(l.area)}</div>` : ''}
           </div>`;
         }).join('')
       : `<div style="padding:10px;color:#94a3b8;font-size:12px;text-align:center">Empty</div>`;
@@ -4487,6 +4495,11 @@ async function openProfileModal() {
     referBox.classList.toggle('hidden', state.role === 'guest');
     if (state.role !== 'guest') loadReferralBlock('profile-refer', 'profile-refer-link', 'profile-refer-meta');
   }
+  updateBubbleToggleLabel();
+  const _codesAdmin = document.getElementById('settings-codes-admin');
+  if (_codesAdmin) _codesAdmin.classList.toggle('hidden', state.role !== 'admin');
+  const _codeMsg = document.getElementById('settings-code-msg'); if (_codeMsg) _codeMsg.textContent = '';
+  const _codeInput = document.getElementById('settings-code-input'); if (_codeInput) _codeInput.value = '';
   document.getElementById('profile-modal-overlay').classList.remove('hidden');
 }
 
@@ -5495,7 +5508,7 @@ function wireEvents() {
     });
   });
 
-  document.querySelectorAll('[data-page]').forEach(el => {
+  document.querySelectorAll('[data-page]:not(.nav-item)').forEach(el => {
     el.addEventListener('click', e => {
       if (el.tagName === 'A') { e.preventDefault(); navigate(el.dataset.page); }
     });
@@ -5655,10 +5668,6 @@ function wireEvents() {
   document.getElementById('profile-modal-overlay').addEventListener('click', e => {
     if (e.target === document.getElementById('profile-modal-overlay')) closeProfileModal();
   });
-
-  // Team nav (admin only — shown/hidden via applyRoleUI)
-  const teamNav = document.querySelector('[data-page="team"]');
-  if (teamNav) teamNav.addEventListener('click', () => navigate('team'));
 }
 
 // ============================================================
@@ -5967,6 +5976,7 @@ async function startProCheckout(plan) {
           toast('✦ Pro active — payment successful!', 'success');
           await loadPlan();
           closeUpgradeModal();
+          renderPage(state.page);
         } catch (e) {
           toast('Payment received but verification failed — contact support with your payment ID.', 'error');
         }
@@ -6016,7 +6026,28 @@ async function redeemProCode() {
     renderPlanBadge();
     if (msg) { msg.className = 'up-msg ok'; msg.textContent = `Unlocked! +${res.added_days} days of Pro.`; }
     toast('Pro unlocked 🎉', 'success');
-    setTimeout(() => { closeUpgradeModal(); applyRoleUI(); }, 900);
+    setTimeout(() => { closeUpgradeModal(); applyRoleUI(); renderPage(state.page); }, 900);
+  } catch (err) {
+    if (msg) { msg.className = 'up-msg err'; msg.textContent = err.message || 'Could not redeem that code.'; }
+  }
+}
+
+// Same redeem flow, driven from the Settings (profile) modal's own inputs.
+async function redeemAccessFromSettings() {
+  const input = document.getElementById('settings-code-input');
+  const msg   = document.getElementById('settings-code-msg');
+  const code  = (input?.value || '').trim();
+  if (msg) msg.textContent = '';
+  if (!code) { if (msg) { msg.className = 'up-msg err'; msg.textContent = 'Enter a code first.'; } return; }
+  try {
+    const res = await apiFetch('/api/plan/redeem', { method: 'POST', body: JSON.stringify({ code }) });
+    state.plan = res.plan;
+    renderPlanBadge();
+    if (msg) { msg.className = 'up-msg ok'; msg.textContent = `Unlocked! +${res.added_days} days of Pro.`; }
+    toast('Pro unlocked 🎉', 'success');
+    if (input) input.value = '';
+    applyRoleUI();
+    renderPage(state.page);
   } catch (err) {
     if (msg) { msg.className = 'up-msg err'; msg.textContent = err.message || 'Could not redeem that code.'; }
   }
@@ -6164,6 +6195,14 @@ async function hubLoadMembers() {
     const rows = await apiFetch(`/api/teams/${hubState.teamId}/members`, { headers: { 'X-Team-ID': String(hubState.teamId) } });
     hubState.members = rows.filter(m => m.status === 'active').map(m => m.display_name).filter(Boolean);
   } catch (_) { hubState.members = []; }
+  // Patch the already-rendered assignee select in place (preserve selection).
+  const sel = document.getElementById('hub-task-assignee');
+  if (sel) {
+    const cur = sel.value;
+    sel.innerHTML = ['<option value="">Assign to…</option>']
+      .concat(hubState.members.map(n => `<option value="${escAttr(n)}">${escHtml(n)}</option>`)).join('');
+    sel.value = cur;
+  }
 }
 
 async function hubLoadPresence() {
@@ -6388,7 +6427,11 @@ function hubRenderMessages(msgs, append) {
   if (!append && !msgs.length) { box.innerHTML = `<div class="hub-empty">No messages yet — say hi 👋</div>`; return; }
   const mine = me().toLowerCase();
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
-  const frag = msgs.map(m => {
+  // Dedupe by id when appending: a send can race the 4s poll and both deliver
+  // the same message. Full reloads (append=false) still render everything.
+  const seen = hubState.lastMsgId;
+  const fresh = append ? msgs.filter(m => m.id > seen) : msgs;
+  const frag = fresh.map(m => {
     if (m.id > hubState.lastMsgId) hubState.lastMsgId = m.id;
     const isMine = String(m.sender || '').toLowerCase() === mine;
     return `<div class="hub-msg${isMine ? ' mine' : ''}">
@@ -6427,7 +6470,7 @@ async function renderHubBoard() {
   if (!panel) return;
   panel.innerHTML = `<div class="ld-empty">Loading leaderboard…</div>`;
   try {
-    const board = hubState._board || await hubApi('/api/team/leaderboard');
+    const board = await hubApi('/api/team/leaderboard');
     hubState._board = board;
     if (!board.length) { panel.innerHTML = `<div class="hub-empty">No teammates yet.</div>`; return; }
     const medal = i => ['🥇', '🥈', '🥉'][i] || `${i + 1}`;
@@ -6542,8 +6585,10 @@ function saveBubblePosition() {
 }
 
 function updateBubbleToggleLabel() {
-  const btn = document.getElementById('btn-toggle-bubble');
-  if (btn) btn.textContent = bubbleHidden() ? '💬 Show AI bubble' : '💬 Hide AI bubble';
+  const txt = bubbleHidden() ? '💬 Show AI assistant' : '💬 Hide AI assistant';
+  ['btn-toggle-bubble', 'settings-bubble-toggle'].forEach(id => {
+    const b = document.getElementById(id); if (b) b.textContent = txt;
+  });
 }
 
 function showAiBubble() {
@@ -6556,7 +6601,7 @@ function hideAiBubble() {
   localStorage.setItem(AI_BUBBLE_HIDDEN_KEY, '1');
   document.getElementById('ai-bubble')?.classList.add('hidden');
   updateBubbleToggleLabel();
-  toast('AI bubble hidden — turn it back on from the menu');
+  toast('AI bubble hidden — turn it back on from Settings');
 }
 function toggleAiBubble() { bubbleHidden() ? showAiBubble() : hideAiBubble(); }
 
@@ -7996,11 +8041,10 @@ function buildAiPreview({ parsed, action, existingRow }, page) {
         style="background:${confDotColor(confVal)}"></span>
     </div>`;
 
-  // Some of these aren't canonical STAGE_NUMBERS keys (e.g. "Prospecting") —
-  // stageLabel() passes those through unchanged. An explicit value= is required
-  // so the relabeled text (for non-factory business types) doesn't become the
-  // submitted <select> value — it must stay this original canonical-ish string.
-  const stageOptions = ['New Lead','Prospecting','Demo Scheduled','Negotiation','Order Placed','Order Won','Repeat Customer','Lost']
+  // Canonical stage set (the STAGE_NUMBERS keys). An explicit value= keeps the
+  // submitted <select> value as the canonical string, while stageLabel() shows
+  // the relabeled text for non-factory business types.
+  const stageOptions = ['New Lead','Sample Required','Sample Sent','Quotation','Negotiation','Order Won','Repeat Customer','Lost']
     .map(s => `<option value="${escAttr(s)}" ${p.stage === s ? 'selected' : ''}>${escHtml(stageLabel(s))}</option>`).join('');
 
   const itemsHtml = (p.items || []).map((it, i) => `
@@ -8126,7 +8170,7 @@ async function aiConfirmFromCard(uuid) {
     quantity:         parsed.items?.[0]?.quantity  || parsed.quantity  || '',
     rate:             parsed.items?.[0]?.rate      || parsed.rate      || '',
     stage:            parsed.stage            || 'New Lead',
-    stage_number:     parsed.stage_number     || 1,
+    stage_number:     STAGE_NUMBERS[parsed.stage] ?? (parsed.stage_number || 1),
     follow_up:        parsed.follow_up        || '',
     area:             parsed.area             || '',
     notes:            parsed.notes            || '',
@@ -8410,8 +8454,8 @@ function confLabel(conf) {
 }
 
 function renderUnderstandingCard(data) {
-  const { parsed, confidence, substitutions, model, latency, needsClarification, clarification, sessionId } = data;
-  aiSession = { sessionId, originalText: aiSession?.originalText || '', parsed, confidence };
+  const { parsed, confidence, substitutions, model, latency, needsClarification, clarification, existingRow, sessionId } = data;
+  aiSession = { sessionId, originalText: aiSession?.originalText || '', parsed, confidence, clarification, existingRow: (existingRow !== undefined ? existingRow : aiSession?.existingRow) };
 
   const cardArea = document.getElementById('ai-card-area');
   if (!cardArea) return;
@@ -8566,7 +8610,7 @@ async function aiConfirmSave() {
     person_in_charge: parsed.person_in_charge || '',
     contact:          parsed.contact         || '',
     stage:            parsed.stage           || '',
-    stage_number:     parsed.stage_number    || 0,
+    stage_number:     STAGE_NUMBERS[parsed.stage] ?? (parsed.stage_number || 0),
     follow_up:        parsed.follow_up       || '',
     area:             parsed.area            || '',
     notes:            parsed.notes           || '',
@@ -8771,10 +8815,10 @@ function cmdFindResults(results) {
   ).join('<br>');
 }
 
-let _pendingCommand = null;   // command text awaiting the user's confirmation
-
 // Step 1 — preview: parse + validate on the server WITHOUT writing, then let
-// the user Confirm / Edit / Cancel before anything actually changes.
+// the user Confirm / Edit / Cancel before anything actually changes. Each
+// preview is self-contained: the command is encoded into its own buttons so an
+// older preview never runs a newer command.
 async function commandSend(text) {
   chatAppendMessage('user', escHtml(text));
   chatAppendMessage('bot', '⚡ Reading…');
@@ -8792,13 +8836,12 @@ async function commandSend(text) {
 
     // A confirmable mutating action — show what it WILL do + action buttons.
     if (data.preview) {
-      _pendingCommand = text;
       chatReplaceLastBot(
         `<div class="cmd-confirm-q">Confirm this?</div>${cmdHtml(data.message)}` +
         `<div class="cmd-confirm-actions">
-           <button class="btn btn-primary" onclick="confirmCommand()">✅ Confirm</button>
-           <button class="btn btn-ghost" onclick="editCommand()">✏️ Edit</button>
-           <button class="btn btn-ghost" onclick="cancelCommand()">Cancel</button>
+           <button class="btn btn-primary" onclick="confirmCommand(this,'${encodeURIComponent(text)}')">✅ Confirm</button>
+           <button class="btn btn-ghost" onclick="editCommand(this,'${encodeURIComponent(text)}')">✏️ Edit</button>
+           <button class="btn btn-ghost" onclick="cancelCommand(this)">Cancel</button>
          </div>`);
       return;
     }
@@ -8810,12 +8853,12 @@ async function commandSend(text) {
   }
 }
 
-// Step 2 — confirm: actually run the command.
-async function confirmCommand() {
-  const text = _pendingCommand;
-  _pendingCommand = null;
-  if (!text) return;
-  chatReplaceLastBot('⚡ Working…');
+// Step 2 — confirm: actually run the command encoded in the clicked bubble.
+async function confirmCommand(btn, enc) {
+  const text = decodeURIComponent(enc);
+  const bubble = btn.closest('.chat-msg');
+  if (!text || !bubble) return;
+  bubble.innerHTML = '⚡ Working…';
   try {
     const data = await apiFetch('/api/ai/command', {
       method: 'POST',
@@ -8823,26 +8866,26 @@ async function confirmCommand() {
     });
     let html = cmdHtml(data.message || (data.ok ? '✅ Done' : '⚠️ Could not do that'));
     if (data.action === 'find') html += cmdFindResults(data.results);
-    chatReplaceLastBot(html);
+    bubble.innerHTML = html;
     if (data.ok && data.action !== 'find') {
       await Promise.all([loadLeads(), loadStats()]).catch(() => {});
     }
   } catch (err) {
-    chatReplaceLastBot('❌ ' + escHtml(err.message || 'Command failed'));
+    bubble.innerHTML = '❌ ' + escHtml(err.message || 'Command failed');
   }
 }
 
-function editCommand() {
-  const text = _pendingCommand;
-  _pendingCommand = null;
+function editCommand(btn, enc) {
+  const text = decodeURIComponent(enc);
   const input = document.getElementById('chat-input');
   if (input) { input.value = text; input.focus(); chatInputChanged?.(text); }
-  chatReplaceLastBot('✏️ Edit your command above, then send it again.');
+  const bubble = btn.closest('.chat-msg');
+  if (bubble) bubble.innerHTML = '✏️ Edit your command above, then send it again.';
 }
 
-function cancelCommand() {
-  _pendingCommand = null;
-  chatReplaceLastBot('Okay — cancelled, nothing was changed.');
+function cancelCommand(btn) {
+  const bubble = btn.closest('.chat-msg');
+  if (bubble) bubble.innerHTML = 'Okay — cancelled, nothing was changed.';
 }
 
 // Enhanced chatSend — routes based on current AI mode

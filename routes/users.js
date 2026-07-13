@@ -139,13 +139,15 @@ router.patch('/users/:id/pin', authMiddleware, adminOnly, async (req, res, next)
 // ── PATCH /api/users/:id/password (admin resets a member's password) ──
 router.patch('/users/:id/password', authMiddleware, adminOnly, async (req, res, next) => {
   const { password } = req.body || {};
-  const pwErr = validatePassword(password);
+  // Trim before validating AND storing — login trims before bcrypt.compare.
+  const pw = String(password || '').trim();
+  const pwErr = validatePassword(pw);
   if (pwErr) return res.status(400).json({ error: pwErr });
   try {
     const id     = parseInt(req.params.id, 10);
     const target = (await db.getAllUsers()).find(u => u.id === id);
     if (!target) return res.status(404).json({ error: 'User not found' });
-    await db.setUserPassword(id, String(password));
+    await db.setUserPassword(id, pw);
     res.json({ success: true });
   } catch (err) { next(err); }
 });
@@ -166,12 +168,16 @@ router.post('/register', async (req, res, next) => {
   const { name, pin, mobile, password, inviteCode, fingerprint } = req.body || {};
   const clean = (name || '').toLowerCase().trim();
   if (!isValidUsername(clean)) return res.status(400).json({ error: 'Invalid username — use 3–20 lowercase letters, numbers, _ or . only' });
-  const pwErr = validatePassword(password);
+  // Trim before validating AND storing — login trims before bcrypt.compare, so
+  // storing an untrimmed password with leading/trailing whitespace would lock
+  // the account out permanently.
+  const pw = String(password || '').trim();
+  const pwErr = validatePassword(pw);
   if (pwErr) return res.status(400).json({ error: pwErr });
   // PIN is now optional (device quick-unlock); validate only if supplied.
   if (pin && !/^\d{4,6}$/.test(String(pin))) return res.status(400).json({ error: 'PIN must be 4–6 digits' });
   try {
-    const result = await db.createUser(clean, pin ? String(pin) : '', 'sales', '', String(password));
+    const result = await db.createUser(clean, pin ? String(pin) : '', 'sales', '', pw);
     if (!result.ok) return res.status(409).json({ error: result.message });
     if (mobile) {
       const m = String(mobile).replace(/[\s\-\(\)]/g, '');

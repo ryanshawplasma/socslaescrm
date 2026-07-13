@@ -158,7 +158,10 @@ router.post(['/auth/login', '/login'], loginLimiter, async (req, res, next) => {
 // existing password (requires the current one).
 router.post('/auth/set-password', authMiddleware, async (req, res, next) => {
   const { password, currentPassword } = req.body || {};
-  const err = validatePassword(password);
+  // Trim before validating AND storing — login trims before bcrypt.compare, so
+  // an untrimmed stored password with edge whitespace would lock the account out.
+  const pw = String(password || '').trim();
+  const err = validatePassword(pw);
   if (err) return res.status(400).json({ error: err });
   try {
     const user = await db.getUserByName(req.user.username);
@@ -167,11 +170,12 @@ router.post('/auth/set-password', authMiddleware, async (req, res, next) => {
     // one. Migration (no password yet) and an admin-forced reset both skip
     // this — identity was already proven by the login that got them here.
     if (user.password_hash && !user.must_change_password) {
-      if (!currentPassword || !(await db.verifyUserPassword(user.display_name, currentPassword))) {
+      const currentPw = String(currentPassword || '').trim();
+      if (!currentPw || !(await db.verifyUserPassword(user.display_name, currentPw))) {
         return res.status(401).json({ error: 'Current password is incorrect' });
       }
     }
-    await db.setUserPassword(user.id, password);
+    await db.setUserPassword(user.id, pw);
     await db.logSecurity(user.id, 'password_set', {}, getIP(req), req.headers['user-agent'] || '', req.user.sessionId, null);
     res.json({ ok: true });
   } catch (err) { next(err); }

@@ -18,7 +18,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=48" />
+  <link rel="stylesheet" href="style.css?v=49" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -530,6 +530,20 @@
           <label>Account Password</label>
           <button type="button" class="btn btn-ghost full-width" onclick="showSetPasswordModal({ migration: false })" style="justify-content:center">🔑 Change Password</button>
         </div>
+        <div class="form-group" style="margin-bottom:16px">
+          <label>AI Assistant</label>
+          <button type="button" id="settings-bubble-toggle" class="btn btn-ghost full-width" onclick="toggleAiBubble()" style="justify-content:center">💬 Hide AI assistant</button>
+          <p style="font-size:12px;color:var(--text-muted);margin:6px 0 0;line-height:1.4">Show or hide the floating AI chat bubble.</p>
+        </div>
+        <div class="form-group" style="margin-bottom:16px">
+          <label>Access Code <span style="font-weight:400;color:var(--text-muted)">(unlock Pro)</span></label>
+          <div style="display:flex;gap:8px">
+            <input id="settings-code-input" type="text" placeholder="Enter access code" autocomplete="off" style="flex:1" />
+            <button type="button" class="btn btn-primary" onclick="redeemAccessFromSettings()">Redeem</button>
+          </div>
+          <div id="settings-code-msg" class="up-msg" style="margin-top:6px"></div>
+          <button type="button" id="settings-codes-admin" class="btn btn-ghost full-width hidden" onclick="openCodesModal()" style="justify-content:center;margin-top:8px">🎟 Manage access codes</button>
+        </div>
         <div class="up-refer" id="profile-refer">
           <div class="up-refer-title">🎁 Invite &amp; earn</div>
           <p class="up-refer-sub">Friends who sign up with your link get 2 months of Pro free — you get +14 days per signup (max 10/yr).</p>
@@ -626,9 +640,7 @@
       <div class="sidebar-footer">
         <button id="btn-set-pin" class="btn-biometric-enable" onclick="openPinSetupFromMenu()">🔢 Set Quick-Unlock PIN</button>
         <button id="btn-enable-biometric" class="btn-biometric-enable hidden" onclick="enableBiometric()">🔐 Enable Biometric Login</button>
-        <button id="btn-toggle-bubble" class="btn-biometric-enable" onclick="toggleAiBubble()">💬 Show AI bubble</button>
         <button id="btn-install-app" class="btn-biometric-enable hidden" onclick="installApp()">📲 Add to Home Screen</button>
-        <button id="btn-codes" class="btn-biometric-enable hidden" onclick="openCodesModal()">🎟 Access codes</button>
         <button id="plan-badge" class="plan-badge hidden" type="button"></button>
         <div class="user-card">
           <div class="user-avatar" id="sidebar-avatar">?</div>
@@ -1252,7 +1264,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=47"></script>
+  <script src="app.js?v=48"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:2600, once:true };</script>
   <script src="dive-splash.js"></script>

@@ -3,6 +3,7 @@
 const express = require('express');
 const { pool } = require('../db');
 const db      = require('../db');
+const cache   = require('../cache');
 const { BUSINESS_KEYS } = require('../business-types');
 const {
   authMiddleware, adminOnly, noGuest,
@@ -162,7 +163,7 @@ router.get('/check-username', async (req, res, next) => {
 
 // ── POST /api/register (public self-registration) ─────────────
 router.post('/register', async (req, res, next) => {
-  const { name, pin, mobile, password } = req.body || {};
+  const { name, pin, mobile, password, inviteCode, fingerprint } = req.body || {};
   const clean = (name || '').toLowerCase().trim();
   if (!isValidUsername(clean)) return res.status(400).json({ error: 'Invalid username — use 3–20 lowercase letters, numbers, _ or . only' });
   const pwErr = validatePassword(password);
@@ -178,7 +179,10 @@ router.post('/register', async (req, res, next) => {
         await pool.query(`UPDATE users SET mobile = $1 WHERE display_name = $2`, [m, clean]).catch(() => {});
       }
     }
-    res.json({ success: true });
+    // Referral / team-invite reward — best-effort, never blocks registration
+    // (applyRegistrationReferral swallows its own errors and clamps the code).
+    const ref = await db.applyRegistrationReferral({ newUserName: clean, code: inviteCode, fingerprint });
+    res.json({ success: true, ...(ref.referralApplied ? { referralApplied: true, referralDays: ref.referralDays } : {}) });
   } catch (err) {
     if (err.message?.includes('UNIQUE') || err.message?.includes('unique'))
       return res.status(409).json({ error: 'Username taken — choose another' });
@@ -221,14 +225,14 @@ router.patch('/me/business', authMiddleware, noGuest, async (req, res, next) => 
     const user = await db.getUserByName(req.user.username);
     if (!user) return res.status(404).json({ error: 'User not found' });
     const type = businessType !== undefined ? businessType : (user.business_type || 'factory');
-    // businessCustom may be an object or a string; store a JSON string ≤2000
-    // chars. When omitted, keep whatever the user already had.
-    let custom;
-    if (businessCustom === undefined)            custom = user.business_custom || '';
-    else if (typeof businessCustom === 'string') custom = businessCustom;
-    else { try { custom = JSON.stringify(businessCustom); } catch (_) { custom = ''; } }
-    custom = String(custom || '').slice(0, 2000);
+    // businessCustom may be an object or a string; db.normBusinessCustom is the
+    // one shared normalizer (clamps known fields, drops unknown keys). When
+    // omitted, keep whatever the user already had.
+    const custom = businessCustom === undefined
+      ? (user.business_custom || '')
+      : db.normBusinessCustom(businessCustom);
     await db.setUserBusiness(user.id, type, custom);
+    cache.remove('bizprofile_user_' + req.user.username);
     res.json({ success: true, business_type: type, business_custom: custom });
   } catch (err) { next(err); }
 });

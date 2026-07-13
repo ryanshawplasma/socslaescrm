@@ -2,6 +2,7 @@
 
 const express = require('express');
 const db      = require('../db');
+const cache   = require('../cache');
 const { BUSINESS_KEYS } = require('../business-types');
 const {
   authMiddleware,
@@ -36,6 +37,7 @@ router.post('/teams', authMiddleware, async (req, res, next) => {
     const team = await db.createTeam(name, handle, user.id);
     if (businessType && businessType !== 'factory') {
       await db.updateTeam(team.id, { businessType });
+      cache.remove('bizprofile_team_' + team.id);
       team.business_type = businessType;
     }
     team.business_type = team.business_type || 'factory';
@@ -73,6 +75,7 @@ router.patch('/teams/:id', authMiddleware, teamMemberMiddleware, teamAdminMiddle
     return res.status(400).json({ error: 'Unknown business type' });
   try {
     await db.updateTeam(req.teamId, { name, handle, publicSearch, autoApprove, businessType, businessCustom });
+    cache.remove('bizprofile_team_' + req.teamId);
     res.json({ success: true });
   } catch (err) { next(err); }
 });

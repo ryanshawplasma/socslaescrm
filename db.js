@@ -3,7 +3,7 @@
 // ============================================================
 const { Pool } = require('pg');
 const crypto   = require('crypto');
-const { BUSINESS_KEYS } = require('./business-types');
+const { BUSINESS_KEYS, sanitizeCustomStages } = require('./business-types');
 
 // pg v8.13+ changed SSL: sslmode=require now maps to verify-full unless uselibpqcompat is set.
 // Strip original sslmode, then add uselibpqcompat=true&sslmode=require so pg uses libpq
@@ -280,6 +280,49 @@ async function initSchema() {
         UNIQUE(code, user_id)
       )
     `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+
+    // ── Monetization: Razorpay payments + Referral program ────
+    // Payments ledger: one row per Razorpay order. order_id is UNIQUE so a
+    // verify call settles exactly one order, idempotently.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS payments (
+        id           BIGSERIAL PRIMARY KEY,
+        user_id      INTEGER NOT NULL,
+        team_id      INTEGER,
+        plan_kind    TEXT NOT NULL,
+        seats        INTEGER DEFAULT 1,
+        amount_paise INTEGER NOT NULL,
+        order_id     TEXT UNIQUE NOT NULL,
+        payment_id   TEXT DEFAULT '',
+        status       TEXT DEFAULT 'created',
+        created_at   TIMESTAMPTZ DEFAULT NOW(),
+        paid_at      TIMESTAMPTZ
+      )
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+
+    // Referral code lives on the user row (lazily generated). Partial-unique so
+    // many NULLs coexist while every real code stays one-of-a-kind.
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_users_referral_code
+      ON users(referral_code) WHERE referral_code IS NOT NULL AND referral_code != ''
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+
+    // Referral ledger: one row per referred signup. credited = whether the
+    // referrer actually earned their +14 days (a guard can decline it).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS referrals (
+        id               BIGSERIAL PRIMARY KEY,
+        referrer_user_id INTEGER,
+        referred_user_id INTEGER NOT NULL,
+        code             TEXT NOT NULL,
+        source           TEXT NOT NULL DEFAULT 'referral',
+        credited         BOOLEAN DEFAULT FALSE,
+        created_at       TIMESTAMPTZ DEFAULT NOW()
+      )
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_user_id)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS uq_users_email
@@ -1274,8 +1317,11 @@ async function setUserDesignation(userId, designation) {
 // validated against BUSINESS_KEYS (falls back to 'factory'); the custom JSON is
 // stored verbatim as a string (caller caps its length).
 async function setUserBusiness(userId, businessType, businessCustomJsonString) {
-  const type   = BUSINESS_KEYS.includes(businessType) ? businessType : 'factory';
-  const custom = String(businessCustomJsonString || '').slice(0, 2000);
+  const type = BUSINESS_KEYS.includes(businessType) ? businessType : 'factory';
+  // Normalise (never trust the caller pre-stringified it), and clear custom
+  // terms outright for non-custom types so they can't silently resurrect if
+  // the user picks 'custom' again later.
+  const custom = type === 'custom' ? normBusinessCustom(businessCustomJsonString) : '';
   await pool.query(`UPDATE users SET business_type = $2, business_custom = $3 WHERE id = $1`,
     [userId, type, custom]);
   return { ok: true };
@@ -1740,7 +1786,7 @@ async function getTeamByInviteCode(code) {
 async function searchTeams(query) {
   const q = `%${query.toLowerCase()}%`;
   const { rows } = await pool.query(
-    `SELECT t.id, t.name, t.handle, t.team_code, u.display_name AS owner_name,
+    `SELECT t.id, t.name, t.handle, t.team_code, t.business_type, t.business_custom, u.display_name AS owner_name,
        (SELECT COUNT(*) FROM team_members WHERE team_id=t.id AND status='active')::int AS member_count
      FROM teams t LEFT JOIN users u ON t.owner_id=u.id
      WHERE t.public_search=true
@@ -1753,7 +1799,7 @@ async function searchTeams(query) {
 // List public (discoverable) teams — for the new-user "join a team" prompt.
 async function getPublicTeams(limit = 12) {
   const { rows } = await pool.query(
-    `SELECT t.id, t.name, t.handle, t.team_code, t.auto_approve, u.display_name AS owner_name,
+    `SELECT t.id, t.name, t.handle, t.team_code, t.auto_approve, t.business_type, t.business_custom, u.display_name AS owner_name,
        (SELECT COUNT(*) FROM team_members WHERE team_id=t.id AND status='active')::int AS member_count
      FROM teams t LEFT JOIN users u ON t.owner_id=u.id
      WHERE t.public_search=true
@@ -1763,14 +1809,36 @@ async function getPublicTeams(limit = 12) {
 }
 
 // Normalise a business_custom value for storage: accept an object or a JSON
-// string, return a JSON string capped at ~2000 chars ('' when empty).
+// string. Only the known custom-term fields are kept, each clamped to 60
+// chars; unknown keys are dropped and the result is re-stringified. An
+// optional `stages` relabel map rides along, sanitized by sanitizeCustomStages
+// (canonical stage keys only, labels ≤30 chars) and omitted when empty.
+// Capping per-FIELD (not the serialized blob) means a long value can never
+// truncate the JSON mid-string and silently drop every other term on read. The
+// final slice is a belt, not the mechanism — 7 fields × 60 chars plus 8 stage
+// labels × 30 can't reach it.
+const BUSINESS_CUSTOM_FIELDS = ['entity', 'entityPlural', 'code', 'name', 'person', 'product', 'area'];
 function normBusinessCustom(v) {
   if (v === undefined || v === null || v === '') return '';
+  let obj;
+  if (typeof v === 'string') {
+    try { obj = JSON.parse(v); } catch (_) { return ''; }
+  } else {
+    obj = v;
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return '';
+  const out = {};
+  for (const key of BUSINESS_CUSTOM_FIELDS) {
+    const val = obj[key];
+    if (val === undefined || val === null) continue;
+    const s = String(val).slice(0, 60);
+    if (s) out[key] = s;
+  }
+  const stages = sanitizeCustomStages(obj.stages);
+  if (Object.keys(stages).length) out.stages = stages;
+  if (!Object.keys(out).length) return '';
   let str;
-  if (typeof v === 'string') str = v;
-  else { try { str = JSON.stringify(v); } catch (_) { str = ''; } }
-  str = String(str || '').trim();
-  if (str === '{}') return '';
+  try { str = JSON.stringify(out); } catch (_) { return ''; }
   return str.slice(0, 2000);
 }
 
@@ -1781,11 +1849,17 @@ async function updateTeam(id, { name, handle, publicSearch, autoApprove, busines
   if (publicSearch !== undefined) { sets.push(`public_search=$${i++}`); vals.push(publicSearch); }
   if (autoApprove  !== undefined) { sets.push(`auto_approve=$${i++}`);  vals.push(autoApprove); }
   // business type: only persist a recognised key; custom terms stored as JSON.
-  if (businessType   !== undefined && BUSINESS_KEYS.includes(businessType)) {
+  const settingType = businessType !== undefined && BUSINESS_KEYS.includes(businessType);
+  if (settingType) {
     sets.push(`business_type=$${i++}`);   vals.push(businessType);
   }
-  if (businessCustom !== undefined) {
-    sets.push(`business_custom=$${i++}`); vals.push(normBusinessCustom(businessCustom));
+  // Single SET on business_custom (Postgres rejects assigning a column twice):
+  // switching TO a non-custom type always clears stale custom terms in the
+  // same write, so they can't silently resurrect if 'custom' is picked again
+  // later; otherwise fall through to a normal (possibly untouched) update.
+  if (businessCustom !== undefined || (settingType && businessType !== 'custom')) {
+    const custom = (settingType && businessType !== 'custom') ? '' : normBusinessCustom(businessCustom);
+    sets.push(`business_custom=$${i++}`); vals.push(custom);
   }
   if (!sets.length) return;
   vals.push(id);
@@ -2525,6 +2599,200 @@ async function redeemAccessCode(rawCode, userId) {
   return { ok: true, days: rec.days, proUntil };
 }
 
+// ── Payments (Razorpay orders ledger) ─────────────────────────
+async function createPayment(row) {
+  const r = row || {};
+  const { rows } = await pool.query(
+    `INSERT INTO payments (user_id, team_id, plan_kind, seats, amount_paise, order_id, payment_id, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+     RETURNING *`,
+    [
+      parseInt(r.user_id, 10),
+      r.team_id != null && r.team_id !== '' ? parseInt(r.team_id, 10) : null,
+      String(r.plan_kind || ''),
+      parseInt(r.seats, 10) || 1,
+      parseInt(r.amount_paise, 10) || 0,
+      String(r.order_id || ''),
+      String(r.payment_id || ''),
+      String(r.status || 'created'),
+    ]);
+  return rows[0];
+}
+
+async function getPaymentByOrderId(orderId) {
+  const { rows } = await pool.query(`SELECT * FROM payments WHERE order_id = $1`, [String(orderId || '')]);
+  return rows[0] || null;
+}
+
+// Idempotent settle: only a still-unpaid order flips to 'paid' (WHERE status <>
+// 'paid'), so a repeated verify can never rewrite paid_at / payment_id or open
+// the door to a second grant.
+async function markPaymentPaid(orderId, paymentId) {
+  const { rows } = await pool.query(
+    `UPDATE payments
+        SET status = 'paid', payment_id = $2, paid_at = NOW()
+      WHERE order_id = $1 AND status <> 'paid'
+      RETURNING *`,
+    [String(orderId || ''), String(paymentId || '')]);
+  return rows[0] || null;
+}
+
+// ── Referral program ──────────────────────────────────────────
+// Pure code generator: 'DIVE-' + 6 chars from A–Z0–9, seeded by crypto random
+// bytes. The DB unique index is the real collision backstop. Exported so it can
+// be unit-tested in isolation.
+function genReferralCode() {
+  const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  const bytes = crypto.randomBytes(6);
+  let s = '';
+  for (let i = 0; i < 6; i++) s += ALPHABET[bytes[i] % ALPHABET.length];
+  return 'DIVE-' + s;
+}
+
+// Return the user's referral code, generating + persisting one on first read.
+// Retries on the (astronomically rare) unique collision, max 5 attempts.
+async function getOrCreateReferralCode(userId) {
+  const uid = parseInt(userId, 10);
+  if (!uid) return null;
+  const { rows } = await pool.query(`SELECT referral_code FROM users WHERE id = $1`, [uid]);
+  if (!rows.length) return null;
+  const existing = rows[0].referral_code;
+  if (existing && String(existing).trim()) return existing;
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = genReferralCode();
+    try {
+      const { rows: upd } = await pool.query(
+        `UPDATE users SET referral_code = $1
+          WHERE id = $2 AND (referral_code IS NULL OR referral_code = '')
+          RETURNING referral_code`, [code, uid]);
+      if (upd.length) return upd[0].referral_code;
+      // Set concurrently by another request — return whatever is stored now.
+      const { rows: cur } = await pool.query(`SELECT referral_code FROM users WHERE id = $1`, [uid]);
+      return cur.length ? cur[0].referral_code : null;
+    } catch (e) {
+      // 23505 = unique_violation: this code is taken, try a fresh one.
+      if (e && e.code === '23505' && attempt < 4) continue;
+      throw e;
+    }
+  }
+  return null;
+}
+
+async function findUserByReferralCode(code) {
+  const c = String(code || '').trim();
+  if (!c) return null;
+  const { rows } = await pool.query(`SELECT * FROM users WHERE UPPER(referral_code) = UPPER($1)`, [c]);
+  return rows[0] || null;
+}
+
+// How many referrals this user has been CREDITED for in the trailing year — the
+// cap (10) is enforced against this count.
+async function countCreditedReferrals(referrerUserId) {
+  const uid = parseInt(referrerUserId, 10);
+  if (!uid) return 0;
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM referrals
+      WHERE referrer_user_id = $1 AND credited = TRUE
+        AND created_at > NOW() - INTERVAL '365 days'`, [uid]);
+  return rows[0] ? rows[0].n : 0;
+}
+
+async function createReferral(row) {
+  const r = row || {};
+  const { rows } = await pool.query(
+    `INSERT INTO referrals (referrer_user_id, referred_user_id, code, source, credited)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [
+      r.referrer_user_id != null ? parseInt(r.referrer_user_id, 10) : null,
+      parseInt(r.referred_user_id, 10),
+      String(r.code || ''),
+      String(r.source || 'referral'),
+      !!r.credited,
+    ]);
+  return rows[0];
+}
+
+// Bump Pro by N days WITHOUT overwriting an existing plan_kind — only labels it
+// 'referral' when the account had no plan label yet. Used for referrer credit.
+async function extendUserProDaysPreservingKind(userId, days) {
+  const uid = parseInt(userId, 10);
+  if (!uid) return null;
+  const { rows } = await pool.query(
+    `UPDATE users
+        SET pro_until = GREATEST(COALESCE(pro_until, NOW()), NOW()) + ($2 || ' days')::interval,
+            plan_kind = CASE WHEN plan_kind IS NULL OR plan_kind = '' THEN 'referral' ELSE plan_kind END
+      WHERE id = $1
+      RETURNING pro_until`,
+    [uid, String(parseInt(days, 10) || 0)]);
+  return rows[0] ? rows[0].pro_until : null;
+}
+
+// Orchestrates the referral grant for a just-created account. Best-effort and
+// self-contained (it swallows its own errors) so a referral hiccup can NEVER
+// break registration. Returns { referralApplied, referralDays }: referralApplied
+// is true only when the code resolved and the new user's 60-day grant was
+// written (which REPLACES the 14-day trial). Mirrors the referral spec's steps
+// 1–4; the caller adds step 5 (surfacing referralApplied/referralDays in its
+// response). The self-referral fingerprint guard runs only when a fingerprint is
+// supplied — /register does not currently send one (see report).
+async function applyRegistrationReferral({ newUserId, newUserName, code, fingerprint } = {}) {
+  const result = { referralApplied: false, referralDays: 0 };
+  try {
+    const raw = String(code || '').trim().slice(0, 40);
+    if (!raw) return result;
+
+    let referredId = newUserId != null ? parseInt(newUserId, 10) : null;
+    if (!referredId && newUserName) {
+      const u = await getUserByName(newUserName);
+      referredId = u ? u.id : null;
+    }
+    if (!referredId) return result;
+
+    // 1. Resolve the code → referrer + source (referral code first, then team invite).
+    let referrerId = null, source = null;
+    const refUser = await findUserByReferralCode(raw);
+    if (refUser) { referrerId = refUser.id; source = 'referral'; }
+    else {
+      const team = await getTeamByInviteCode(raw);
+      if (team) { referrerId = team.owner_id || null; source = 'team_invite'; }
+    }
+    if (!source) return result; // unresolved → skip silently
+
+    // 2. New user gets 60 days — REPLACES the default trial (absolute, not additive).
+    await pool.query(
+      `UPDATE users SET pro_until = NOW() + INTERVAL '60 days', plan_kind = 'referral' WHERE id = $1`,
+      [referredId]);
+    result.referralApplied = true;
+    result.referralDays = 60;
+
+    // 3. Referrer credit (+14 days), gated by: referrer exists & isn't the new
+    //    user, under the yearly cap, and (when a fingerprint is supplied) the
+    //    signup isn't from the referrer's own device.
+    let credited = false;
+    if (referrerId && referrerId !== referredId) {
+      const count = await countCreditedReferrals(referrerId);
+      if (count < 10) {
+        let selfDevice = false;
+        if (fingerprint) {
+          try { selfDevice = !!(await getDeviceByFingerprint(referrerId, fingerprint)); }
+          catch (_) { selfDevice = false; }
+        }
+        if (!selfDevice) {
+          await extendUserProDaysPreservingKind(referrerId, 14);
+          credited = true;
+        }
+      }
+    }
+
+    // 4. Record the referral (credited reflects whether step 3 granted).
+    await createReferral({ referrer_user_id: referrerId, referred_user_id: referredId, code: raw, source, credited });
+  } catch (e) {
+    console.warn('[db] referral non-fatal:', e && e.message);
+  }
+  return result;
+}
+
 // ── Field-level edit history ──────────────────────────────────
 async function logLeadHistory(leadId, changedBy, fieldName, oldValue, newValue, teamId) {
   await pool.query(
@@ -2746,10 +3014,15 @@ module.exports = {
   addTeamMessage, getTeamMessages, logTeamActivity, getTeamActivity,
   touchLastSeen, getTeamPresence, getTeamLeaderboard,
   entitlementOf, extendUserPro, createAccessCode, getAccessCodes, deleteAccessCode, redeemAccessCode,
+  // Monetization: Razorpay payments + referral program
+  createPayment, getPaymentByOrderId, markPaymentPaid,
+  genReferralCode, getOrCreateReferralCode, findUserByReferralCode,
+  countCreditedReferrals, createReferral, extendUserProDaysPreservingKind,
+  applyRegistrationReferral,
   grantLeadAccess, revokeLeadAccess, getLeadAccess, claimFollowUp, reassignFollowUp,
   createUser, getUserByName, getUserByTelegramId, updateUserPin, updateUserName, updateUserDefaultArea,
   getAllUsers, deleteUser, verifyUserPin, verifyUserPassword, setUserPassword, seedAdminUser,
-  setUserRole, setUserDesignation, setUserBusiness, getAdminCount,
+  setUserRole, setUserDesignation, setUserBusiness, normBusinessCustom, getAdminCount,
   setMustChangePassword, setMustChangePasswordForAll,
   saveWebAuthnCred, getWebAuthnCred, getUserByWebAuthnCredId,
   getLeadCoordinates, updateLeadCoords,

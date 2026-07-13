@@ -18,7 +18,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=47" />
+  <link rel="stylesheet" href="style.css?v=48" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -168,6 +168,10 @@
               <input id="reg-password2" type="password" placeholder="Re-enter password" autocomplete="new-password" />
               <button type="button" class="pw-toggle" aria-label="Show password" onclick="togglePw('reg-password2', this)">👁</button>
             </div>
+          </div>
+          <div class="form-group">
+            <label>Invite / referral code (optional)</label>
+            <input id="reg-invite" type="text" placeholder="e.g. DIVE-AB12CD" autocomplete="off" maxlength="40" spellcheck="false" />
           </div>
           <p id="register-error" class="login-error"></p>
           <button type="submit" id="register-btn" class="btn btn-primary full-width">Create Account</button>
@@ -464,6 +468,10 @@
               <input id="profile-biz-entity" type="text" placeholder="e.g. Client" />
             </div>
             <div class="form-group">
+              <label>Plural (e.g. Members)</label>
+              <input id="profile-biz-plural" type="text" placeholder="e.g. Clients" />
+            </div>
+            <div class="form-group">
               <label>Code field</label>
               <input id="profile-biz-code" type="text" placeholder="e.g. Client Code" />
             </div>
@@ -483,11 +491,53 @@
               <label>Area field</label>
               <input id="profile-biz-area" type="text" placeholder="e.g. Area" />
             </div>
+            <p style="grid-column:1/-1;font-size:12px;color:var(--text-muted);margin:8px 0 0;line-height:1.4">Rename pipeline stages (optional — blank keeps the standard name)</p>
+            <div class="form-group">
+              <label>New Lead</label>
+              <input type="text" class="profile-biz-stage" data-stage="New Lead" placeholder="New Lead" />
+            </div>
+            <div class="form-group">
+              <label>Sample Required</label>
+              <input type="text" class="profile-biz-stage" data-stage="Sample Required" placeholder="Sample Required" />
+            </div>
+            <div class="form-group">
+              <label>Sample Sent</label>
+              <input type="text" class="profile-biz-stage" data-stage="Sample Sent" placeholder="Sample Sent" />
+            </div>
+            <div class="form-group">
+              <label>Quotation</label>
+              <input type="text" class="profile-biz-stage" data-stage="Quotation" placeholder="Quotation" />
+            </div>
+            <div class="form-group">
+              <label>Negotiation</label>
+              <input type="text" class="profile-biz-stage" data-stage="Negotiation" placeholder="Negotiation" />
+            </div>
+            <div class="form-group">
+              <label>Order Won</label>
+              <input type="text" class="profile-biz-stage" data-stage="Order Won" placeholder="Order Won" />
+            </div>
+            <div class="form-group">
+              <label>Repeat Customer</label>
+              <input type="text" class="profile-biz-stage" data-stage="Repeat Customer" placeholder="Repeat Customer" />
+            </div>
+            <div class="form-group">
+              <label>Lost</label>
+              <input type="text" class="profile-biz-stage" data-stage="Lost" placeholder="Lost" />
+            </div>
           </div>
         </div>
         <div class="form-group" style="margin-bottom:16px">
           <label>Account Password</label>
           <button type="button" class="btn btn-ghost full-width" onclick="showSetPasswordModal({ migration: false })" style="justify-content:center">🔑 Change Password</button>
+        </div>
+        <div class="up-refer" id="profile-refer">
+          <div class="up-refer-title">🎁 Invite &amp; earn</div>
+          <p class="up-refer-sub">Friends who sign up with your link get 2 months of Pro free — you get +14 days per signup (max 10/yr).</p>
+          <div class="up-refer-row">
+            <input type="text" id="profile-refer-link" class="up-refer-input" readonly value="Loading your link…" onclick="this.select()" />
+            <button type="button" class="btn btn-ghost btn-sm" onclick="copyReferLink('profile-refer-link')">Copy</button>
+          </div>
+          <div class="up-refer-meta" id="profile-refer-meta"></div>
         </div>
         <p id="profile-error" class="login-error"></p>
         <div class="modal-footer">
@@ -1202,7 +1252,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=46"></script>
+  <script src="app.js?v=47"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:2600, once:true };</script>
   <script src="dive-splash.js"></script>

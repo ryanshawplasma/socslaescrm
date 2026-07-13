@@ -132,17 +132,27 @@ async function buildUserLearningContext(username, teamId) {
 // Resolve the business profile for a request: a team's type when teamId is set,
 // otherwise the caller's Personal-workspace type. Always safe — any failure or
 // missing record falls back to the 'factory' profile so nothing changes.
+// Cached 60s (mirrors buildUserLearningContext's cache idiom above) since the
+// same team/user profile is looked up on almost every AI call.
 async function resolveBusinessProfileFor(username, teamId) {
+  if (!teamId && !username) return resolveBusinessProfile('factory');
+  const cacheKey = teamId ? `bizprofile_team_${teamId}` : `bizprofile_user_${username}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  let profile = resolveBusinessProfile('factory');
   try {
     if (teamId) {
       const team = await db.getTeamById(parseInt(teamId, 10));
-      if (team) return resolveBusinessProfile(team.business_type, team.business_custom);
+      if (team) profile = resolveBusinessProfile(team.business_type, team.business_custom);
     } else if (username) {
       const user = await db.getUserByName(username);
-      if (user) return resolveBusinessProfile(user.business_type, user.business_custom);
+      if (user) profile = resolveBusinessProfile(user.business_type, user.business_custom);
     }
   } catch (_) {}
-  return resolveBusinessProfile('factory');
+
+  cache.put(cacheKey, profile, 60);
+  return profile;
 }
 
 // Factory keeps the legacy "party" wording — today's output is the regression
@@ -261,10 +271,13 @@ class GeminiProvider {
     return this._generateWithFallback(imagePrompt, parts, 2500, 'image');
   }
 
-  // Map spreadsheet columns → CRM fields for the importer. Returns
+  // Map spreadsheet columns → CRM fields for the importer. bizVocab (the
+  // resolved business profile's vocabulary block) is threaded in the same way
+  // buildSystemPrompt does it, so the prompt speaks the team's own language —
+  // the vocab block itself names the business. Returns
   // { mapping:[fieldOrEmpty per column], model } or null on failure.
-  async mapImport(headers, sampleRows, products = []) {
-    const sys = `You map spreadsheet columns to a CRM's fields for an adhesive sales team in India. Output ONLY a single raw JSON object — no markdown, no code fences.
+  async mapImport(headers, sampleRows, products = [], bizVocab = '') {
+    let sys = `You map spreadsheet columns to a CRM's fields for a sales team in India. Output ONLY a single raw JSON object — no markdown, no code fences.
 
 CRM FIELDS and their meaning:
 - factory_number: a short alphanumeric party/lead code (e.g. M277, F12, D5).
@@ -288,6 +301,7 @@ RULES:
 - Return exactly one entry per column, in the same order.
 
 Return ONLY: {"mapping": ["field-or-empty", ...], "notes": ""}`;
+    if (bizVocab) sys += '\n\n' + bizVocab;
 
     const productHint = products && products.length
       ? `\n\nKNOWN PRODUCTS (helps recognise a product column): ${products.slice(0, 60).join(', ')}.`
@@ -403,6 +417,12 @@ async function buildCRMContext(cleanedText, teamId, profilePromise) {
 function buildClarifyQuestions(profile) {
   const p = profile || resolveBusinessProfile('factory');
   const entityLower = p.entity.toLowerCase();
+  // Stage options must stay canonical-VALUED — the tapped option flows back as
+  // free text through /ai/clarify and is re-parsed as a stage string, so the
+  // canonical name has to be present. When this profile relabels a stage, show
+  // the label in parentheses ('Sample Sent (Samples Given)'): unambiguous, and
+  // factory (no relabels) renders byte-identical to the original options.
+  const stageOpt = s => (p.stages && p.stages[s] && p.stages[s] !== s) ? `${s} (${p.stages[s]})` : s;
   return {
     factory_number:   { q: `What is the ${entityLower} number for this lead?`, why: `The ${entityLower} number is our primary identifier — I couldn't find a clear one in your message.` },
     factory_name:     { q: `What is the ${entityLower} or business name?`, why: 'I couldn\'t identify a clear company name in your message.' },
@@ -410,7 +430,7 @@ function buildClarifyQuestions(profile) {
     items:            { q: 'What product and quantity are we talking about?', why: 'The product details weren\'t clear enough for me to extract accurately.' },
     lead_type:        { q: 'How hot is this lead — Hot, Warm, or Cold?', why: 'I couldn\'t determine the lead temperature from your message.', options: ['Hot', 'Warm', 'Cold'] },
     follow_up:        { q: 'When should we follow up on this lead?', why: 'No follow-up date was mentioned.', options: ['Tomorrow', 'Next Week', 'In 2 Weeks'] },
-    stage:            { q: 'What stage is this lead at?', why: 'The sales stage wasn\'t clearly mentioned.', options: ['New Lead', 'Sample Sent', 'Quotation', 'Negotiation', 'Order Won'] },
+    stage:            { q: 'What stage is this lead at?', why: 'The sales stage wasn\'t clearly mentioned.', options: ['New Lead', 'Sample Sent', 'Quotation', 'Negotiation', 'Order Won'].map(stageOpt) },
   };
 }
 
@@ -567,14 +587,17 @@ router.post('/import/ai-map', authMiddleware, async (req, res, next) => {
   if (!headers.length) return res.status(400).json({ error: 'headers required' });
   if (headers.length > 60) return res.status(400).json({ error: 'Too many columns for AI mapping' });
   try {
-    // Products in the caller's context help the AI recognise a product column.
-    let products = [];
-    try {
-      const teamId = parseInt(req.body?.teamId, 10) || null;
-      products = (await db.getProductsForContext(req.user.username, teamId)).map(p => p.name);
-    } catch (_) {}
+    const teamId = parseInt(req.body?.teamId, 10) || null;
+    // Products in the caller's context help the AI recognise a product column;
+    // the business profile (cached) primes the prompt with this team's own
+    // vocabulary. Independent lookups, same error tolerance as before.
+    const [products, profile] = await Promise.all([
+      db.getProductsForContext(req.user.username, teamId)
+        .then(list => list.map(p => p.name)).catch(() => []),
+      resolveBusinessProfileFor(req.user.username, teamId),
+    ]);
 
-    const result = await gemini.mapImport(headers, rows, products);
+    const result = await gemini.mapImport(headers, rows, products, businessVocabPrompt(profile));
     if (!result) return res.status(502).json({ error: 'AI mapping is unavailable right now — map the columns manually.' });
 
     // Only accept known field names, and never let two columns claim the same field.
@@ -694,9 +717,13 @@ router.post('/ai/assistant', authMiddleware, async (req, res, next) => {
   const { message, history = [], teamId } = req.body || {};
   if (!message || !String(message).trim()) return res.status(400).json({ error: 'message required' });
   try {
-    let leads = [];
-    try { leads = await leadsForRequest({ user: req.user, query: { teamId: teamId || '' } }); } catch (_) {}
-    const profile = await resolveBusinessProfileFor(req.user.username, teamId);
+    // Independent lookups — run concurrently instead of serially. Same
+    // per-call error tolerance as before: leads falls back to [], profile
+    // falls back to the factory profile (resolveBusinessProfileFor never throws).
+    const [leads, profile] = await Promise.all([
+      leadsForRequest({ user: req.user, query: { teamId: teamId || '' } }).catch(() => []),
+      resolveBusinessProfileFor(req.user.username, teamId),
+    ]);
     const sys = buildAssistantPromptBase(profile) +
       `\n\n${businessVocabPrompt(profile)}` +
       `\n\nTODAY: ${todayISTLabel()} (dd/MM/yyyy, IST).` +
@@ -1092,3 +1119,4 @@ module.exports = router;
 module.exports.localParse = localParse;
 module.exports.gemini = gemini;
 module.exports.CRM_SYSTEM_PROMPT = CRM_SYSTEM_PROMPT;
+module.exports.buildClarifyQuestions = buildClarifyQuestions;

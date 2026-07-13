@@ -78,7 +78,7 @@ const BUSINESS_TYPES = {
     terms: { code: 'Shop Code', name: 'Shop Name', person: 'Owner',
              product: 'Item', area: 'Locality' },
     stages: { 'New Lead': 'New Shop', 'Sample Required': 'Sample Asked', 'Sample Sent': 'Sample Given',
-              'Order Won': 'Order Won', 'Repeat Customer': 'Repeat Buyer' },
+              'Quotation': 'Rates Shared', 'Order Won': 'Order Won', 'Repeat Customer': 'Repeat Buyer' },
     example: 'Sharma General Store, Ramesh bhai, 9876543210 — 20 boxes soap, follow up Tuesday',
   },
   distribution: {
@@ -95,13 +95,13 @@ const BUSINESS_TYPES = {
     terms: { code: 'Site Code', name: 'Site / Builder Name', person: 'Site Contact',
              product: 'Material / Service', area: 'Location' },
     stages: { 'New Lead': 'New Enquiry', 'Sample Required': 'Site Visit Planned', 'Sample Sent': 'Site Visit Done',
-              'Quotation': 'Proposal Sent', 'Order Won': 'Deal Closed', 'Repeat Customer': 'Repeat Client' },
+              'Quotation': 'Proposal Sent', 'Order Won': 'Booking Done', 'Repeat Customer': 'Repeat Client' },
     example: 'Skyline Builders site at Baner, Anil, 9876543210 — cement + waterproofing quote, site visit Friday',
   },
   pharma: {
     icon: '💊', label: 'Pharma & Medical',
     entity: 'Doctor / Chemist', entityPlural: 'Doctors & Chemists',
-    terms: { code: 'Code', name: 'Doctor / Chemist Name', person: 'Contact Person',
+    terms: { code: 'Doctor Code', name: 'Doctor / Chemist Name', person: 'Contact Person',
              product: 'Brand / Product', area: 'Territory' },
     stages: { 'New Lead': 'New Doctor', 'Sample Required': 'Samples Asked', 'Sample Sent': 'Samples Given',
               'Quotation': 'Rate List Sent', 'Order Won': 'Prescribing', 'Repeat Customer': 'Regular Prescriber' },
@@ -128,10 +128,10 @@ const BUSINESS_TYPES = {
   education: {
     icon: '🎓', label: 'Education & Coaching',
     entity: 'Student', entityPlural: 'Students',
-    terms: { code: 'Enquiry #', name: 'Student / Parent Name', person: 'Parent / Guardian',
+    terms: { code: 'Enquiry No.', name: 'Student Name', person: 'Parent / Guardian',
              product: 'Course', area: 'Locality' },
     stages: { 'New Lead': 'New Enquiry', 'Sample Required': 'Demo Class Asked', 'Sample Sent': 'Demo Class Done',
-              'Quotation': 'Fees Quoted', 'Negotiation': 'Follow-up', 'Order Won': 'Admitted', 'Repeat Customer': 'Renewed' },
+              'Quotation': 'Fees Quoted', 'Negotiation': 'Counselling', 'Order Won': 'Admitted', 'Repeat Customer': 'Renewed' },
     example: 'Aarav Sharma, father Rajesh, 9876543210 — Class 10 maths enquiry, demo class Saturday',
   },
   hospitality: {
@@ -157,8 +157,8 @@ const BUSINESS_TYPES = {
     entity: 'Client', entityPlural: 'Clients',
     terms: { code: 'Client Code', name: 'Client Name', person: 'Contact Person',
              product: 'Product / Policy', area: 'Area' },
-    stages: { 'Sample Required': 'Documents Requested', 'Sample Sent': 'Proposal Shared',
-              'Quotation': 'Quote Shared', 'Order Won': 'Policy Issued', 'Repeat Customer': 'Renewal Client' },
+    stages: { 'New Lead': 'New Enquiry', 'Sample Required': 'Quote Shared', 'Sample Sent': 'Proposal Shared',
+              'Quotation': 'Documents Requested', 'Order Won': 'Policy Issued', 'Repeat Customer': 'Renewal Client' },
     example: 'Suresh Patel, 9876543210 — term insurance 1Cr quote, documents pending, call Wednesday',
   },
   custom: {
@@ -182,8 +182,20 @@ function resolveBizProfile(type, customJson) {
   if (key !== 'custom') return { key, ...base };
   let custom = {};
   try { custom = typeof customJson === 'string' ? JSON.parse(customJson || '{}') : (customJson || {}); } catch (_) {}
+  // JSON.parse('null')/'0'/'"x"' all succeed without throwing, so `custom` can
+  // still be non-object here (e.g. null) — guard before custom.entity etc. below.
+  if (!custom || typeof custom !== 'object' || Array.isArray(custom)) custom = {};
+  // Optional per-stage display renames (custom type only): keep only exact
+  // canonical stage keys with non-empty string values, capped at 30 chars —
+  // stageLabel() then picks them up everywhere automatically.
+  const stages = {};
+  const rawStages = (custom.stages && typeof custom.stages === 'object' && !Array.isArray(custom.stages)) ? custom.stages : {};
+  for (const canon of Object.keys(STAGE_NUMBERS)) {
+    const v = rawStages[canon];
+    if (typeof v === 'string' && v.trim()) stages[canon] = v.trim().slice(0, 30);
+  }
   return {
-    key, ...base,
+    key, ...base, stages,
     entity: String(custom.entity || base.entity).slice(0, 30),
     entityPlural: String(custom.entityPlural || custom.entity || base.entityPlural).slice(0, 30),
     terms: {
@@ -448,31 +460,36 @@ function showForgotPin(e) {
 function capturePendingInvite() {
   try {
     const params = new URLSearchParams(location.search);
-    const code = (params.get('join') || '').trim();
-    if (!code) return;
-    localStorage.setItem('crm_pending_join', code);
-    params.delete('join');
+    const joinCode = (params.get('join') || '').trim();
+    const refCode  = (params.get('ref')  || '').trim();
+    if (!joinCode && !refCode) return;
+    if (joinCode) { localStorage.setItem('crm_pending_join', joinCode); params.delete('join'); }
+    if (refCode)  { localStorage.setItem('crm_pending_ref',  refCode);  params.delete('ref'); }
     const qs = params.toString();
     history.replaceState({}, '', location.pathname + (qs ? '?' + qs : ''));
   } catch (_) {}
 }
 
 function pendingInviteCode() { return (localStorage.getItem('crm_pending_join') || '').trim(); }
+function pendingRefCode()    { return (localStorage.getItem('crm_pending_ref')  || '').trim(); }
 
 // Show/refresh the "you've been invited" note on both auth screens.
 function renderInviteBanners() {
   const code = pendingInviteCode();
+  const ref  = pendingRefCode();
   ['login-screen', 'register-screen'].forEach(id => {
     const scr = document.getElementById(id);
     if (!scr) return;
     let b = scr.querySelector('.invite-banner');
-    if (!code) { b?.remove(); return; }
+    if (!code && !ref) { b?.remove(); return; }
     if (!b) {
       b = document.createElement('div');
       b.className = 'invite-banner';
       scr.prepend(b);
     }
-    b.innerHTML = `🎟 <b>Team invite detected</b> — sign in or create an account and you'll join the team automatically.`;
+    b.innerHTML = code
+      ? `🎟 <b>Team invite detected</b> — sign in or create an account and you'll join the team automatically. New members get 2 months of Pro free.`
+      : `🎁 You've been invited — create an account and get 2 months of Dive Pro free.`;
   });
 }
 
@@ -1024,6 +1041,8 @@ function showRegisterScreen(e) {
   document.getElementById('login-screen').style.display    = 'none';
   document.getElementById('register-screen').style.display = '';
   document.getElementById('register-error').textContent    = '';
+  const inviteEl = document.getElementById('reg-invite');
+  if (inviteEl && !inviteEl.value) inviteEl.value = pendingRefCode() || pendingInviteCode();
   setTimeout(() => document.getElementById('reg-name')?.focus(), 60);
 }
 
@@ -1145,11 +1164,16 @@ async function handleRegister(e) {
   btn.disabled    = true;
   btn.textContent = 'Creating…';
   try {
-    const mobile = (document.getElementById('reg-mobile')?.value || '').trim();
+    const mobile     = (document.getElementById('reg-mobile')?.value || '').trim();
+    const inviteCode = (document.getElementById('reg-invite')?.value || '').trim();
+    // Computed once and reused for both calls below — the referral engine uses
+    // it (server-side) to skip referrer credit when a signup is from the
+    // referrer's own device.
+    const fingerprint = getDeviceFingerprint();
     const regRes  = await fetch('/api/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, password, mobile }),
+      body: JSON.stringify({ name, password, mobile, inviteCode, fingerprint }),
     });
     const regData = await regRes.json();
     if (!regRes.ok) {
@@ -1166,7 +1190,6 @@ async function handleRegister(e) {
     }
 
     // Auto-login directly after registration
-    const fingerprint = getDeviceFingerprint();
     const deviceMeta  = getDeviceMeta();
     const loginRes  = await fetch('/api/auth/login', {
       method:  'POST',
@@ -1176,7 +1199,15 @@ async function handleRegister(e) {
     const loginData = await loginRes.json();
     if (!loginRes.ok) throw new Error(loginData.error || 'Login failed after registration');
     toast('Welcome ' + name + '! Account created.', 'success');
+    // Flag captured now (before the await below) so it survives the
+    // offerDeviceSetup → initApp chain; the referral toast fires right after
+    // that whole chain resolves, once the app has actually loaded.
+    const referralApplied = !!regData.referralApplied;
     await offerDeviceSetup(loginData);
+    if (referralApplied) {
+      localStorage.removeItem('crm_pending_ref');   // crm_pending_join is left alone — the team-join pipeline still needs it
+      toast('🎁 2 months of Dive Pro unlocked — welcome!', 'success');
+    }
   } catch (err) {
     errEl.textContent = (err instanceof TypeError && err.message.toLowerCase().includes('fetch'))
       ? 'Server is starting up, please try again in 30 seconds.'
@@ -1393,15 +1424,39 @@ function startAutoRefresh() {
   clearInterval(refreshLabelTimer);
   autoRefreshTimer = setInterval(async () => {
     try {
-      // A user whose join request was approved while they waited should see the
-      // team appear without a manual reload — cheap re-check while team-less.
-      if (state.role !== 'guest' && !(state.myTeams || []).length) {
-        await loadMyTeams();
-        if (state.myTeams.length) {
-          renderOrgSwitcher();
-          toast(`You've been added to ${state.myTeams[0].name}! 🎉`, 'success');
-        }
+      // Always resync team membership first (cheap single query). This is what
+      // carries an admin's Team Settings business-type/custom-term edit out to
+      // other members, and also catches a join-request approval that landed
+      // while the user was away. loadMyTeams() is blip-safe: on a transient
+      // fetch failure it returns early leaving state.myTeams (and
+      // state.activeOrgId) untouched, so a network hiccup can't silently yank
+      // the user back to Personal.
+      const wasTeamless  = state.role !== 'guest' && !(state.myTeams || []).length;
+      const activeBefore = (state.myTeams || []).find(t => String(t.id) === String(state.activeOrgId));
+      const profileBefore = JSON.stringify(activeBefore
+        ? [activeBefore.business_type, activeBefore.business_custom]
+        : [state.me && state.me.business_type, state.me && state.me.business_custom]);
+
+      await loadMyTeams();
+
+      // Team-less → now in a team: unchanged from before, just no longer
+      // gated behind the fetch itself (which now always runs).
+      let switcherDirty = false;
+      if (wasTeamless && state.myTeams.length) {
+        switcherDirty = true;
+        toast(`You've been added to ${state.myTeams[0].name}! 🎉`, 'success');
       }
+
+      // Did the active workspace's business profile change under us (e.g. an
+      // admin edited Team Settings)? Compare against the pre-fetch snapshot.
+      const activeAfter = (state.myTeams || []).find(t => String(t.id) === String(state.activeOrgId));
+      const profileAfter = JSON.stringify(activeAfter
+        ? [activeAfter.business_type, activeAfter.business_custom]
+        : [state.me && state.me.business_type, state.me && state.me.business_custom]);
+      const profileChanged = profileAfter !== profileBefore;
+      if (profileChanged) switcherDirty = true;
+      if (switcherDirty) renderOrgSwitcher();
+
       await Promise.all([loadLeads(), loadStats()]);
       lastRefreshed = new Date();
       // Don't re-render out from under the user mid-interaction: skip while a
@@ -1409,7 +1464,11 @@ function startAutoRefresh() {
       const busy = document.querySelector(
         '#modal-overlay:not(.hidden), #lead-detail-overlay, #stage-picker-overlay, #products-modal-overlay:not(.hidden)')
         || document.activeElement === document.getElementById('global-search');
-      if (LIVE_PAGES.includes(state.page) && !busy) renderPage(state.page);
+      // A business-profile change must repaint the CURRENT page even when it's
+      // not one of the LIVE_PAGES (Team/Workspace/Chat show these terms too) —
+      // but still never rip the UI out from under an open modal; if busy, this
+      // tick just skips the render and the next non-busy tick catches it.
+      if (!busy && (LIVE_PAGES.includes(state.page) || profileChanged)) renderPage(state.page);
     } catch (_) {}
   }, 60000);
 
@@ -1429,7 +1488,17 @@ function updateRefreshLabel() {
 function exportCSV() {
   const cols = ['factory_number','factory_name','person_in_charge','contact','product',
                  'quantity','rate','stage','follow_up','area','notes','last_updated'];
-  const header = [...cols, 'extra_contacts'].join(',');
+  // Header row speaks the active business's language for the term-mapped
+  // columns (so the file reads naturally AND re-imports auto-map via the
+  // business-term aliases). Factory stays byte-identical to the historic
+  // raw-key header. Stage VALUES stay canonical either way — machine-readable,
+  // and normImportStage round-trips them.
+  const TERM_COLS = { factory_number: 'code', factory_name: 'name', person_in_charge: 'person',
+                      product: 'product', area: 'area' };
+  const headerCell = c => (biz().key === 'factory' || !TERM_COLS[c])
+    ? c
+    : `"${String(T(TERM_COLS[c])).replace(/"/g, '""')}"`;
+  const header = [...cols.map(headerCell), 'extra_contacts'].join(',');
   const rows   = state.leads.map(l => {
     const base  = cols.map(c => `"${String(l[c] || '').replace(/"/g, '""')}"`).join(',');
     const extra = (l.contacts || []).slice(1).map(c => `${c.person_name}:${c.contact}`).join(' | ');
@@ -1494,6 +1563,37 @@ const IMPORT_ALIASES = {
   lead_type:        ['leadtype','type','temperature','temp','priority'],
   created_by:       ['salesman','salesperson','salesrep','agent','addedby','createdby','executive','salesexecutive'],
 };
+
+// Extend IMPORT_ALIASES with every business type's own term labels (plus the
+// entity words) so headers like 'Shop Name' / 'Owner' / 'Locality' auto-map
+// instantly, no AI pass needed. Uses the same normalizer as importLoaded().
+// EXISTING aliases always win: any candidate a field already claims is
+// skipped, so the historic factory mapping never shifts (e.g. 'Factory #'
+// normalizes to 'factory', which must stay a factory_name alias — not become
+// a factory_number one). Static registry only — safe at module load.
+(() => {
+  const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const owned = new Set(Object.values(IMPORT_ALIASES).flat());
+  const push = (field, cand) => {
+    const n = norm(cand);
+    if (!n || owned.has(n)) return;
+    owned.add(n);
+    IMPORT_ALIASES[field].push(n);
+  };
+  for (const t of Object.values(BUSINESS_TYPES)) {
+    push('factory_number',   t.terms.code);
+    push('factory_name',     t.terms.name);
+    push('person_in_charge', t.terms.person);
+    push('product',          t.terms.product);
+    push('area',             t.terms.area);
+    // Entity words double as name-column headers — 'Shop', 'Shop Name', and
+    // each part of a split entity ('Doctor / Chemist' → doctor(name), chemist(name)).
+    for (const p of [t.entity, ...String(t.entity).split('/')]) {
+      push('factory_name', p);
+      push('factory_name', String(p) + ' name');
+    }
+  }
+})();
 
 let _import = null; // { name, headers, rows, mapping[] }
 let _importDefaultBucket = 'working';  // preselected import destination
@@ -1717,11 +1817,33 @@ function normImportLeadType(v) {
   return '';
 }
 
+// Reverse map of every display relabel across ALL business types (lowercased
+// label → canonical stage), so a hand-typed import value like 'New Shop' or
+// 'Samples Given' stores the canonical stage instead of silently dropping out
+// of Kanban/Reports. Safe to build once at load: it reads only the static
+// registry (labels verified unambiguous across types), never the active
+// profile. Canonical names always win first in normImportStage below.
+const STAGE_LABEL_TO_CANONICAL = (() => {
+  const map = {};
+  for (const t of Object.values(BUSINESS_TYPES)) {
+    for (const [canon, label] of Object.entries(t.stages || {})) map[String(label).toLowerCase()] = canon;
+  }
+  return map;
+})();
+
 function normImportStage(v) {
   const s = String(v || '').trim();
   if (!s) return { stage: '', stage_number: '' };
   const canonical = Object.keys(STAGE_NUMBERS).find(k => k.toLowerCase() === s.toLowerCase());
   if (canonical) return { stage: canonical, stage_number: STAGE_NUMBERS[canonical] };
+  // Not canonical — try display labels: the ACTIVE profile first (evaluated at
+  // call time, so custom-type stage renames are honoured), then the static
+  // all-types reverse map.
+  const low = s.toLowerCase();
+  const activeStages = biz().stages || {};
+  const fromActive = Object.keys(activeStages).find(k => String(activeStages[k]).toLowerCase() === low);
+  const mapped = fromActive || STAGE_LABEL_TO_CANONICAL[low];
+  if (mapped && STAGE_NUMBERS[mapped] !== undefined) return { stage: mapped, stage_number: STAGE_NUMBERS[mapped] };
   return { stage: s, stage_number: '' };
 }
 
@@ -2016,7 +2138,19 @@ function renderPage(page) {
   if (page === 'reports')    renderReports();
   if (page === 'team')       renderTeam();
   if (page === 'map')        renderMap();
-  if (page === 'chat')       chatFocusInput();
+  if (page === 'chat') {
+    chatFocusInput();
+    // Refresh the composer for whatever mode we're already in — command
+    // mode's chips/placeholder reference T('entity'), which goes stale if the
+    // workspace/business type switches while the user is sitting on this
+    // page. Placeholder only (never .value, so a half-typed message survives)
+    // and no call into the hello-greeting path, so _modeGreeted is untouched
+    // and the mode's greeting never repeats.
+    renderChatChips(aiMode);
+    const chatInputEl = document.getElementById('chat-input');
+    const modeInfo = chatModeInfo(aiMode);
+    if (chatInputEl && modeInfo?.ph) chatInputEl.placeholder = modeInfo.ph;
+  }
   if (page === 'workspace')  renderWorkspace();
   if (page === 'brochure')   renderBrochure();
   if (page === 'hub')        renderHub();
@@ -2028,24 +2162,45 @@ function renderPage(page) {
 //  a JPG / PDF, or share it straight to WhatsApp (native share sheet).
 //  All client-side; the brochure config persists in localStorage.
 // ============================================================
-const BROCHURE_KEY = 'crm_brochure';
+// One brochure PER WORKSPACE — the config is namespaced by the active org so
+// switching workspace can never export a flyer with another team's company
+// name / catalog. The pre-namespacing global key is migrated once, to the
+// first workspace that opens the page.
+const BROCHURE_LEGACY_KEY = 'crm_brochure';
+function brochureKey() { return `crm_brochure_${state.activeOrgId || 'personal'}`; }
 
 function defaultBrochure() {
   return { company: '', tagline: '', website: '', phone: '', email: '', address: '', accent: '#5E6AD2', items: [] };
 }
 function seedBrochure() {
   const b = defaultBrochure();
-  b.company = (state.myTeams && state.myTeams[0] && state.myTeams[0].name) || '';
+  // Seed the company from the ACTIVE team when there is one (a rep in team 2
+  // shouldn't get team 1's name), falling back to the historic first-team pick.
+  const activeTeam = (state.myTeams || []).find(t => String(t.id) === String(state.activeOrgId));
+  b.company = (activeTeam && activeTeam.name) || (state.myTeams && state.myTeams[0] && state.myTeams[0].name) || '';
   const cat = state.myProducts || [];
   b.items = cat.slice(0, 8).map(p => ({ product: p.name, rate: '', unit: '' }));
   if (!b.items.length) b.items = [{ product: '', rate: '', unit: '' }];
   return b;
 }
 function loadBrochureCfg() {
-  try { return JSON.parse(localStorage.getItem(BROCHURE_KEY)) || null; } catch { return null; }
+  try {
+    const own = JSON.parse(localStorage.getItem(brochureKey()));
+    if (own) return own;
+    // One-time migration: hand the legacy global brochure to the first
+    // workspace that opens the page (the one it was built in), then remove it
+    // so other workspaces seed fresh instead of inheriting the wrong company.
+    const legacy = JSON.parse(localStorage.getItem(BROCHURE_LEGACY_KEY));
+    if (legacy) {
+      localStorage.removeItem(BROCHURE_LEGACY_KEY);
+      try { localStorage.setItem(brochureKey(), JSON.stringify(legacy)); } catch (_) {}
+      return legacy;
+    }
+    return null;
+  } catch { return null; }
 }
 function saveBrochure() {
-  try { localStorage.setItem(BROCHURE_KEY, JSON.stringify(state.brochure)); } catch (_) {}
+  try { localStorage.setItem(brochureKey(), JSON.stringify(state.brochure)); } catch (_) {}
 }
 
 // Darken/lighten a #rrggbb hex by a fraction (used for the header gradient —
@@ -2060,7 +2215,13 @@ function shadeHex(hex, pct) {
 }
 
 function renderBrochure() {
-  if (!state.brochure) state.brochure = loadBrochureCfg() || seedBrochure();
+  // Reload whenever the workspace changed since the config was loaded —
+  // state.brochure must always be the ACTIVE workspace's brochure.
+  const orgKey = state.activeOrgId || 'personal';
+  if (!state.brochure || state._brochureOrg !== orgKey) {
+    state.brochure = loadBrochureCfg() || seedBrochure();
+    state._brochureOrg = orgKey;
+  }
   const b = state.brochure;
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
   set('br-company', b.company); set('br-tagline', b.tagline); set('br-website', b.website);
@@ -2658,16 +2819,18 @@ function buildTable(leads, cols, actions = true, selectable = false, rowClickFn 
   const colDefs = {
     factory_number:   ['#',          l => l.factory_number   || '—'],
     factory_name:     [T('entity'),  l => l.factory_name     || '—'],
-    person_in_charge: ['Person',     l => l.person_in_charge || '—'],
+    // Factory keeps its historic short header 'Person' (T('person') would be
+    // the longer 'Person in Charge'); every other business shows its own term.
+    person_in_charge: [biz().key === 'factory' ? 'Person' : T('person'), l => l.person_in_charge || '—'],
     contact:          ['Contact',    l => l.contact          || '—'],
-    product:          ['Product',    l => { const n = leadProductNames(l); if (!n.length) return '—';
+    product:          [T('product'), l => { const n = leadProductNames(l); if (!n.length) return '—';
                                             const shown = escHtml(n.slice(0, 2).join(', '));
                                             return n.length > 2 ? `${shown} <span class="more-badge" title="${escAttr(n.join(', '))}">+${n.length - 2}</span>` : shown; }],
     quantity:         ['Qty',        l => l.quantity         || '—'],
     rate:             ['Rate',       l => l.rate             || '—'],
     stage:            ['Stage',      l => stageBadge(l)],
     follow_up:        ['Follow Up',  l => l.follow_up        || '—'],
-    area:             ['Area',       l => l.area             || '—'],
+    area:             [T('area'),    l => l.area             || '—'],
     notes:            ['Notes',      l => l.notes            || '—'],
     last_updated:     ['Updated',    l => l.last_updated     || '—'],
     lead_type:        ['Type',       l => l.lead_type ? `${TYPE_EMOJI[l.lead_type] || ''} ${l.lead_type}` : '—'],
@@ -3710,7 +3873,7 @@ function viewLeadPhoto(src) {
   const ov = document.createElement('div');
   ov.className = 'photo-viewer';
   ov.onclick = () => ov.remove();
-  ov.innerHTML = `<img src="${escAttr(src)}" alt="${escAttr(T('entity'))} pic" /><button class="photo-viewer-close" aria-label="Close">✕</button>`;
+  ov.innerHTML = `<img src="${escAttr(src)}" alt="${escHtml(T('entity'))} pic" /><button class="photo-viewer-close" aria-label="Close">✕</button>`;
   document.body.appendChild(ov);
 }
 
@@ -4319,6 +4482,11 @@ async function openProfileModal() {
     document.getElementById('p-name').value = localStorage.getItem('crm_user') || '';
   }
   renderProfileBizFields();
+  const referBox = document.getElementById('profile-refer');
+  if (referBox) {
+    referBox.classList.toggle('hidden', state.role === 'guest');
+    if (state.role !== 'guest') loadReferralBlock('profile-refer', 'profile-refer-link', 'profile-refer-meta');
+  }
   document.getElementById('profile-modal-overlay').classList.remove('hidden');
 }
 
@@ -4337,6 +4505,7 @@ function renderProfileBizFields() {
   ).join('');
   let custom = {};
   try { custom = (state.me && state.me.business_custom) ? JSON.parse(state.me.business_custom) : {}; } catch (_) {}
+  if (!custom || typeof custom !== 'object' || Array.isArray(custom)) custom = {};   // JSON.parse('null') hazard
   const cBase = BUSINESS_TYPES.custom;
   document.getElementById('profile-biz-entity').value  = custom.entity  || cBase.entity;
   document.getElementById('profile-biz-code').value    = custom.code    || cBase.terms.code;
@@ -4344,6 +4513,18 @@ function renderProfileBizFields() {
   document.getElementById('profile-biz-person').value  = custom.person  || cBase.terms.person;
   document.getElementById('profile-biz-product').value = custom.product || cBase.terms.product;
   document.getElementById('profile-biz-area').value    = custom.area    || cBase.terms.area;
+  // Plural: blank means "derive from entity" (resolveBizProfile falls back to
+  // the entity word) — the placeholder just suggests the obvious form.
+  const pluralEl = document.getElementById('profile-biz-plural');
+  if (pluralEl) {
+    pluralEl.value = custom.entityPlural || '';
+    pluralEl.placeholder = (custom.entity || cBase.entity) + 's';
+  }
+  // Optional stage renames — blank input = keep the canonical name.
+  const stageOv = (custom.stages && typeof custom.stages === 'object' && !Array.isArray(custom.stages)) ? custom.stages : {};
+  document.querySelectorAll('#profile-biz-custom .profile-biz-stage').forEach(inp => {
+    inp.value = typeof stageOv[inp.dataset.stage] === 'string' ? stageOv[inp.dataset.stage] : '';
+  });
   toggleProfileBizCustom();
 }
 
@@ -4367,14 +4548,28 @@ async function handleProfileSubmit(e) {
   localStorage.setItem('crm_default_area', defaultArea);
   const businessType = document.getElementById('profile-biz')?.value || 'factory';
   const cBase = BUSINESS_TYPES.custom;
-  const businessCustom = businessType === 'custom' ? JSON.stringify({
-    entity:  (document.getElementById('profile-biz-entity').value  || '').trim() || cBase.entity,
-    code:    (document.getElementById('profile-biz-code').value    || '').trim() || cBase.terms.code,
-    name:    (document.getElementById('profile-biz-name').value    || '').trim() || cBase.terms.name,
-    person:  (document.getElementById('profile-biz-person').value  || '').trim() || cBase.terms.person,
-    product: (document.getElementById('profile-biz-product').value || '').trim() || cBase.terms.product,
-    area:    (document.getElementById('profile-biz-area').value    || '').trim() || cBase.terms.area,
-  }) : null;
+  let businessCustom = null;
+  if (businessType === 'custom') {
+    const bc = {
+      entity:  (document.getElementById('profile-biz-entity').value  || '').trim() || cBase.entity,
+      code:    (document.getElementById('profile-biz-code').value    || '').trim() || cBase.terms.code,
+      name:    (document.getElementById('profile-biz-name').value    || '').trim() || cBase.terms.name,
+      person:  (document.getElementById('profile-biz-person').value  || '').trim() || cBase.terms.person,
+      product: (document.getElementById('profile-biz-product').value || '').trim() || cBase.terms.product,
+      area:    (document.getElementById('profile-biz-area').value    || '').trim() || cBase.terms.area,
+    };
+    const plural = (document.getElementById('profile-biz-plural')?.value || '').trim();
+    if (plural) bc.entityPlural = plural.slice(0, 30);
+    // Stage renames: only non-blank entries, keys exactly canonical, ≤30 chars.
+    // Omitting `stages` entirely (all blank) clears any previous overrides.
+    const stages = {};
+    document.querySelectorAll('#profile-biz-custom .profile-biz-stage').forEach(inp => {
+      const v = (inp.value || '').trim();
+      if (v && STAGE_NUMBERS[inp.dataset.stage] !== undefined) stages[inp.dataset.stage] = v.slice(0, 30);
+    });
+    if (Object.keys(stages).length) bc.stages = stages;
+    businessCustom = JSON.stringify(bc);
+  }
   try {
     const result = await apiFetch('/api/users/me/profile', {
       method: 'PATCH',
@@ -4446,7 +4641,7 @@ function renderContactsEditor(contacts) {
   const rows = (contacts && contacts.length)
     ? contacts.map(c => ({ person_name: c.person_name || '', contact: c.contact || '', designation: c.designation || '' }))
     : [{ person_name: '', contact: '', designation: '' }];
-  const personPh = escAttr(T('person'));
+  const personPh = escHtml(T('person'));
   editor.innerHTML = rows.map((c, i) => `
     <div class="contact-row" data-idx="${i}">
       <input type="text" class="c-name" placeholder="${personPh}" value="${escAttr(c.person_name)}" />
@@ -4464,7 +4659,7 @@ function addContactRow() {
   div.className = 'contact-row';
   div.dataset.idx = idx;
   div.innerHTML = `
-    <input type="text" class="c-name" placeholder="${escAttr(T('person'))}" value="" />
+    <input type="text" class="c-name" placeholder="${escHtml(T('person'))}" value="" />
     <input type="tel" class="c-phone" placeholder="Phone" value="" />
     <input type="text" class="c-desig" placeholder="Role (optional)" value="" />
     <button type="button" class="remove-contact" onclick="removeContactRow(this)">✕</button>`;
@@ -4569,7 +4764,10 @@ function collectItems() {
 }
 
 function openAddModal() {
-  document.getElementById('modal-title').textContent = 'Add Lead';
+  // Factory keeps the historic 'Add Lead'; other businesses say their entity
+  // word ('Add Shop', 'Add Student', …). textContent → safe for custom terms.
+  document.getElementById('modal-title').textContent =
+    biz().key === 'factory' ? 'Add Lead' : 'Add ' + T('entity');
   document.getElementById('f-row').value = '';
   FIELDS.forEach(f => {
     const el = document.getElementById('f-' + f);
@@ -4595,7 +4793,8 @@ function openAddModal() {
 function openEditModal(rowIndex) {
   const lead = state.leads.find(l => String(l.rowIndex) === String(rowIndex));
   if (!lead) return;
-  document.getElementById('modal-title').textContent = 'Edit Lead';
+  document.getElementById('modal-title').textContent =
+    biz().key === 'factory' ? 'Edit Lead' : 'Edit ' + T('entity');
   document.getElementById('f-row').value = rowIndex;
   // "Save to" is an add-time choice only — a lead's team isn't changed from here.
   const destSection = document.getElementById('modal-dest-section');
@@ -5469,7 +5668,12 @@ function wireEvents() {
 async function loadMyTeams() {
   if (state.role === 'guest') { state.myTeams = []; return; }
   try { state.myTeams = await apiFetch('/api/my/teams'); }
-  catch (_) { state.myTeams = []; }
+  // Blip-safe: this now runs every 60s from the auto-refresh tick, so a
+  // transient network failure must NOT wipe state.myTeams — leave it as-is
+  // and skip the stale-org guard + applyDefaultWorkspace below (they'd
+  // otherwise misread the empty array as "no teams" and yank the user back
+  // to Personal / reset their workspace on a blip).
+  catch (_) { return; }
   // Drop a saved org the user is no longer part of
   if (state.activeOrgId && !state.myTeams.some(t => String(t.id) === String(state.activeOrgId))) {
     state.activeOrgId = '';
@@ -5483,17 +5687,18 @@ async function loadMyTeams() {
 //    every salesperson's data — a single team would hide leads entered elsewhere.
 //  • Salespeople who belong to a team default into it, so their new leads merge
 //    into the shared team pool. Their solo leads stay reachable under "Personal".
-// The admin reset fires ONCE per sign-in — loadMyTeams() now also runs
-// mid-session (workspace visits, joins, leaves) and must not yank an admin out
-// of a team they deliberately switched into.
+// BOTH defaults fire ONCE per sign-in — loadMyTeams() now runs mid-session
+// (workspace visits, joins/leaves, and the 60s auto-refresh tick) and must not
+// yank anyone out of a workspace they deliberately chose: neither an admin who
+// switched into a team, nor a salesperson who explicitly switched to Personal
+// (which would otherwise snap back to their first team within a minute).
 let _defaultWorkspaceApplied = false;
 function applyDefaultWorkspace() {
+  if (_defaultWorkspaceApplied) return;
+  _defaultWorkspaceApplied = true;
   if (state.role === 'admin') {
-    if (!_defaultWorkspaceApplied) {
-      _defaultWorkspaceApplied = true;
-      state.activeOrgId = '';
-      localStorage.removeItem('crm_org_id');
-    }
+    state.activeOrgId = '';
+    localStorage.removeItem('crm_org_id');
     return;
   }
   if (!state.activeOrgId && state.myTeams.length) {
@@ -5618,6 +5823,9 @@ function renderPlanBadge() {
   if (p.isPro && p.kind === 'trial') {
     el.className = 'plan-badge is-trial';
     el.innerHTML = `<span>✦ Pro trial</span><small>${p.daysLeft} day${p.daysLeft === 1 ? '' : 's'} left</small>`;
+  } else if (p.isPro && p.kind === 'referral') {
+    el.className = 'plan-badge is-trial';
+    el.innerHTML = `<span>✦ Pro · gift</span><small>${p.daysLeft} day${p.daysLeft === 1 ? '' : 's'} left</small>`;
   } else if (p.isPro) {
     el.className = 'plan-badge is-pro';
     el.innerHTML = `<span>✦ Pro</span><small>${p.daysLeft != null ? p.daysLeft + 'd left' : 'active'}</small>`;
@@ -5636,6 +5844,27 @@ function openUpgradeModal(feature) {
     : (p.plan === 'lite' && p.proUntil ? `<div class="up-trial up-ended">Your Pro trial has ended.</div>` : '');
   const featLine = (typeof feature === 'string' && feature)
     ? `<div class="up-feat">🔒 <b>${escHtml(feature)}</b> is a Pro feature.</div>` : '';
+  // Team owners/admins/managers of the active workspace can pay for the whole
+  // team's seats, not just themselves — offer both options instead of one.
+  const team = state.activeOrgId ? (state.myTeams || []).find(t => String(t.id) === String(state.activeOrgId)) : null;
+  const canTeamPay = !!(team && ['owner', 'admin', 'manager'].includes(team.role));
+  const payHtml = canTeamPay
+    ? `<div class="up-pay-row">
+         <button class="btn btn-primary up-pay" onclick="startProCheckout('individual')">Pay ₹${PRICE_INDIVIDUAL}/mo — Individual</button>
+         <button class="btn btn-primary up-pay" onclick="startProCheckout('team')">Pay ₹${PRICE_TEAM_SEAT} × seats — Team</button>
+       </div>`
+    : `<button class="btn btn-primary up-pay" onclick="startProCheckout('individual')">Pay online · ₹${PRICE_INDIVIDUAL}/mo</button>`;
+  // "Invite & earn" — guests have no account to share a code from, so they never see it.
+  const referHtml = state.role === 'guest' ? '' : `
+      <div class="up-refer" id="up-refer">
+        <div class="up-refer-title">🎁 Invite &amp; earn</div>
+        <p class="up-refer-sub">Friends who sign up with your link get 2 months of Pro free — you get +14 days per signup (max 10/yr).</p>
+        <div class="up-refer-row">
+          <input type="text" id="up-refer-link" class="up-refer-input" readonly value="Loading your link…" onclick="this.select()" />
+          <button type="button" class="btn btn-ghost btn-sm" onclick="copyReferLink('up-refer-link')">Copy</button>
+        </div>
+        <div class="up-refer-meta" id="up-refer-meta"></div>
+      </div>`;
   const html = `
   <div class="up-overlay" id="upgrade-modal" onclick="if(event.target===this)closeUpgradeModal()">
     <div class="up-box" role="dialog" aria-modal="true" aria-label="Upgrade to Pro">
@@ -5666,13 +5895,14 @@ function openUpgradeModal(feature) {
         <li>Leaderboard &amp; monthly targets</li>
       </ul>
       <div class="up-actions">
-        <button class="btn btn-primary up-pay" onclick="startProCheckout()">Pay online · ₹${PRICE_INDIVIDUAL}/mo</button>
+        ${payHtml}
         <div class="up-code">
           <input id="up-code-input" placeholder="Have an access code?" autocomplete="off" />
           <button class="btn btn-secondary" onclick="redeemProCode()">Redeem</button>
         </div>
         <div id="up-code-msg" class="up-msg"></div>
       </div>
+      ${referHtml}
     </div>
   </div>`;
   const wrap = document.createElement('div');
@@ -5680,6 +5910,7 @@ function openUpgradeModal(feature) {
   document.body.appendChild(wrap.firstElementChild);
   document.addEventListener('keydown', upEscHandler);
   setTimeout(() => document.getElementById('up-code-input')?.focus(), 120);
+  if (state.role !== 'guest') loadReferralBlock('up-refer', 'up-refer-link', 'up-refer-meta');
 }
 function upEscHandler(e) { if (e.key === 'Escape') closeUpgradeModal(); }
 function closeUpgradeModal() {
@@ -5687,9 +5918,90 @@ function closeUpgradeModal() {
   document.removeEventListener('keydown', upEscHandler);
 }
 
-// Phase 2 hook — the real Razorpay checkout wires in here once keys are set.
-function startProCheckout() {
-  toast('Online payment is being set up — use an access code for now, or ask the admin for one.', 'info');
+// ── Razorpay checkout ────────────────────────────────────────
+// Lazily loads the Razorpay checkout script at most once — the promise itself
+// is cached (not just re-derived from the DOM) so concurrent callers share the
+// same in-flight load, and it's only ever requested once /api/pay/config says
+// payments are enabled.
+let _razorpayScriptPromise = null;
+function loadRazorpayScript() {
+  if (!_razorpayScriptPromise) {
+    _razorpayScriptPromise = new Promise((resolve, reject) => {
+      if (window.Razorpay) return resolve();
+      const el = document.createElement('script');
+      el.src = 'https://checkout.razorpay.com/v1/checkout.js';
+      el.onload  = () => resolve();
+      el.onerror = () => { _razorpayScriptPromise = null; reject(new Error('Could not load the payment library — check your connection.')); };
+      document.head.appendChild(el);
+    });
+  }
+  return _razorpayScriptPromise;
+}
+
+async function startProCheckout(plan) {
+  const chosenPlan = plan === 'team' ? 'team' : 'individual';
+  let cfg;
+  try { cfg = await apiFetch('/api/pay/config'); }
+  catch (_) { cfg = { enabled: false }; }
+  if (!cfg.enabled) {
+    toast("Online payment isn't set up yet — redeem an access code below, or contact support.", 'warning');
+    return;
+  }
+  try {
+    const { orderId, amount, currency, keyId, description } = await apiFetch('/api/pay/order', {
+      method: 'POST',
+      body: JSON.stringify({ plan: chosenPlan, teamId: chosenPlan === 'team' ? state.activeOrgId : undefined }),
+    });
+    await loadRazorpayScript();
+    new Razorpay({
+      key: keyId,
+      order_id: orderId,
+      amount, currency,
+      name: 'Dive',
+      description,
+      prefill: { name: localStorage.getItem('crm_user') || '' },
+      theme: { color: '#6366f1' },
+      handler: async (resp) => {
+        try {
+          await apiFetch('/api/pay/verify', { method: 'POST', body: JSON.stringify(resp) });
+          toast('✦ Pro active — payment successful!', 'success');
+          await loadPlan();
+          closeUpgradeModal();
+        } catch (e) {
+          toast('Payment received but verification failed — contact support with your payment ID.', 'error');
+        }
+      },
+      modal: { ondismiss: () => toast('Payment cancelled') },
+    }).open();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+// Shared "invite & earn" populate: fetches the caller's referral link + credit
+// count and fills the given elements; hides the whole box on any error (e.g.
+// payments/referrals not configured yet). Used by both the upgrade modal and
+// the profile modal — guests never call this (no account to share a code from).
+async function loadReferralBlock(boxId, linkId, metaId) {
+  const box = document.getElementById(boxId);
+  if (!box) return;
+  box.classList.remove('hidden');
+  try {
+    const { code, creditedCount, cap } = await apiFetch('/api/pay/referral');
+    const linkEl = document.getElementById(linkId);
+    if (linkEl) linkEl.value = `${location.origin}/?ref=${encodeURIComponent(code)}`;
+    const metaEl = document.getElementById(metaId);
+    if (metaEl) metaEl.textContent = `${creditedCount}/${cap} credited this year`;
+  } catch (_) {
+    box.classList.add('hidden');
+  }
+}
+
+function copyReferLink(inputId) {
+  const el = document.getElementById(inputId);
+  if (!el || !el.value) return;
+  navigator.clipboard?.writeText(el.value);
+  toast('Invite link copied!');
 }
 
 async function redeemProCode() {
@@ -5950,9 +6262,12 @@ function hubDrawReminder(tasks) {
 function hubTaskCard(t) {
   const overdue = t.status !== 'done' && t.due_at && t.due_at < hubToday();
   const chips = [];
+  // Lead-reference chip wears the hub team's own business icon (🏪 for a
+  // retail team, 🎓 for coaching, …) — 🏭 only as the fallback.
+  const bizIcon = (BUSINESS_TYPES[hubTeamObj()?.business_type] || BUSINESS_TYPES.factory).icon || '🏭';
   if (t.assignee)   chips.push(`<span class="hub-chip">👤 ${escHtml(t.assignee)}</span>`);
   if (t.due_at)     chips.push(`<span class="hub-chip ${overdue ? 'is-overdue' : ''}">📅 ${escHtml(t.due_at)}</span>`);
-  if (t.lead_label) chips.push(`<span class="hub-chip">🏭 ${escHtml(t.lead_label)}</span>`);
+  if (t.lead_label) chips.push(`<span class="hub-chip">${bizIcon} ${escHtml(t.lead_label)}</span>`);
   let moves = '';
   if (t.status === 'open')  moves = `<button onclick="hubMoveTask(${t.id},'doing')">Start ▸</button><button onclick="hubMoveTask(${t.id},'done')">✓</button>`;
   if (t.status === 'doing') moves = `<button onclick="hubMoveTask(${t.id},'open')">◂ Back</button><button onclick="hubMoveTask(${t.id},'done')">✓ Done</button>`;
@@ -6816,6 +7131,7 @@ function wsRenderOverview() {
         <button class="btn btn-ghost btn-sm" onclick="wsCopyLink()">Copy Link</button>
         ${['owner','admin'].includes(t.role) ? `<button class="btn btn-ghost btn-sm" onclick="wsRegenInvite()">Regenerate</button>` : ''}
         <div class="ws-invite-link" id="ws-inv-link" style="font-size:11px;color:var(--text-muted);margin-top:8px;word-break:break-all">${escHtml(link)}</div>
+        <p style="font-size:11.5px;color:var(--text-muted);margin-top:8px">🎁 New members who join with this invite get 2 months of Dive Pro free.</p>
       </div>
     </div>`;
 }
@@ -7211,6 +7527,8 @@ function wsRenderSettings() {
   const bizType = BUSINESS_KEYS.includes(t.business_type) ? t.business_type : 'factory';
   let bizCustom = {};
   try { bizCustom = t.business_custom ? JSON.parse(t.business_custom) : {}; } catch (_) {}
+  if (!bizCustom || typeof bizCustom !== 'object' || Array.isArray(bizCustom)) bizCustom = {};   // JSON.parse('null') hazard
+  const stageOv = (bizCustom.stages && typeof bizCustom.stages === 'object' && !Array.isArray(bizCustom.stages)) ? bizCustom.stages : {};
   const cBase = BUSINESS_TYPES.custom;
   document.getElementById('ws-panel-settings').innerHTML = `
     <div class="ws-search-wrap">
@@ -7245,28 +7563,38 @@ function wsRenderSettings() {
         <div id="ws-set-biz-custom" class="biz-custom-grid ${bizType === 'custom' ? '' : 'hidden'}">
           <div class="form-group">
             <label>What do you call a lead?</label>
-            <input id="ws-set-biz-entity" type="text" class="ws-input" value="${escAttr(bizCustom.entity || cBase.entity)}" />
+            <input id="ws-set-biz-entity" type="text" class="ws-input" value="${escHtml(bizCustom.entity || cBase.entity)}" />
+          </div>
+          <div class="form-group">
+            <label>Plural (e.g. Members)</label>
+            <input id="ws-set-biz-plural" type="text" class="ws-input" placeholder="${escHtml((bizCustom.entity || cBase.entity) + 's')}" value="${escHtml(bizCustom.entityPlural || '')}" />
           </div>
           <div class="form-group">
             <label>Code field</label>
-            <input id="ws-set-biz-code" type="text" class="ws-input" value="${escAttr(bizCustom.code || cBase.terms.code)}" />
+            <input id="ws-set-biz-code" type="text" class="ws-input" value="${escHtml(bizCustom.code || cBase.terms.code)}" />
           </div>
           <div class="form-group">
             <label>Name field</label>
-            <input id="ws-set-biz-name" type="text" class="ws-input" value="${escAttr(bizCustom.name || cBase.terms.name)}" />
+            <input id="ws-set-biz-name" type="text" class="ws-input" value="${escHtml(bizCustom.name || cBase.terms.name)}" />
           </div>
           <div class="form-group">
             <label>Person field</label>
-            <input id="ws-set-biz-person" type="text" class="ws-input" value="${escAttr(bizCustom.person || cBase.terms.person)}" />
+            <input id="ws-set-biz-person" type="text" class="ws-input" value="${escHtml(bizCustom.person || cBase.terms.person)}" />
           </div>
           <div class="form-group">
             <label>Product field</label>
-            <input id="ws-set-biz-product" type="text" class="ws-input" value="${escAttr(bizCustom.product || cBase.terms.product)}" />
+            <input id="ws-set-biz-product" type="text" class="ws-input" value="${escHtml(bizCustom.product || cBase.terms.product)}" />
           </div>
           <div class="form-group">
             <label>Area field</label>
-            <input id="ws-set-biz-area" type="text" class="ws-input" value="${escAttr(bizCustom.area || cBase.terms.area)}" />
+            <input id="ws-set-biz-area" type="text" class="ws-input" value="${escHtml(bizCustom.area || cBase.terms.area)}" />
           </div>
+          <p style="grid-column:1/-1;font-size:12px;color:var(--text-muted);margin:8px 0 0;line-height:1.4">Rename pipeline stages (optional — blank keeps the standard name)</p>
+          ${Object.keys(STAGE_NUMBERS).map(canon => `
+          <div class="form-group">
+            <label>${escHtml(canon)}</label>
+            <input type="text" class="ws-input ws-set-biz-stage" data-stage="${escHtml(canon)}" placeholder="${escHtml(canon)}" value="${escHtml(typeof stageOv[canon] === 'string' ? stageOv[canon] : '')}" />
+          </div>`).join('')}
         </div>
       </div>
       <p id="ws-set-err" class="login-error"></p>
@@ -7293,14 +7621,28 @@ async function wsSaveSettings() {
   if (name.length < 2)   { errEl.textContent = 'Name too short'; return; }
   if (handle.length < 3) { errEl.textContent = 'Handle too short'; return; }
   const cBase = BUSINESS_TYPES.custom;
-  const businessCustom = businessType === 'custom' ? JSON.stringify({
-    entity:  (document.getElementById('ws-set-biz-entity').value  || '').trim() || cBase.entity,
-    code:    (document.getElementById('ws-set-biz-code').value    || '').trim() || cBase.terms.code,
-    name:    (document.getElementById('ws-set-biz-name').value    || '').trim() || cBase.terms.name,
-    person:  (document.getElementById('ws-set-biz-person').value  || '').trim() || cBase.terms.person,
-    product: (document.getElementById('ws-set-biz-product').value || '').trim() || cBase.terms.product,
-    area:    (document.getElementById('ws-set-biz-area').value    || '').trim() || cBase.terms.area,
-  }) : null;
+  let businessCustom = null;
+  if (businessType === 'custom') {
+    const bc = {
+      entity:  (document.getElementById('ws-set-biz-entity').value  || '').trim() || cBase.entity,
+      code:    (document.getElementById('ws-set-biz-code').value    || '').trim() || cBase.terms.code,
+      name:    (document.getElementById('ws-set-biz-name').value    || '').trim() || cBase.terms.name,
+      person:  (document.getElementById('ws-set-biz-person').value  || '').trim() || cBase.terms.person,
+      product: (document.getElementById('ws-set-biz-product').value || '').trim() || cBase.terms.product,
+      area:    (document.getElementById('ws-set-biz-area').value    || '').trim() || cBase.terms.area,
+    };
+    const plural = (document.getElementById('ws-set-biz-plural')?.value || '').trim();
+    if (plural) bc.entityPlural = plural.slice(0, 30);
+    // Stage renames: only non-blank entries, keys exactly canonical, ≤30 chars.
+    // Omitting `stages` entirely (all blank) clears any previous overrides.
+    const stages = {};
+    document.querySelectorAll('#ws-set-biz-custom .ws-set-biz-stage').forEach(inp => {
+      const v = (inp.value || '').trim();
+      if (v && STAGE_NUMBERS[inp.dataset.stage] !== undefined) stages[inp.dataset.stage] = v.slice(0, 30);
+    });
+    if (Object.keys(stages).length) bc.stages = stages;
+    businessCustom = JSON.stringify(bc);
+  }
   try {
     await wsTeamApiFetch(`/api/teams/${ws.activeTeam.id}`, {
       method: 'PATCH',
@@ -7989,11 +8331,22 @@ function renderChatChips(mode) {
   if (!bar) return;
   const info = chatModeInfo(mode);
   if (!info?.chips) { // restore default understanding chips
-    bar.innerHTML = `
+    const base = `
       <button class="chat-chip chip-hot"  onclick="chatInsertChip('hot')">🔴 Hot</button>
       <button class="chat-chip chip-warm" onclick="chatInsertChip('warm')">🟡 Warm</button>
       <button class="chat-chip chip-cold" onclick="chatInsertChip('cold')">🔵 Cold</button>
-      <button class="chat-chip" onclick="chatInsertChip('follow up')">📅 Follow-up</button>
+      <button class="chat-chip" onclick="chatInsertChip('follow up')">📅 Follow-up</button>`;
+    // Product quick-chips: the workspace's own catalog when it has one; the
+    // legacy chemical set only for factory (fresh install stays unchanged);
+    // no product row at all for other businesses without a catalog.
+    const catalogNames = (state.myProducts || []).map(p => p && p.name).filter(Boolean).slice(0, 8);
+    let prodChips = '';
+    if (catalogNames.length) {
+      prodChips = `
+      <span class="chip-divider">|</span>` + catalogNames.map(n => `
+      <button class="chat-chip" onclick="chatInsertChip('${escAttr(n)}')">${escHtml(n)}</button>`).join('');
+    } else if (biz().key === 'factory') {
+      prodChips = `
       <span class="chip-divider">|</span>
       <button class="chat-chip" onclick="chatInsertChip('hotmelt')">Hotmelt</button>
       <button class="chat-chip" onclick="chatInsertChip('latex')">Latex</button>
@@ -8003,6 +8356,8 @@ function renderChatChips(mode) {
       <button class="chat-chip" onclick="chatInsertChip('mek')">MEK</button>
       <button class="chat-chip" onclick="chatInsertChip('pu adhesive')">PU Adhesive</button>
       <button class="chat-chip" onclick="chatInsertChip('silicon')">Silicon</button>`;
+    }
+    bar.innerHTML = base + prodChips;
     return;
   }
   bar.innerHTML = info.chips.map(([label, text]) =>
@@ -8247,7 +8602,8 @@ function aiEditAll() {
 }
 
 function openEditModalFromParsed(parsed) {
-  document.getElementById('modal-title').textContent = 'Edit Lead';
+  document.getElementById('modal-title').textContent =
+    biz().key === 'factory' ? 'Edit Lead' : 'Edit ' + T('entity');
   document.getElementById('f-row').value = aiSession?.existingRow || '';
   FIELDS.forEach(f => {
     const el = document.getElementById('f-' + f);

@@ -122,6 +122,7 @@ app.use('/api', require('./routes/leads'));
 app.use('/api', require('./routes/teams'));
 app.use('/api', require('./routes/users'));
 app.use('/api', require('./routes/ai'));
+app.use('/api', require('./routes/pay'));
 
 // ── Global error handler (must be last) ───────────────────────
 app.use(globalErrorHandler);

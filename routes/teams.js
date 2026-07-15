@@ -153,8 +153,20 @@ router.patch('/teams/:id/requests/:rid', authMiddleware, teamMemberMiddleware, t
     // would re-run addTeamMember (hardcoded 'sales') and silently demote a member
     // who has since been promoted.
     if (jr.status !== 'pending') return res.status(409).json({ error: 'Request already processed' });
-    await db.updateJoinRequest(jr.id, status, req.dbUser.id);
-    if (status === 'approved') await db.addTeamMember(req.teamId, jr.user_id, 'sales', 'active');
+    if (status === 'approved') {
+      // Don't let approving a stale pending request override the requester's
+      // CURRENT membership: a suspended member must stay suspended, and a member
+      // who was promoted since requesting must keep their role (addTeamMember
+      // hardcodes 'sales'/'active', so only add when they aren't already active).
+      const cur = await db.getTeamMember(req.teamId, jr.user_id);
+      if (cur && cur.status === 'suspended') {
+        return res.status(409).json({ error: 'That member is suspended — lift the suspension from the Members panel instead.' });
+      }
+      await db.updateJoinRequest(jr.id, status, req.dbUser.id);
+      if (!cur || cur.status !== 'active') await db.addTeamMember(req.teamId, jr.user_id, 'sales', 'active');
+    } else {
+      await db.updateJoinRequest(jr.id, status, req.dbUser.id);
+    }
     res.json({ success: true });
   } catch (err) { next(err); }
 });

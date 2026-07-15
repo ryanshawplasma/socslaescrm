@@ -244,10 +244,14 @@ router.post('/auth/pin-unlock', loginLimiter, async (req, res, next) => {
   const { refreshToken, pin, deviceId } = req.body || {};
   if (!refreshToken || !pin || !deviceId) return res.status(400).json({ error: 'refreshToken, pin, and deviceId required' });
   try {
-    const { sessionId, newRaw } = await db.rotateRefreshToken(refreshToken);
-    const session = await db.getSessionById(sessionId);
-    if (!session || session.revoked) return res.status(401).json({ error: 'Session invalid' });
-    const u = await db.getUserById(session.user_id);
+    // Resolve the session WITHOUT consuming the refresh token — otherwise a wrong
+    // PIN rotates (burns) the token, and the client's next retry with the same
+    // token looks like token-reuse and revokes the whole session. Rotate ONLY
+    // after the PIN actually verifies (below).
+    const rt = await db.getActiveRefreshSession(refreshToken);
+    if (!rt) return res.status(401).json({ error: 'Session invalid' });
+    const sessionId = rt.session_id;
+    const u = await db.getUserById(rt.user_id);
     if (!u) return res.status(401).json({ error: 'User not found' });
     const result = await db.verifyDevicePin(u.id, deviceId, pin);
     if (!result.ok) {
@@ -262,6 +266,8 @@ router.post('/auth/pin-unlock', loginLimiter, async (req, res, next) => {
         getIP(req), req.headers['user-agent'] || '', sessionId, deviceId);
       return res.status(401).json({ error: `Wrong PIN. ${result.attemptsLeft} attempt${result.attemptsLeft !== 1 ? 's' : ''} remaining.` });
     }
+    // PIN verified — NOW rotate the refresh token and mint the access token.
+    const { newRaw } = await db.rotateRefreshToken(refreshToken);
     const accessToken = signAccessToken(u.id, u.display_name, u.role, sessionId);
     await db.logSecurity(u.id, 'pin_unlock', {}, getIP(req), req.headers['user-agent'] || '', sessionId, deviceId);
     res.json({ accessToken, refreshToken: newRaw, username: u.display_name, role: u.role, userId: u.id });
@@ -501,7 +507,16 @@ router.post('/webauthn/auth-verify', async (req, res, next) => {
     cred.counter = verification.authenticationInfo.newCounter;
     await db.saveWebAuthnCred(user.id, cred);
     cache.remove(`wa_auth_${sessionId}`);
-    res.json({ token: signToken(user.display_name, user.role), role: user.role, username: user.display_name });
+    // Mint a FULL session (like password login) so a biometric login is
+    // 'remembered' — with a refresh token, not just a 15-minute access token that
+    // silently logs the user out mid-session.
+    const ip = getIP(req), ua = req.headers['user-agent'] || '';
+    const session = await db.createSession(user.id, null, ip, ua);
+    const accessToken  = signAccessToken(user.id, user.display_name, user.role, session.id);
+    const refreshToken = await db.issueRefreshToken(session.id);
+    await db.logSecurity(user.id, 'login_success', { method: 'biometric' }, ip, ua, session.id, null);
+    res.json({ accessToken, refreshToken, token: accessToken, role: user.role,
+      username: user.display_name, userId: user.id, sessionId: session.id });
   } catch (err) { next(err); }
 });
 

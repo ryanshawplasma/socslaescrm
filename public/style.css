@@ -4248,8 +4248,10 @@ tr.row-cold:hover td { background: #dbeafe; }
 body.bubble-dragging .ai-bubble-trash { opacity: 1; transform: translateX(-50%) translateY(0); }
 .ai-bubble-trash.hot { background: var(--danger); border-style: solid; transform: translateX(-50%) translateY(0) scale(1.12); }
 
-/* On the chat page the bubble is redundant (you're already there) — tuck it away. */
-#content.chat-mode ~ .ai-bubble, .page-chat-active .ai-bubble { display: none; }
+/* On the chat page the bubble is redundant (you're already there). It's hidden
+   via JS (navigate() adds .hidden to #ai-bubble on chat); this CSS backstop uses
+   :has() because #ai-bubble is a sibling of #main, not of #content. */
+#app:has(#content.chat-mode) .ai-bubble { display: none; }
 
 /* ══════════════════════════════════════════════════════════
    PLAN / PRO — sidebar badge, upgrade modal, dev code panel
@@ -4745,11 +4747,19 @@ p, .today-subline, .fu-note-txt, .ld-notes-view, .lead-card-line, .up-sub, .stat
    @property is unsupported; disabled under reduced-motion. */
 @property --dive-sheen { syntax: '<percentage>'; inherits: false; initial-value: 0%; }
 @media (prefers-reduced-motion: no-preference) {
-  .nav-pill-pro, .nav-pill {
-    background-image: linear-gradient(100deg,
-      transparent 0 calc(var(--dive-sheen)),
-      rgba(255,255,255,.35) calc(var(--dive-sheen) + 6%),
-      transparent calc(var(--dive-sheen) + 12%));
+  /* Sheen sweep LAYERED OVER each pill's own brand gradient (the sheen gradient
+     first, the base fill second) — a bare background-image here would replace the
+     fill and render the pills near-invisible. */
+  .nav-pill {
+    background-image:
+      linear-gradient(100deg, transparent 0 calc(var(--dive-sheen)), rgba(255,255,255,.35) calc(var(--dive-sheen) + 6%), transparent calc(var(--dive-sheen) + 12%)),
+      linear-gradient(135deg, var(--primary), var(--primary-lt));
+    animation: dive-sheen 5.5s var(--ease-spring) infinite;
+  }
+  .nav-pill-pro {
+    background-image:
+      linear-gradient(100deg, transparent 0 calc(var(--dive-sheen)), rgba(255,255,255,.35) calc(var(--dive-sheen) + 6%), transparent calc(var(--dive-sheen) + 12%)),
+      linear-gradient(90deg, #F5A623, #F76B1C);
     animation: dive-sheen 5.5s var(--ease-spring) infinite;
   }
   @keyframes dive-sheen { 0%,60% { --dive-sheen: -15%; } 100% { --dive-sheen: 115%; } }

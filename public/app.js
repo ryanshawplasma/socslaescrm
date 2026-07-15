@@ -640,6 +640,7 @@ function applyRoleUI() {
 // applyDefaultWorkspace() only sets when *empty* — would silently keep
 // pointing at the previous account's team for the entire next session.
 function resetAccountScopedState() {
+  _sessionEpoch++;   // invalidate any lead-load still in flight (see loadLeads)
   localStorage.removeItem('crm_org_id');
   localStorage.removeItem('ws_team_id');
   localStorage.removeItem('crm_lead_dest');
@@ -931,6 +932,12 @@ async function submitPinUnlock() {
 // ── Post-login device setup ───────────────────────────────────
 async function offerDeviceSetup(loginData) {
   const { deviceId, deviceTrusted, hasPIN, username, accessToken, refreshToken } = loginData;
+  // A DIFFERENT account signing in on this device (no explicit logout — e.g. a
+  // session-expiry re-login as someone else) must not inherit the previous
+  // account's workspace scope: a stale crm_org_id would make the first
+  // loadLeads() 403. Resetting also clears the previous user's cached leads.
+  const prevUser = localStorage.getItem('crm_user');
+  if (prevUser && prevUser.toLowerCase() !== String(username).toLowerCase()) resetAccountScopedState();
   storeTokens(accessToken, refreshToken);
   localStorage.setItem('crm_user',      username);
   localStorage.setItem('crm_last_user', username);   // remembered for next sign-in on this device
@@ -1407,11 +1414,18 @@ async function apiFetch(path, opts = {}) {
 function orgQuery() { return state.activeOrgId ? `?teamId=${encodeURIComponent(state.activeOrgId)}` : ''; }
 
 async function loadLeads()  {
+  // Guard against a load that outlives a logout/account-switch: if the session
+  // epoch changed while this request was in flight, discard the result so a
+  // stale response can't repopulate state or re-write the (just-cleared) cache
+  // onto a shared device.
+  const epoch = _sessionEpoch;
   const [leads] = await Promise.all([ apiFetch('/api/leads' + orgQuery()), loadLists(), loadProducts() ]);
+  if (epoch !== _sessionEpoch) return;
   state.leads = leads;
   state.stats = computeStats(leads);
   cacheLeads(leads);                 // keep the instant-open cache fresh
 }
+let _sessionEpoch = 0;
 
 // Instant-open cache: the last-loaded lead set is kept in localStorage (scoped to
 // the active workspace) so a remembered device opens STRAIGHT into a populated
@@ -1643,9 +1657,13 @@ function startAutoRefresh() {
       lastRefreshed = new Date();
       // Don't re-render out from under the user mid-interaction: skip while a
       // modal / lead-detail / stage-picker is open or the search box is focused.
+      const ae = document.activeElement;
       const busy = document.querySelector(
-        '#modal-overlay:not(.hidden), #lead-detail-overlay, #stage-picker-overlay, #products-modal-overlay:not(.hidden)')
-        || document.activeElement === document.getElementById('global-search');
+        '#modal-overlay:not(.hidden), #lead-detail-overlay, #stage-picker-overlay, #products-modal-overlay:not(.hidden), #fu-snooze, #active-list-modal, .fu-note-input')
+        || ae === document.getElementById('global-search')
+        // any focused text field (an open inline note editor, a filter box…) —
+        // don't rebuild the list out from under someone mid-type.
+        || /^(INPUT|TEXTAREA|SELECT)$/.test(ae?.tagName || '');
       // A business-profile change must repaint the CURRENT page even when it's
       // not one of the LIVE_PAGES (Team/Workspace/Chat show these terms too) —
       // but still never rip the UI out from under an open modal; if busy, this
@@ -4005,7 +4023,10 @@ async function setLeadStage(rowIndex, newStage) {
   refreshLeadDetailStages(newStage);
   renderPage(state.page);
   try {
-    await updateLead(rowIndex, { ...l });
+    // Send ONLY the changed fields — never spread {...l}, whose stale items/
+    // contacts arrays would make the server delete-and-reinsert them from an
+    // out-of-date snapshot (wiping edits made elsewhere since this list loaded).
+    await updateLead(rowIndex, { stage: newStage, stage_number: l.stage_number });
     toast(`Stage → ${stageLabel(newStage)}`);
     try { await loadStats(); if (state.page === 'dashboard') renderDashboard(); } catch (_) {}
   } catch (err) {
@@ -4025,7 +4046,7 @@ async function saveLeadNotes(rowIndex) {
   const btn = document.querySelector('#lead-detail-overlay .ld-notes-save');
   if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
   try {
-    await updateLead(rowIndex, { ...l, notes: val });
+    await updateLead(rowIndex, { notes: val });   // partial — don't clobber items/contacts
     l.notes = val;
     toast('Note saved');
     if (btn) { btn.textContent = 'Saved ✓'; setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = 'Save note'; } }, 1200); }
@@ -4256,7 +4277,7 @@ async function dropCard(event, newStage) {
 
   const stageNum = STAGE_NUMBERS[newStage] ?? '';
   try {
-    await updateLead(lead.rowIndex, { ...lead, stage: newStage, stage_number: stageNum });
+    await updateLead(lead.rowIndex, { stage: newStage, stage_number: stageNum });   // partial — see setLeadStage
     toast(`Moved to ${stageLabel(newStage)}`);
     await refresh();
   } catch (err) {
@@ -4453,7 +4474,7 @@ async function fuSaveNote(rowIndex) {
   l.notes = val;
   fuNoteRefresh(rowIndex);                 // optimistic
   try {
-    await updateLead(rowIndex, { ...l, notes: val });
+    await updateLead(rowIndex, { notes: val });   // partial — don't clobber items/contacts
     toast('Note saved');
   } catch (err) {
     l.notes = prev; fuNoteRefresh(rowIndex);
@@ -4519,7 +4540,7 @@ async function followupDone(rowIndex) {
   l.follow_up = '';
   renderPage(state.page);                 // optimistic — card leaves the list
   try {
-    await updateLead(rowIndex, { ...l, follow_up: '' });
+    await updateLead(rowIndex, { follow_up: '' });   // partial — don't clobber items/contacts
     toast('Follow-up marked done ✓');
     try { await loadStats(); } catch (_) {}
   } catch (err) {
@@ -4536,7 +4557,7 @@ async function setFollowupDate(rowIndex, dmy) {
   l.follow_up = dmy;
   renderPage(state.page);
   try {
-    await updateLead(rowIndex, { ...l, follow_up: dmy });
+    await updateLead(rowIndex, { follow_up: dmy });   // partial — don't clobber items/contacts
     toast('Follow-up → ' + dmy);
   } catch (err) {
     l.follow_up = prev; renderPage(state.page);
@@ -4985,7 +5006,7 @@ async function submitAddMember() {
   if (!/^\d{4,6}$/.test(pin))   { errEl.textContent = 'PIN must be 4–6 digits'; return; }
   try {
     await apiFetch('/api/users', { method: 'POST', body: JSON.stringify({ name, pin, role }) });
-    sucEl.innerHTML = `<b>${escAttr(name)}</b> created!<br>Login: <b>${escAttr(name)}</b> &nbsp;|&nbsp; PIN: <b>${escAttr(pin)}</b><br><span style="font-size:11px;opacity:0.8">Share these credentials with them</span>`;
+    sucEl.innerHTML = `<b>${escHtml(name)}</b> created!<br>Login: <b>${escHtml(name)}</b> &nbsp;|&nbsp; PIN: <b>${escHtml(pin)}</b><br><span style="font-size:11px;opacity:0.8">Share these credentials with them</span>`;
     sucEl.style.display = 'block';
     document.getElementById('am-name').value = '';
     document.getElementById('am-pin').value  = '';
@@ -5320,7 +5341,12 @@ function openAddModal() {
   }
   renderContactsEditor([]);
   renderItemsEditor([]);
-  renderLeadListsEditor([]);
+  // Pre-check the session's active list so the form's list_ids include it —
+  // otherwise handleFormSubmit's authoritative PUT /lists (which sets exactly the
+  // editor's selection) would immediately un-file the lead that createLead just
+  // filed into the active list.
+  const _al = getActiveList();
+  renderLeadListsEditor(_al ? [_al] : []);
   renderLeadDestSelect();   // "Save to" — only shown when the user has a team
   const accessSection = document.getElementById('modal-access-section');
   if (accessSection) accessSection.style.display = 'none';
@@ -7362,10 +7388,17 @@ async function loginWithBiometric() {
     const data = await verRes.json();
     if (!verRes.ok) throw new Error(data.error);
 
-    // Logged in — same flow as password login
-    localStorage.setItem('crm_token', data.token);
-    localStorage.setItem('crm_role',  data.role);
-    localStorage.setItem('crm_user',  data.username);
+    // Logged in — persist a FULL remembered session (refresh token + expiry) via
+    // storeTokens, exactly like password login, so it survives past the 15-minute
+    // access-token TTL instead of silently logging the user out.
+    const prevUser = localStorage.getItem('crm_user');
+    if (prevUser && prevUser.toLowerCase() !== String(data.username).toLowerCase()) resetAccountScopedState();
+    storeTokens(data.accessToken || data.token, data.refreshToken);
+    localStorage.setItem('crm_role',      data.role);
+    localStorage.setItem('crm_user',      data.username);
+    localStorage.setItem('crm_last_user', data.username);
+    if (data.userId)    localStorage.setItem('crm_user_id',    String(data.userId));
+    if (data.sessionId) localStorage.setItem('crm_session_id', data.sessionId);
     state.role = data.role;
     hideLoginPage();
     await initApp();
@@ -9410,14 +9443,21 @@ async function chatSend() {
   try {
     const data = await apiFetch('/api/ai/understand', {
       method: 'POST',
-      body: JSON.stringify({ text }),
+      // teamId scopes the parse to the active workspace's business profile + team
+      // AI vocabulary (matches the voice/photo/command paths, which all send it).
+      body: JSON.stringify({ text, teamId: state.activeOrgId || null }),
     });
     if (input) input.value = '';
     if (data.error) {
       if (cardArea) cardArea.innerHTML = `<div class="ai-error">⚠️ ${escHtml(data.error)}</div>`;
       return;
     }
-    aiSession.existingRow = data.existingRow;
+    // /understand doesn't return an existingRow, so detect an existing lead
+    // CLIENT-side (as voice/photo do) — otherwise Save always creates a duplicate
+    // instead of updating the matched lead.
+    const match = await findMatchForParsed(data.parsed);
+    aiSession.existingRow = match;
+    data.existingRow = match;
     renderUnderstandingCard(data);
   } catch (err) {
     if (cardArea) cardArea.innerHTML = `<div class="ai-error">❌ ${escHtml(err.message)}</div>`;

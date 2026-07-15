@@ -188,6 +188,12 @@ router.put('/leads/:row', authMiddleware, noGuest, requireLeadAccess, async (req
   try {
     const rowId = parseInt(req.params.row, 10);
 
+    // Only admins may reassign a lead's owner (created_by) — db.updateLead
+    // whitelists that column, so without this a non-admin with mere edit access
+    // could silently steal/transfer ownership. The client only exposes the field
+    // to admins; enforce it server-side too.
+    if (req.user.role !== 'admin') delete req.body.created_by;
+
     // Fetch lead before update for diffing
     const before = await db.getLeadById(rowId);
     const result = await db.updateLead(rowId, req.body);
@@ -1071,20 +1077,25 @@ router.patch('/lead-requests/:id', authMiddleware, noGuest, async (req, res, nex
   } catch (err) { next(err); }
 });
 
-// ── GET/POST /api/leads/:id/activities ───────────────────────
-router.get('/leads/:id/activities', authMiddleware, async (req, res, next) => {
+// ── GET /api/leads/:id/activities ────────────────────────────
+// requireLeadAccess (reads :id) scopes to the lead's owner / shared / team
+// manager / admin — otherwise any authenticated caller could read ANY lead's
+// timeline + field-edit history by guessing its numeric id.
+router.get('/leads/:id/activities', authMiddleware, noGuest, requireLeadAccess, async (req, res, next) => {
   try { res.json(await db.getLeadActivities(parseInt(req.params.id, 10))); }
   catch (err) { next(err); }
 });
 
 // ── GET /api/leads/:id/history ───────────────────────────────
-router.get('/leads/:id/history', authMiddleware, async (req, res, next) => {
+router.get('/leads/:id/history', authMiddleware, noGuest, requireLeadAccess, async (req, res, next) => {
   try { res.json(await db.getLeadHistory(parseInt(req.params.id, 10))); }
   catch (err) { next(err); }
 });
 
 // ── POST /api/leads/:id/claim ─────────────────────────────────
-router.post('/leads/:id/claim', authMiddleware, async (req, res, next) => {
+// Claiming assigns a follow-up to the caller — gate it like every other lead
+// write (was IDOR: any logged-in user could claim any lead in the system).
+router.post('/leads/:id/claim', authMiddleware, noGuest, requireLeadAccess, async (req, res, next) => {
   try { res.json(await db.claimFollowUp(parseInt(req.params.id, 10), req.user.username)); }
   catch (err) { next(err); }
 });

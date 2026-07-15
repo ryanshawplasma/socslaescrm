@@ -4465,3 +4465,57 @@ body.bubble-dragging .ai-bubble-trash { opacity: 1; transform: translateX(-50%) 
 .invite-banner{background:var(--primary-glow, rgba(99,102,241,.12)); border:1px solid var(--primary-muted, rgba(99,102,241,.35));
   color:var(--text); border-radius:10px; padding:10px 12px; font-size:13px; line-height:1.45; margin-bottom:14px}
 .invite-banner b{color:var(--primary)}
+
+/* ── AI card match banner (new vs update) ─────────────────── */
+.ai-match-banner {
+  font-size: 12.5px; font-weight: 500; line-height: 1.4;
+  padding: 8px 12px; border-radius: 9px; margin: 4px 0 10px;
+  border: 1px solid var(--border);
+}
+.ai-match-banner.is-new    { background: rgba(59,130,246,.10);  border-color: rgba(59,130,246,.32);  color: var(--text); }
+.ai-match-banner.is-update { background: rgba(245,158,11,.10);  border-color: rgba(245,158,11,.32);  color: var(--text); }
+.ai-match-banner b { color: var(--primary); }
+
+/* ── Active-list picker (choose today's list on app open) ─── */
+.al-box { max-width: 380px; }
+.al-opts { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.al-opt {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; text-align: left; cursor: pointer;
+  padding: 12px 14px; border-radius: 11px;
+  background: var(--card-bg); border: 1px solid var(--border);
+  color: var(--text); font-size: 14px; font-weight: 500; font-family: inherit;
+  transition: background var(--transition), border-color var(--transition);
+}
+.al-opt:hover  { background: var(--primary-muted); border-color: var(--primary); }
+.al-opt.active { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-muted); }
+.al-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+
+/* ── Lists modal: session active-list row ─────────────────── */
+.lists-session-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 9px 12px; margin: 0 0 10px; border-radius: 10px;
+  background: var(--primary-muted); border: 1px solid var(--border);
+  font-size: 12.5px; color: var(--text);
+}
+.lists-session-row b { color: var(--primary); }
+
+/* ── Phone: condensed leads table fits the screen (no sideways slide) ──────── */
+@media (max-width: 640px) {
+  /* Fixed layout + wrapping keeps the four data columns inside the viewport
+     instead of running off the right edge (the old nowrap forced a scroll). */
+  #leads-table-wrap .crm-table { table-layout: fixed; width: 100%; }
+  #leads-table-wrap .crm-table th,
+  #leads-table-wrap .crm-table td {
+    padding: 9px 8px; white-space: normal;
+    word-break: break-word; overflow-wrap: anywhere; vertical-align: top;
+  }
+  #leads-table-wrap .crm-table th:nth-child(1),
+  #leads-table-wrap .crm-table td:nth-child(1) { width: 42%; }
+  #leads-table-wrap .crm-table th:nth-child(2),
+  #leads-table-wrap .crm-table td:nth-child(2) { width: 26%; }
+  #leads-table-wrap .crm-table th:nth-child(3),
+  #leads-table-wrap .crm-table td:nth-child(3) { width: 18%; }
+  #leads-table-wrap .crm-table th:nth-child(4),
+  #leads-table-wrap .crm-table td:nth-child(4) { width: 14%; }
+}

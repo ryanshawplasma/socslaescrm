@@ -1485,6 +1485,20 @@ function renderLeadDestSelect() {
     teams.map(t => `<option value="${t.id}" ${String(t.id) === String(cur) ? 'selected' : ''}>${(BUSINESS_TYPES[t.business_type] || BUSINESS_TYPES.factory).icon} ${escHtml(t.name)}</option>`).join('');
 }
 
+// Session "active list": the list the user picks on app open (see
+// promptActiveList). Every lead added this session is also filed into it, until
+// they change it or reload. Kept in sessionStorage so it resets each session.
+function getActiveList() { return sessionStorage.getItem('crm_active_list') || ''; }
+function setActiveList(v) {
+  if (v) sessionStorage.setItem('crm_active_list', String(v));
+  else   sessionStorage.removeItem('crm_active_list');
+}
+function activeListName() {
+  const id = getActiveList();
+  const l  = (state.myLists || []).find(x => String(x.id) === String(id));
+  return l ? l.name : '';
+}
+
 async function createLead(data) {
   // An explicit team_id (from the form's "Save to" selector) wins; otherwise
   // fall back to the remembered default destination.
@@ -1492,10 +1506,58 @@ async function createLead(data) {
     const dest = getLeadDest();
     data.team_id = dest ? parseInt(dest, 10) : null;
   }
-  return apiFetch('/api/leads', { method: 'POST', body: JSON.stringify(data) });
+  const result = await apiFetch('/api/leads', { method: 'POST', body: JSON.stringify(data) });
+  // File the new lead into the session's active list, if one is set.
+  const listId = getActiveList();
+  if (listId && result && result.rowIndex != null && !result.conflict) {
+    try {
+      await apiFetch(`/api/lead-lists/${listId}/add-leads` + orgQuery(),
+        { method: 'POST', body: JSON.stringify({ lead_ids: [result.rowIndex] }) });
+    } catch (_) { /* non-fatal — the lead is saved regardless */ }
+  }
+  return result;
 }
 async function updateLead(row, data) { return apiFetch(`/api/leads/${row}`, { method: 'PUT', body: JSON.stringify(data) }); }
 async function deleteLead(row) { return apiFetch(`/api/leads/${row}`, { method: 'DELETE' }); }
+
+// One-time-per-session prompt on app open: which list do today's new leads go
+// into? Only shown when the user actually has lists to choose from.
+function maybePromptActiveList() {
+  if (state.role === 'guest') return;
+  if (sessionStorage.getItem('crm_active_list_prompted')) return;
+  if (!(state.myLists || []).length) return;   // nothing to choose — skip silently
+  sessionStorage.setItem('crm_active_list_prompted', '1');
+  openActiveListModal();
+}
+function openActiveListModal() {
+  document.getElementById('active-list-modal')?.remove();
+  const cur = getActiveList();
+  const opts = (state.myLists || []).map(l =>
+    `<button class="al-opt ${String(l.id) === String(cur) ? 'active' : ''}" onclick="chooseActiveList('${escAttr(String(l.id))}')">
+       <span class="al-dot" style="background:${listColor(l.name)}"></span>${escHtml(l.name)}</button>`).join('');
+  const html = `
+  <div class="up-overlay" id="active-list-modal" onclick="if(event.target===this)closeActiveListModal()">
+    <div class="up-box al-box" role="dialog" aria-modal="true" aria-label="Choose a list for new leads">
+      <button class="up-close" onclick="closeActiveListModal()" aria-label="Close">✕</button>
+      <div class="up-head"><div class="up-kicker">This session</div><h2 class="up-title">📋 Which list are you adding to?</h2>
+      <p class="up-sub">Every lead you add now gets filed into this list. You can change it anytime from Lists.</p></div>
+      <div class="al-opts">
+        <button class="al-opt ${!cur ? 'active' : ''}" onclick="chooseActiveList('')"><span class="al-dot" style="background:var(--text-muted)"></span>No list — just save</button>
+        ${opts}
+      </div>
+    </div>
+  </div>`;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = html;
+  document.body.appendChild(wrap.firstElementChild);
+}
+function closeActiveListModal() { document.getElementById('active-list-modal')?.remove(); }
+function chooseActiveList(id) {
+  setActiveList(id);
+  closeActiveListModal();
+  const nm = activeListName();
+  toast(id && nm ? `New leads → “${nm}” list` : 'New leads won’t be filed into a list');
+}
 
 // ============================================================
 //  Auto-refresh
@@ -3552,11 +3614,20 @@ function renderGroupChip() {
 function renderLeadsView() {
   renderGroupChip();
   const leads = filteredLeads();
-  // Admins (and team views) see whose lead each row is
-  const cols = ['factory_number','factory_name','person_in_charge','contact','product','quantity','rate','stage','lead_type','follow_up','area'];
-  if (state.role === 'admin' || state.activeOrgId) cols.push('created_by');
-  // Show the Lists column once any list exists (or any lead is tagged)
-  if (state.myLists.length || state.leads.some(l => (l.list_ids || []).length)) cols.push('lists');
+  // Phones can't fit the full 13-column table — it runs off the right edge and
+  // you have to slide sideways to read anything. On the drawer/phone layout show
+  // a compact, fits-on-screen set; a tap still opens the full lead detail.
+  const narrow = window.matchMedia('(max-width: 640px)').matches;
+  let cols;
+  if (narrow) {
+    cols = ['factory_name', 'contact', 'stage', 'lead_type'];
+  } else {
+    // Admins (and team views) see whose lead each row is
+    cols = ['factory_number','factory_name','person_in_charge','contact','product','quantity','rate','stage','lead_type','follow_up','area'];
+    if (state.role === 'admin' || state.activeOrgId) cols.push('created_by');
+    // Show the Lists column once any list exists (or any lead is tagged)
+    if (state.myLists.length || state.leads.some(l => (l.list_ids || []).length)) cols.push('lists');
+  }
   const tableWrap  = document.getElementById('leads-table-wrap');
   const cardsWrap  = document.getElementById('leads-cards-wrap');
   const kanbanWrap = document.getElementById('leads-kanban-wrap');
@@ -3568,7 +3639,10 @@ function renderLeadsView() {
     b.classList.toggle('active', b.dataset.view === state.view));
 
   // Bulk-select is offered on the table view for users who can delete leads.
-  const selectable = canBulkDeleteLeads() && state.view === 'table';
+  // On phones we drop it (and the Actions column below) so the four data columns
+  // fit the screen without a sideways slide — a row tap opens the full detail
+  // sheet, which has Edit / stage / delete.
+  const selectable = canBulkDeleteLeads() && state.view === 'table' && !narrow;
   if (!selectable && state.selectedLeads.size) state.selectedLeads.clear();
 
   if (state.view === 'cards') {
@@ -3582,7 +3656,7 @@ function renderLeadsView() {
     // Drop any selected ids no longer in view (filters/search changed).
     const visible = new Set(leads.map(l => Number(l.rowIndex)));
     for (const id of [...state.selectedLeads]) if (!visible.has(id)) state.selectedLeads.delete(id);
-    tableWrap.innerHTML = buildTable(leads, cols, true, selectable, 'openLeadDetail');
+    tableWrap.innerHTML = buildTable(leads, cols, !narrow, selectable, 'openLeadDetail');
   }
   renderBulkBar();
 }
@@ -5038,6 +5112,16 @@ function openListsModal() {
   const team  = state.myTeams.find(t => String(t.id) === String(state.activeOrgId));
   document.getElementById('lists-modal-scope').textContent =
     team ? `Shared across ${team.name} — everyone on the team can use these` : 'Your personal lists';
+  // Show which list this session's new leads are filed into, with a Change link.
+  const sessRow = document.getElementById('lists-session-row');
+  const sessLbl = document.getElementById('lists-session-label');
+  if (sessRow && sessLbl) {
+    const nm = activeListName();
+    sessLbl.innerHTML = nm
+      ? `New leads this session → <b>${escHtml(nm)}</b>`
+      : 'New leads this session aren’t filed into any list';
+    sessRow.style.display = '';
+  }
   renderListsManageBody();
   renderListsBulkRow();
   document.getElementById('lists-modal-overlay').classList.remove('hidden');
@@ -5860,6 +5944,7 @@ async function initApp() {
     startAutoRefresh();
     initSocket();
     maybeShowTeamsDiscover();   // nudge team-less users to join a public team
+    maybePromptActiveList();    // ask which list today's new leads are filed into
   } catch (err) {
     if (err.message.includes('401') || err.message.includes('Session expired')) {
       showLoginPage();
@@ -8483,9 +8568,20 @@ function renderUnderstandingCard(data) {
   if (needsClarification && clarification) {
     actionHtml = renderClarificationPanel(clarification);
   } else {
+    // Tell the user clearly whether saving will UPDATE a matched lead or ADD a
+    // brand-new one, and label the confirm button to match.
+    const isUpdate = existingRow != null && existingRow !== -1;
+    const noun     = biz().key === 'factory' ? 'lead' : T('entity').toLowerCase();
+    const match    = isUpdate ? state.leads.find(x => String(x.rowIndex) === String(existingRow)) : null;
+    const matchNm  = match ? (match.factory_name || match.factory_number || '') : '';
+    const banner   = isUpdate
+      ? `<div class="ai-match-banner is-update">🔄 Matches an existing ${escHtml(noun)}${matchNm ? ': <b>' + escHtml(matchNm) + '</b>' : ''} — saving updates it.</div>`
+      : `<div class="ai-match-banner is-new">🆕 No matching ${escHtml(noun)} found — add it as new?</div>`;
+    const primary  = isUpdate ? '🔄 Update' : '➕ Add new ' + escHtml(noun);
     actionHtml = `
+      ${banner}
       <div class="ai-card-footer">
-        <button class="btn btn-primary" onclick="aiConfirmSave()">✅ Save Lead</button>
+        <button class="btn btn-primary" onclick="aiConfirmSave()">${primary}</button>
         <button class="btn btn-ghost" onclick="aiEditAll()">✏️ Edit All</button>
         <button class="btn btn-ghost" onclick="aiClearUnderstandingCard()">✕ Clear</button>
       </div>`;
@@ -8594,7 +8690,10 @@ async function aiConfirmSave() {
       await apiFetch(`/api/leads/${existingRow}`, { method: 'PUT', body: JSON.stringify(payload) });
       toast(biz().key==='factory' ? 'Lead updated' : T('entity')+' updated');
     } else {
-      const result = await apiFetch('/api/leads', { method: 'POST', body: JSON.stringify(payload) });
+      // Route through createLead (NOT a bare POST) so an AI-chat lead lands in
+      // the same "Save to" workspace + session list as every other new lead —
+      // otherwise it silently went to Personal and vanished from a team view.
+      const result = await createLead(payload);
       if (result?.conflict) { toast(`Duplicate: ${result.message}`, 'error'); return; }
       toast(biz().key==='factory' ? 'Lead saved' : T('entity')+' saved');
     }

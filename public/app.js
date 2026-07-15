@@ -2907,8 +2907,12 @@ function clearRoute() {
 //  Helpers
 // ============================================================
 function stageBadge(lead) {
-  const n     = String(lead.stage_number ?? '');
-  const label = lead.stage ? stageLabel(lead.stage) : '—';
+  // label comes from stageLabel() → the team/user's custom business-profile stage
+  // names, which are free text — MUST be escHtml'd here (this is the one sink that
+  // injects it as raw HTML into cards/kanban/tables). n feeds a class attribute,
+  // so escAttr it against a crafted (import-sourced) stage_number.
+  const n     = escAttr(String(lead.stage_number ?? ''));
+  const label = escHtml(lead.stage ? stageLabel(lead.stage) : '—');
   // Guests (and rows not in the working set) get a static badge; everyone else
   // gets a one-tap stage changer. stopPropagation so it doesn't also open the
   // row's lead-detail sheet.
@@ -3810,8 +3814,9 @@ function openLeadDetail(rowIndex) {
     const name  = escHtml(c.person_name || '—');
     const desig = c.designation ? `<span class="ld-desig">${escHtml(c.designation)}</span>` : '';
     const num   = c.contact ? escHtml(c.contact) : '';
-    const tel   = c.contact ? `<a href="tel:${escAttr(c.contact)}" class="ld-tel" onclick="event.stopPropagation()">📞</a>` : '';
-    return `<div class="ld-contact"><span class="ld-c-name">${name}</span>${desig}<span class="ld-c-num">${num}</span>${tel}</div>`;
+    const tel   = c.contact ? `<a href="${escHtml(telHref(c.contact))}" class="ld-tel" title="Call" onclick="event.stopPropagation()">📞</a>` : '';
+    const wa    = c.contact ? `<a href="${escHtml(waHref(c.contact, c.person_name))}" class="ld-wa" title="WhatsApp" target="_blank" rel="noopener" onclick="event.stopPropagation()">💬</a>` : '';
+    return `<div class="ld-contact"><span class="ld-c-name">${name}</span>${desig}<span class="ld-c-num">${num}</span><span class="ld-c-acts">${tel}${wa}</span></div>`;
   }).join('') : '<div class="ld-empty">No contact added</div>';
 
   const itemRows = items.length ? items.map(it => {
@@ -4209,8 +4214,186 @@ function renderFollowups() {
   });
 
   document.getElementById('followup-table').innerHTML = filtered.length
-    ? buildTable(filtered, ['factory_number','factory_name','person_in_charge','product','stage','follow_up','notes'], true)
+    ? buildFollowupCards(filtered)
     : emptyState('No follow-ups for this filter');
+}
+
+// ── Follow-up action cards ──────────────────────────────────
+// The follow-up screen is a "who do I contact today" worklist, so each row is a
+// card with one-tap actions: Call, WhatsApp, Snooze (push the date), Done (clear
+// the reminder). Tapping the card body still opens the full lead detail.
+function parseDMY(str) {
+  if (!str) return null;
+  const p = String(str).split('/');
+  if (p.length === 3) {
+    const d = new Date(+p[2].slice(0, 4), (+p[1]) - 1, +p[0]);
+    d.setHours(0, 0, 0, 0);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(str);
+  if (isNaN(d.getTime())) return null;
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+function fuToday() { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
+function fmtDMY(d) {
+  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+}
+// The contact to dial/message: the lead's primary (person_in_charge + l.contact),
+// else the first contact-row that actually has a number — paired with THAT row's
+// own name so a WhatsApp greeting always matches the number being opened.
+function fuPhoneContact(l) {
+  if (l.contact) return { raw: l.contact, name: l.person_in_charge || '' };
+  const c = (l.contacts || []).find(x => x && x.contact);
+  return c ? { raw: c.contact, name: c.person_name || l.person_in_charge || '' }
+           : { raw: '', name: '' };
+}
+function telHref(raw) {
+  const d = String(raw || '').replace(/[^\d+]/g, '');
+  return d ? 'tel:' + d : '';
+}
+// wa.me needs a full international number. Numbers here are India-local (the app
+// is ₹ / en-IN / IST), so a bare 10-digit number gets +91; anything already
+// carrying a country code (11–13 digits) is left as-is.
+function waHref(raw, person) {
+  let d = String(raw || '').replace(/\D/g, '').replace(/^0+/, '');
+  if (!d) return '';
+  if (d.length === 10) d = '91' + d;
+  const txt = person ? '?text=' + encodeURIComponent('Hi ' + person + ', ') : '';
+  return 'https://wa.me/' + d + txt;
+}
+
+function buildFollowupCards(leads) {
+  const today = fuToday();
+  const cards = leads.map(l => {
+    const d = parseDMY(l.follow_up);
+    let dueClass = 'fu-future', dueLabel = escHtml(l.follow_up || '—');
+    if (d) {
+      const diff = Math.round((d - today) / 86400000);
+      if      (diff < 0)   { dueClass = 'fu-overdue'; dueLabel = `Overdue ${-diff}d`; }
+      else if (diff === 0) { dueClass = 'fu-today';   dueLabel = 'Today'; }
+      else if (diff === 1) { dueClass = 'fu-soon';    dueLabel = 'Tomorrow'; }
+      else if (diff <= 7)  { dueClass = 'fu-soon';    dueLabel = `In ${diff}d`; }
+      else                 { dueClass = 'fu-future';  dueLabel = escHtml(l.follow_up); }
+    }
+    const name = escHtml(l.factory_name || l.factory_number || '—');
+    const sub  = [
+      (l.factory_number && l.factory_name) ? escHtml(l.factory_number) : '',
+      escHtml(l.person_in_charge || ''),
+    ].filter(Boolean).join(' · ');
+    const pc   = fuPhoneContact(l);
+    const tel  = telHref(pc.raw);
+    const wa   = waHref(pc.raw, pc.name);
+    const prods = leadProductNames(l).slice(0, 2).join(', ');
+    const mid  = [stageBadge(l), prods ? escHtml(prods) : ''].filter(Boolean).join('<span class="fu-dot">·</span>');
+    const note = l.notes ? escHtml(String(l.notes).slice(0, 90)) + (String(l.notes).length > 90 ? '…' : '') : '';
+    return `
+    <div class="fu-card ${dueClass}" role="button" tabindex="0"
+         onclick="openLeadDetail(${l.rowIndex})"
+         onkeydown="if((event.key==='Enter'||event.key===' ')&&event.target===event.currentTarget){event.preventDefault();openLeadDetail(${l.rowIndex})}">
+      <div class="fu-card-top">
+        <div class="fu-card-id">
+          <div class="fu-name">${name}</div>
+          ${sub ? `<div class="fu-sub">${sub}</div>` : ''}
+        </div>
+        <div class="fu-due ${dueClass}">${dueLabel}</div>
+      </div>
+      <div class="fu-card-mid">${mid}${note ? `<div class="fu-note">📝 ${note}</div>` : ''}</div>
+      <div class="fu-actions" onclick="event.stopPropagation()">
+        ${tel ? `<a class="fu-act fu-call" href="${escHtml(tel)}">📞 Call</a>`
+              : `<span class="fu-act fu-call fu-disabled" title="No phone number">📞 Call</span>`}
+        ${wa  ? `<a class="fu-act fu-wa" href="${escHtml(wa)}" target="_blank" rel="noopener">💬 WhatsApp</a>`
+              : `<span class="fu-act fu-wa fu-disabled" title="No phone number">💬 WhatsApp</span>`}
+        <button class="fu-act fu-snoozebtn" onclick="openSnoozeMenu(${l.rowIndex}, event)">⏰ Snooze</button>
+        <button class="fu-act fu-donebtn" onclick="followupDone(${l.rowIndex})">✅ Done</button>
+      </div>
+    </div>`;
+  }).join('');
+  return `<div class="fu-list">${cards}</div>`;
+}
+
+// Clear the reminder — the lead stays, it just drops off the follow-up worklist.
+async function followupDone(rowIndex) {
+  const l = state.leads.find(x => String(x.rowIndex) === String(rowIndex));
+  if (!l) return;
+  const prev = l.follow_up;
+  if (!prev) return;
+  l.follow_up = '';
+  renderPage(state.page);                 // optimistic — card leaves the list
+  try {
+    await updateLead(rowIndex, { ...l, follow_up: '' });
+    toast('Follow-up marked done ✓');
+    try { await loadStats(); } catch (_) {}
+  } catch (err) {
+    l.follow_up = prev; renderPage(state.page);
+    toast('Could not update: ' + err.message, 'error');
+  }
+}
+
+// Push (or pull) the follow-up to a specific day.
+async function setFollowupDate(rowIndex, dmy) {
+  const l = state.leads.find(x => String(x.rowIndex) === String(rowIndex));
+  if (!l || !dmy) return;
+  const prev = l.follow_up;
+  l.follow_up = dmy;
+  renderPage(state.page);
+  try {
+    await updateLead(rowIndex, { ...l, follow_up: dmy });
+    toast('Follow-up → ' + dmy);
+  } catch (err) {
+    l.follow_up = prev; renderPage(state.page);
+    toast('Could not reschedule: ' + err.message, 'error');
+  }
+}
+function snoozeFollowup(rowIndex, days) {
+  const base = fuToday();
+  base.setDate(base.getDate() + days);
+  closeSnoozeMenu();
+  setFollowupDate(rowIndex, fmtDMY(base));
+}
+function snoozeToPicked(rowIndex, isoVal) {
+  if (!isoVal) return;
+  closeSnoozeMenu();
+  setFollowupDate(rowIndex, isoToddmmyyyy(isoVal));
+}
+function openSnoozeMenu(rowIndex, ev) {
+  if (ev) ev.stopPropagation();
+  closeSnoozeMenu();
+  const minIso = fmtDMY(fuToday()).split('/').reverse().join('-');   // today as yyyy-mm-dd
+  const html = `
+  <div class="up-overlay" id="fu-snooze" onclick="if(event.target===this)closeSnoozeMenu()">
+    <div class="up-box fu-snooze-box" role="dialog" aria-modal="true" aria-label="Reschedule follow-up">
+      <button class="up-close" onclick="closeSnoozeMenu()" aria-label="Close">✕</button>
+      <div class="up-head"><div class="up-kicker">Follow-up</div><h2 class="up-title">⏰ Reschedule to…</h2></div>
+      <div class="fu-snooze-opts">
+        <button class="fu-snooze-opt" onclick="snoozeFollowup(${rowIndex}, 1)">Tomorrow</button>
+        <button class="fu-snooze-opt" onclick="snoozeFollowup(${rowIndex}, 3)">In 3 days</button>
+        <button class="fu-snooze-opt" onclick="snoozeFollowup(${rowIndex}, 7)">Next week</button>
+        <button class="fu-snooze-opt" onclick="snoozeFollowup(${rowIndex}, 14)">In 2 weeks</button>
+      </div>
+      <div class="fu-snooze-pick">
+        <label for="fu-snooze-date">Or pick a date</label>
+        <input type="date" id="fu-snooze-date" min="${minIso}" onchange="snoozeToPicked(${rowIndex}, this.value)">
+      </div>
+    </div>
+  </div>`;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = html;
+  document.body.appendChild(wrap.firstElementChild);
+  // Focus + Escape-to-close, matching every other overlay in the app.
+  _snoozeOpener = (ev && ev.currentTarget) || document.activeElement;
+  document.addEventListener('keydown', snoozeEscHandler);
+  document.querySelector('#fu-snooze .fu-snooze-opt')?.focus();
+}
+let _snoozeOpener = null;
+function snoozeEscHandler(e) { if (e.key === 'Escape') closeSnoozeMenu(); }
+function closeSnoozeMenu() {
+  const el = document.getElementById('fu-snooze');
+  if (!el) return;
+  el.remove();
+  document.removeEventListener('keydown', snoozeEscHandler);
+  if (_snoozeOpener && typeof _snoozeOpener.focus === 'function') _snoozeOpener.focus();
+  _snoozeOpener = null;
 }
 
 // ============================================================

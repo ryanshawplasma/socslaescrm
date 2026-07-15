@@ -4769,3 +4769,24 @@ p, .today-subline, .fu-note-txt, .ld-notes-view, .lead-card-line, .up-sub, .stat
 }
 @keyframes dive-vt-out { to   { opacity: 0; transform: translateY(-6px); } }
 @keyframes dive-vt-in  { from { opacity: 0; transform: translateY(12px); } }
+
+/* ── Lead-detail timeline — a proper vertical activity rail ────── */
+.ld-timeline {
+  position: relative; max-height: 260px; overflow-y: auto; overscroll-behavior: contain;
+  border: 1px solid var(--border); border-radius: 12px; padding: 2px 0;
+}
+.ld-timeline .activity-item { position: relative; padding: 9px 14px; border-bottom: none; }
+/* connector rail behind the icon column */
+.ld-timeline .activity-item::before {
+  content: ''; position: absolute; left: 25px; top: 0; bottom: 0; width: 2px;
+  background: var(--border);
+}
+.ld-timeline .activity-item:first-child::before { top: 19px; }
+.ld-timeline .activity-item:last-child::before  { bottom: auto; height: 19px; }
+.ld-timeline .activity-item:only-child::before  { display: none; }
+.ld-timeline .activity-icon { position: relative; z-index: 1; box-shadow: 0 0 0 3px var(--card-bg); }
+.ld-timeline .activity-latest .activity-icon {
+  background: var(--primary); color: #fff;
+  box-shadow: 0 0 0 3px var(--card-bg), 0 0 0 6px var(--primary-muted);
+}
+.ld-timeline .activity-latest .activity-desc { font-weight: 600; }

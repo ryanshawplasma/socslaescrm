@@ -3917,6 +3917,10 @@ function openLeadDetail(rowIndex) {
           <div class="ld-label">📝 Notes</div>
           ${notesBlock}
         </div>` : ''}
+        <div class="ld-section">
+          <div class="ld-label">🕑 Timeline</div>
+          <div id="ld-timeline" class="ld-timeline"><div class="ld-empty">Loading…</div></div>
+        </div>
       </div>
       <div class="ld-foot">
         ${canEdit ? `<button class="btn btn-ghost" onclick="closeLeadDetail(); openEditModal(${l.rowIndex});">✎ Edit full lead</button>` : ''}
@@ -3929,7 +3933,8 @@ function openLeadDetail(rowIndex) {
   wrap.innerHTML = html;
   document.body.appendChild(wrap.firstElementChild);
   document.addEventListener('keydown', ldEscHandler);
-  loadLeadPhotos(l.rowIndex);   // async — fills the Factory pics section
+  loadLeadPhotos(l.rowIndex);                    // async — fills the pics section
+  loadLeadTimeline(l.rowIndex, 'ld-timeline');   // async — fills the activity timeline
 }
 
 function ldEscHandler(e) { if (e.key === 'Escape') closeLeadDetail(); }
@@ -9355,16 +9360,16 @@ async function chatSend() {
 //  ACTIVITY TIMELINE
 // ============================================================
 
-async function loadLeadTimeline(leadId) {
-  const el = document.getElementById('lead-timeline-content');
+async function loadLeadTimeline(leadId, targetId = 'lead-timeline-content') {
+  const el = document.getElementById(targetId);
   if (!el) return;
   el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:12px">Loading…</div>';
   try {
     const activities = await apiFetch(`/api/leads/${leadId}/activities`);
     if (!activities.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:12px">No activity yet.</div>'; return; }
     const ICONS = { created: '✨', edit: '✏️', stage_change: '📊', visit: '📍', call: '📞', note: '📝', won: '🏆', lost: '❌', sample: '🧪' };
-    el.innerHTML = activities.map(a => `
-      <div class="activity-item">
+    el.innerHTML = activities.map((a, i) => `
+      <div class="activity-item${i === 0 ? ' activity-latest' : ''}">
         <span class="activity-icon">${ICONS[a.activity_type] || '◎'}</span>
         <div class="activity-body">
           <div class="activity-desc">${escHtml(a.description || a.activity_type)}</div>

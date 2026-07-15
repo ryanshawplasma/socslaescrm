@@ -18,7 +18,7 @@
        lazy-loaded on demand (dashboard/reports charts, import, map) via the
        ensureChart/ensureXLSX/ensureLeaflet loaders in app.js — off the startup
        critical path so the first paint isn't waiting on them. -->
-  <link rel="stylesheet" href="style.css?v=55" />
+  <link rel="stylesheet" href="style.css?v=57" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -581,6 +581,10 @@
 
       <nav class="sidebar-nav">
         <div class="nav-section">Menu</div>
+        <a class="nav-item" data-page="today">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h8l-1 8 10-12h-8l1-8z"/></svg>
+          <span class="nav-label">Today</span>
+        </a>
         <a class="nav-item active" data-page="dashboard">
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
           <span class="nav-label">Dashboard</span>
@@ -711,6 +715,17 @@
       <!-- Content pages -->
       <div id="content">
 
+        <!-- ── TODAY — daily worklist (what needs action right now) ── -->
+        <section id="page-today" class="page">
+          <div class="today-hero">
+            <h2 id="today-greeting" class="today-greeting">Today</h2>
+            <p id="today-subline" class="today-subline"></p>
+          </div>
+          <div id="today-quick" class="today-quick"></div>
+          <div class="today-section-label">Needs action now</div>
+          <div id="today-body"></div>
+        </section>
+
         <!-- ── DASHBOARD ──────────────────────────────────── -->
         <section id="page-dashboard" class="page active">
           <div class="dash-hero" id="dash-hero">
@@ -719,7 +734,7 @@
               <p id="dash-subline">Here's what's happening with your pipeline today.</p>
             </div>
             <div class="dash-hero-actions">
-              <button class="btn btn-ghost dash-hero-btn" onclick="navigate('followups')">
+              <button class="btn btn-ghost dash-hero-btn" onclick="state.fuFilter='today';navigate('followups')">
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
                 Today's Follow-ups
               </button>
@@ -820,15 +835,13 @@
 
         <!-- ── FOLLOW-UPS ─────────────────────────────────── -->
         <section id="page-followups" class="page">
-          <div id="ai-toggle-bar-followups"></div>
-          <div id="ai-panel-followups" class="ai-panel" style="display:none"></div>
           <div class="followup-filters">
             <button class="pill active" data-fu="overdue">Overdue</button>
             <button class="pill" data-fu="today">Today</button>
             <button class="pill" data-fu="week">This Week</button>
             <button class="pill" data-fu="all">All</button>
           </div>
-          <div class="card mt-16" id="followup-table"></div>
+          <div class="mt-16" id="followup-table"></div>
         </section>
 
         <!-- ── REPORTS ────────────────────────────────────── -->
@@ -1267,7 +1280,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=56"></script>
+  <script src="app.js?v=58"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:1400, once:true };</script>
   <script src="dive-splash.js?v=2"></script>

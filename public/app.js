@@ -1573,7 +1573,7 @@ function startAutoRefresh() {
   // reload here. Pages that self-fetch (database) or are static/heavy (map, team,
   // workspace, chat, ai-debug) must NOT be re-rendered on the timer — doing so
   // flashes a loading state and wipes scroll/selection ("the table jumps").
-  const LIVE_PAGES = ['dashboard', 'leads', 'pipeline', 'followups', 'reports'];
+  const LIVE_PAGES = ['today', 'dashboard', 'leads', 'pipeline', 'followups', 'reports'];
   clearInterval(autoRefreshTimer);    // never stack timers if initApp runs twice
   clearInterval(refreshLabelTimer);
   autoRefreshTimer = setInterval(async () => {
@@ -2235,7 +2235,7 @@ function toast(msg, type = 'success') {
 //  Navigation
 // ============================================================
 const PAGE_TITLES = {
-  dashboard: 'Dashboard', leads: 'Leads', database: 'Database',
+  today: 'Today', dashboard: 'Dashboard', leads: 'Leads', database: 'Database',
   pipeline: 'Pipeline', followups: 'Follow-ups', reports: 'Reports', team: 'Team', map: 'Map', chat: 'Chat',
   workspace: 'Workspace', brochure: 'Brochure Maker', hub: 'Team Hub',
   'ai-debug': 'AI Debug',
@@ -2300,6 +2300,7 @@ function initChatViewport() {
 
 function renderPage(page) {
   applyBusinessTerms();      // refresh static business-term nodes (labels/placeholders/stage options)
+  if (page === 'today')      renderToday();
   if (page === 'dashboard')  renderDashboard();
   if (page === 'leads')      renderLeads();
   if (page === 'database')   renderDatabase();
@@ -3121,8 +3122,8 @@ function renderDashHero() {
       if (d < t) overdue++; else if (d.getTime() === t.getTime()) dueToday++;
     }
     const bits = [];
-    if (dueToday) bits.push(`<b class="hero-hot">${dueToday}</b> follow-up${dueToday>1?'s':''} due today`);
-    if (overdue)  bits.push(`<b class="hero-warn">${overdue}</b> overdue`);
+    if (dueToday) bits.push(`<a class="hero-link" role="button" tabindex="0" onclick="state.fuFilter='today';navigate('followups')"><b class="hero-hot">${dueToday}</b> follow-up${dueToday>1?'s':''} due today</a>`);
+    if (overdue)  bits.push(`<a class="hero-link" role="button" tabindex="0" onclick="state.fuFilter='overdue';navigate('followups')"><b class="hero-warn">${overdue}</b> overdue</a>`);
     sub.innerHTML = bits.length
       ? `${today} · ${bits.join(' · ')}`
       : `${today} · You're all caught up — no follow-ups pending. 🎉`;
@@ -3162,7 +3163,7 @@ function renderDashboard() {
     card('blue',  'total',  'Total Leads', s.total,  'All time') +
     card('amber', 'active', 'Active',      s.active, 'In pipeline') +
     card('green', 'won',    'Won',         s.won,    `${winRate}% win rate`) +
-    card('red',   'lost',   stageLabel('Lost'), s.lost, `Marked ${stageLabel('Lost')}`);
+    card('red',   'lost',   stageLabel('Lost'), s.lost, `${s.won + s.lost ? Math.round(s.lost / (s.won + s.lost) * 100) : 0}% loss rate`);
 
   // Pipeline by Stage — doughnut with center total. Colors/data stay keyed by
   // the canonical stage string; only the displayed labels array is relabeled.
@@ -3601,18 +3602,23 @@ function clearGroupFilter() {
 // currently overrides 'Lost'.
 function groupLabel(group) {
   if (group === 'lost') return stageLabel('Lost');
-  return { active: 'Active (in pipeline)', won: 'Won' }[group] || group;
+  return { active: 'Active', won: 'Won' }[group] || group;
 }
 
 function renderGroupChip() {
   const host = document.getElementById('leads-active-filter');
   if (!host) return;
   if (!state.filterGroup) { host.innerHTML = ''; return; }
+  // On the Active group, offer a jump to the Pipeline board (the visual view of
+  // the same in-pipeline leads).
+  const pipeLink = state.filterGroup === 'active'
+    ? `<button type="button" class="chip-link" onclick="navigate('pipeline')">Open Pipeline →</button>`
+    : '';
   host.innerHTML = `
     <span class="active-filter-chip">
       Showing <b>${escHtml(groupLabel(state.filterGroup))}</b>
       <button type="button" onclick="clearGroupFilter()" aria-label="Clear filter">✕</button>
-    </span>`;
+    </span>${pipeLink}`;
 }
 
 function renderLeadsView() {
@@ -3823,16 +3829,27 @@ function openLeadDetail(rowIndex) {
     const p = escHtml(it.product || '—');
     const q = it.quantity ? `<span class="ld-i-q">${escHtml(it.quantity)}</span>` : '';
     const r = it.rate ? `<span class="ld-i-r">@ ${escHtml(it.rate)}</span>` : '';
-    return `<div class="ld-item"><span class="ld-i-p">${p}</span><span class="ld-i-meta">${q}${r}</span></div>`;
-  }).join('') : '<div class="ld-empty">No products added</div>';
+    // Tapping a product jumps to the Leads list filtered to that product.
+    const jump = it.product
+      ? ` role="button" tabindex="0" title="Show all ${escAttr(T('entity').toLowerCase())}s with this ${escAttr(T('product').toLowerCase())}"
+          onclick="jumpToProduct('${escAttr(it.product)}')"
+          onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToProduct('${escAttr(it.product)}')}"` : '';
+    return `<div class="ld-item${it.product ? ' ld-jump' : ''}"${jump}><span class="ld-i-p">${p}</span><span class="ld-i-meta">${q}${r}</span></div>`;
+  }).join('') : '';
 
   const notes = l.notes ? escHtml(l.notes) : '';
-  const lists = (l.lists && l.lists.length) ? tagChips(l.lists) : '';
+  const lists = (l.lists && l.lists.length)
+    ? '<div class="tag-chips">' + l.lists.map(t => {
+        const c = listColor(t);
+        return `<button type="button" class="tag-chip" style="background:color-mix(in srgb, ${c} 14%, transparent);color:${c};border-color:color-mix(in srgb, ${c} 34%, transparent)"
+          title="Show this list in Leads" onclick="jumpToList('${escAttr(String(t.id))}')">${escHtml(t.name)}</button>`;
+      }).join('') + '</div>'
+    : '';
   const meta  = [
     l.lead_type ? `<div class="ld-field"><span class="ld-k">Type</span><span class="ld-v">${TYPE_EMOJI[l.lead_type] || ''} ${escHtml(l.lead_type)}</span></div>` : '',
     l.area      ? `<div class="ld-field"><span class="ld-k">${escHtml(T('area'))}</span><span class="ld-v">📍 ${escHtml(l.area)}</span></div>` : '',
-    l.follow_up ? `<div class="ld-field"><span class="ld-k">Follow-up</span><span class="ld-v">📅 ${escHtml(l.follow_up)}</span></div>` : '',
-    l.created_by? `<div class="ld-field"><span class="ld-k">Added by</span><span class="ld-v">${escHtml(l.created_by)}</span></div>` : '',
+    l.follow_up ? `<div class="ld-field"><span class="ld-k">Follow-up</span><span class="ld-v"><a class="ld-jump-link" role="button" tabindex="0" title="Open Follow-ups" onclick="jumpToFollowups()">📅 ${escHtml(l.follow_up)}</a></span></div>` : '',
+    l.created_by? `<div class="ld-field"><span class="ld-k">Added by</span><span class="ld-v"><a class="ld-jump-link" role="button" tabindex="0" title="Show their leads" onclick="jumpToSalesman('${escAttr(l.created_by)}')">${escHtml(l.created_by)}</a></span></div>` : '',
   ].filter(Boolean).join('');
 
   const notesBlock = canEdit
@@ -3856,24 +3873,24 @@ function openLeadDetail(rowIndex) {
           <div class="ld-stages">${stagePills}</div>
         </div>
         ${meta ? `<div class="ld-grid">${meta}</div>` : ''}
-        <div class="ld-section">
+        ${contacts.length ? `<div class="ld-section">
           <div class="ld-label">Contacts</div>
           ${contactRows}
-        </div>
-        <div class="ld-section">
+        </div>` : ''}
+        ${items.length ? `<div class="ld-section">
           <div class="ld-label">Products</div>
           ${itemRows}
-        </div>
+        </div>` : ''}
         ${lists ? `<div class="ld-section"><div class="ld-label">Lists</div>${lists}</div>` : ''}
         <div class="ld-section">
           <div class="ld-label">📸 ${escHtml(T('entity'))} pics</div>
           <div id="ld-photos" class="ld-photos"><div class="ld-empty">Loading…</div></div>
           ${canEdit ? `<button class="btn btn-secondary btn-sm ld-photo-add" onclick="capturePhotoForLead(${l.rowIndex})">📷 Add ${escHtml(T('entity').toLowerCase())} pic</button>` : ''}
         </div>
-        <div class="ld-section">
+        ${(canEdit || notes) ? `<div class="ld-section">
           <div class="ld-label">📝 Notes</div>
           ${notesBlock}
-        </div>
+        </div>` : ''}
       </div>
       <div class="ld-foot">
         ${canEdit ? `<button class="btn btn-ghost" onclick="closeLeadDetail(); openEditModal(${l.rowIndex});">✎ Edit full lead</button>` : ''}
@@ -3895,6 +3912,18 @@ function closeLeadDetail() {
   if (o) o.remove();
   document.removeEventListener('keydown', ldEscHandler);
 }
+
+// Quick-jump from the lead-detail sheet → the relevant filtered screen. Clear the
+// other lead filters first so the jump lands on a clean, predictable view.
+function _resetLeadFilters() {
+  state.search = ''; state.filterStage = ''; state.filterProduct = '';
+  state.filterDivision = ''; state.filterSalesman = ''; state.filterGroup = ''; state.filterList = '';
+  const gs = document.getElementById('global-search'); if (gs) gs.value = '';
+}
+function jumpToList(id)    { closeLeadDetail(); _resetLeadFilters(); state.filterList    = String(id); navigate('leads'); }
+function jumpToSalesman(n) { closeLeadDetail(); _resetLeadFilters(); state.filterSalesman = n;         navigate('leads'); }
+function jumpToProduct(n)  { closeLeadDetail(); _resetLeadFilters(); state.filterProduct  = n;         navigate('leads'); }
+function jumpToFollowups() { closeLeadDetail(); state.fuFilter = 'all'; navigate('followups'); }
 
 // Update just the active-pill highlight inside an open detail sheet without
 // rebuilding it (so an unsaved note in the textarea isn't lost on a stage tap).
@@ -4177,11 +4206,74 @@ async function dropCard(event, newStage) {
 }
 
 // ============================================================
+//  Today — the daily worklist (what needs action right now)
+// ============================================================
+function renderToday() {
+  // Greeting (same time-of-day logic as the dashboard hero).
+  const name  = (localStorage.getItem('crm_user') || '').trim();
+  const first = name ? name.split(/[\s._]/)[0].replace(/^\w/, c => c.toUpperCase()) : '';
+  const h     = parseInt(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour: 'numeric', hour12: false }), 10);
+  const part  = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+  const emoji = h < 12 ? '☀️' : h < 17 ? '👋' : '🌙';
+  const g = document.getElementById('today-greeting');
+  if (g) g.innerHTML = `${part}${first ? ', ' + escHtml(first) : ''} ${emoji}`;
+
+  const today  = fuToday();
+  const active = state.leads.filter(l => l.follow_up && l.stage !== 'Lost');
+  const overdue  = active.filter(l => { const d = parseDMY(l.follow_up); return d && d <  today; });
+  const dueToday = active.filter(l => { const d = parseDMY(l.follow_up); return d && d.getTime() === today.getTime(); });
+  const upcoming = active.filter(l => { const d = parseDMY(l.follow_up); return d && d >  today; });
+
+  const sub = document.getElementById('today-subline');
+  if (sub) {
+    const dateStr = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'long', day: '2-digit', month: 'short' });
+    const n = overdue.length + dueToday.length;
+    sub.innerHTML = n
+      ? `${dateStr} · <b>${n}</b> ${n === 1 ? 'lead needs' : 'leads need'} a follow-up now`
+      : `${dateStr} · You're all caught up — nothing due. 🎉`;
+  }
+
+  // Quick-jump chips → the relevant filtered screen.
+  const s = state.stats || {};
+  const quick = document.getElementById('today-quick');
+  if (quick) {
+    quick.innerHTML =
+      todayChip('📋', overdue.length + dueToday.length, 'Due now',   "state.fuFilter='overdue'; navigate('followups')", overdue.length + dueToday.length ? 'hot' : '') +
+      todayChip('🔜', upcoming.length,                  'Upcoming',  "state.fuFilter='week'; navigate('followups')", '') +
+      todayChip('🎯', s.active ?? '—',                  'In pipeline', "dashFilter('active')", '') +
+      todayChip('🏆', s.won ?? '—',                     'Won',       "dashFilter('won')", '');
+  }
+
+  // Body — actionable follow-ups (overdue first, then today), reusing the same
+  // Call/WhatsApp/Snooze/Done action cards as the Follow-ups screen.
+  const actionable = [...overdue, ...dueToday].sort((a, b) => (parseDMY(a.follow_up) || 0) - (parseDMY(b.follow_up) || 0));
+  const body = document.getElementById('today-body');
+  if (body) {
+    body.innerHTML = actionable.length
+      ? buildFollowupCards(actionable)
+      : `<div class="today-clear"><div class="today-clear-emoji">🎉</div>
+           <div>Nothing needs a follow-up right now.</div>
+           <button class="btn btn-ghost btn-sm" onclick="navigate('leads')">Browse all ${escHtml(T('entity').toLowerCase())}s →</button>
+         </div>`;
+  }
+}
+function todayChip(icon, value, label, onclick, tone) {
+  return `<button type="button" class="today-chip${tone === 'hot' ? ' today-chip-hot' : ''}" onclick="${onclick}">
+    <span class="today-chip-ico">${icon}</span>
+    <span class="today-chip-val">${escHtml(String(value))}</span>
+    <span class="today-chip-lbl">${escHtml(label)}</span>
+  </button>`;
+}
+
+// ============================================================
 //  Follow-ups page
 // ============================================================
 function renderFollowups() {
-  renderAiToggle('followups');
-  renderAiPanel('followups');
+  // Keep the filter pills in sync (the Today screen / dashboard can set
+  // state.fuFilter before navigating here, so the active pill must reflect
+  // state, not just clicks).
+  document.querySelectorAll('.followup-filters .pill').forEach(p =>
+    p.classList.toggle('active', p.dataset.fu === state.fuFilter));
   const now   = new Date();
   now.setHours(0, 0, 0, 0);
   const week  = new Date(now);

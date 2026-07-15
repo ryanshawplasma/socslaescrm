@@ -2242,6 +2242,26 @@ const PAGE_TITLES = {
 };
 
 function navigate(page) {
+  // Premium: cross-fade the page content on switch via the View Transitions API
+  // (scoped to #content in CSS — the sidebar/topbar stay put). Guarded on browser
+  // support, a real page change, and prefers-reduced-motion; otherwise an instant
+  // switch. NOT a monkey-patch: the body is renamed _navigate (different name).
+  const prev = state.page;
+  state.page = page;   // keep state.page correct SYNCHRONOUSLY (the VT callback
+                       // that runs _navigate is deferred a frame; only the visual
+                       // DOM swap should lag, never the state other code reads).
+  // Skip the transition for chat (its fixed composer + keyboard-aware viewport
+  // locking doesn't play well with the snapshot) and when reduced-motion is set.
+  const changed = prev && prev !== page;
+  const chatInvolved = prev === 'chat' || page === 'chat';
+  if (changed && !chatInvolved && document.startViewTransition &&
+      !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    document.startViewTransition(() => _navigate(page));
+  } else {
+    _navigate(page);
+  }
+}
+function _navigate(page) {
   state.page = page;
   // Leaving the Leads table clears the bulk selection + its floating bar.
   if (page !== 'leads') { state.selectedLeads.clear(); document.getElementById('leads-bulk-bar')?.remove(); }

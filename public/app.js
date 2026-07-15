@@ -6864,6 +6864,18 @@ async function loginWithBiometric() {
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
+  // Auto-refresh onto a new deploy: the SW is cache-first, so when a new version
+  // ships (new sw.js → skipWaiting → clients.claim) the controller changes. On a
+  // real UPDATE (there was already a controller at load) we reload ONCE so the
+  // user picks up the fresh app.js/CSS instead of running a stale cached bundle.
+  // The first-ever install (no prior controller) does NOT reload.
+  let hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController) { hadController = true; return; }   // first install — nothing to refresh
+    if (window.__swReloaded) return;
+    window.__swReloaded = true;
+    window.location.reload();
+  });
 }
 
 // ============================================================

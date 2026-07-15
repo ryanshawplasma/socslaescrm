@@ -3,7 +3,7 @@
 // carry a ?v= cache-buster, so a new deploy is a new URL (cache miss → refetch);
 // cached copies are therefore always safe and never stale. Navigations stay
 // network-first so a fresh index.html (with the new ?v=) is always picked up.
-const CACHE = 'salescrm-v14';
+const CACHE = 'salescrm-v15';   // bump to purge stale caches (forces the lazy-load fix through)
 const SHELL = ['/', '/manifest.json'];
 
 self.addEventListener('install', e => {

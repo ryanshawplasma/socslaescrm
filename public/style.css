@@ -4664,3 +4664,32 @@ button.tag-chip:hover { filter: brightness(1.06); }
 .ld-jump-link { cursor: pointer; text-decoration: none; color: var(--primary); border-bottom: 1px dashed color-mix(in srgb, var(--primary) 45%, transparent); }
 .ld-jump-link:hover { border-bottom-style: solid; }
 .ld-jump-link:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 3px; }
+
+/* ── Follow-up card: inline note editing ──────────────────────── */
+.fu-note-wrap { margin: 0 0 11px; }
+.fu-note-clickable {
+  display: inline-flex; align-items: baseline; gap: 5px; max-width: 100%;
+  font-size: 12.5px; color: var(--text-muted); cursor: text;
+  padding: 5px 9px; border-radius: 9px; border: 1px solid transparent;
+  background: color-mix(in srgb, var(--text-muted) 6%, transparent);
+  transition: border-color var(--transition), background var(--transition);
+}
+.fu-note-clickable:hover { border-color: var(--border); background: var(--bg); }
+.fu-note-clickable:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.fu-note-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fu-note-pen { font-size: 11px; opacity: .55; flex-shrink: 0; }
+.fu-note-clickable:hover .fu-note-pen { opacity: 1; }
+.fu-note-add {
+  font-size: 12.5px; font-weight: 600; font-family: inherit; cursor: pointer;
+  color: var(--text-muted); background: none; border: 1px dashed var(--border);
+  padding: 5px 11px; border-radius: 9px;
+  transition: color var(--transition), border-color var(--transition);
+}
+.fu-note-add:hover { color: var(--primary); border-color: var(--primary); }
+.fu-note-input {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 46px;
+  padding: 9px 11px; border-radius: 10px; border: 1px solid var(--primary);
+  background: var(--card-bg); color: var(--text); font-family: inherit; font-size: 13px;
+  box-shadow: 0 0 0 3px var(--primary-muted);
+}
+.fu-note-actions { display: flex; gap: 8px; margin-top: 7px; }

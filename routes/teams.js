@@ -64,6 +64,13 @@ router.get('/teams/:id', authMiddleware, async (req, res, next) => {
   try {
     const team = await db.getTeamById(parseInt(req.params.id, 10));
     if (!team) return res.status(404).json({ error: 'Team not found' });
+    // The invite_code is the secret that lets you self-join bypassing approval —
+    // only active members (and global admins) may see it. Everyone else gets the
+    // team WITHOUT it, so a public "discover" lookup can't harvest join codes.
+    const actor  = await db.getUserByName(req.user.username).catch(() => null);
+    const member = actor && await db.getTeamMember(team.id, actor.id).catch(() => null);
+    const isMember = req.user.role === 'admin' || !!(member && member.status === 'active');
+    if (!isMember) { const { invite_code, ...safe } = team; return res.json(safe); }
     res.json(team);
   } catch (err) { next(err); }
 });
@@ -99,6 +106,9 @@ router.post('/teams/join', authMiddleware, async (req, res, next) => {
     if (!team) return res.status(404).json({ error: 'Invalid invite code' });
     const existing = await db.getTeamMember(team.id, user.id);
     if (existing && existing.status === 'active') return res.status(409).json({ error: 'You are already a member of this team' });
+    // A suspended member must NOT be able to silently re-activate themselves by
+    // re-entering the invite code — only a team admin can lift a suspension.
+    if (existing && existing.status === 'suspended') return res.status(403).json({ error: 'Your membership in this team is suspended. Contact a team admin.' });
     await db.addTeamMember(team.id, user.id, 'sales', 'active');
     res.json({ success: true, team: { id: team.id, name: team.name, handle: team.handle } });
   } catch (err) { next(err); }
@@ -115,6 +125,7 @@ router.post('/teams/:id/request', authMiddleware, async (req, res, next) => {
     if (!team) return res.status(404).json({ error: 'Team not found' });
     const existing = await db.getTeamMember(teamId, user.id);
     if (existing && existing.status === 'active') return res.status(409).json({ error: 'Already a member' });
+    if (existing && existing.status === 'suspended') return res.status(403).json({ error: 'Your membership is suspended. Contact a team admin.' });
     if (team.auto_approve) {
       await db.addTeamMember(teamId, user.id, 'sales', 'active');
       return res.json({ success: true, auto_approved: true, team: { id: team.id, name: team.name } });
@@ -138,6 +149,10 @@ router.patch('/teams/:id/requests/:rid', authMiddleware, teamMemberMiddleware, t
     const requests = await db.getJoinRequests(req.teamId);
     const jr = requests.find(r => r.id === parseInt(req.params.rid, 10));
     if (!jr) return res.status(404).json({ error: 'Request not found' });
+    // Only act on a still-pending request. Re-approving an already-processed one
+    // would re-run addTeamMember (hardcoded 'sales') and silently demote a member
+    // who has since been promoted.
+    if (jr.status !== 'pending') return res.status(409).json({ error: 'Request already processed' });
     await db.updateJoinRequest(jr.id, status, req.dbUser.id);
     if (status === 'approved') await db.addTeamMember(req.teamId, jr.user_id, 'sales', 'active');
     res.json({ success: true });
@@ -188,11 +203,11 @@ router.post('/teams/:id/leave', authMiddleware, teamMemberMiddleware, async (req
   } catch (err) { next(err); }
 });
 
-// ── GET /api/teams/:id/leads ──────────────────────────────────
-router.get('/teams/:id/leads', authMiddleware, teamMemberMiddleware, async (req, res, next) => {
-  try { res.json(await db.getLeadsByTeam(req.teamId)); }
-  catch (err) { next(err); }
-});
+// NOTE: the former GET /api/teams/:id/leads was removed — the SPA reads team
+// leads via GET /api/leads?teamId= (leadsForRequest), which correctly applies
+// visibility ('private' hiding) and can_edit. The old endpoint returned raw
+// getLeadsByTeam() with no such filtering, leaking hidden leads to rank-and-file
+// members.
 
 // ── POST /api/teams/:id/leads ─────────────────────────────────
 router.post('/teams/:id/leads', authMiddleware, teamMemberMiddleware, async (req, res, next) => {

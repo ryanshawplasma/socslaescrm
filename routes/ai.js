@@ -830,6 +830,19 @@ router.post('/ai/command', authMiddleware, async (req, res, next) => {
         return res.json({ ok: false, message: `What is the ${noun}'s name or ${entityLower} number? Try: "add ${noun} M901 Sharma Traders Rakeshji 9876543210 hotmelt 500@120 hot, surat"` });
       }
 
+      // Only tag the new lead into `teamId` if the caller is genuinely an active
+      // member of it — mirrors POST /api/leads. Without this a non-member could
+      // inject a lead into any team (and a stale client dest would land in an
+      // ex-team). getTeamMember is looked up once and reused for destTeamId below.
+      const actor = await db.getUserByName(req.user.username).catch(() => null);
+      const activeMemberOf = async (tid) => {
+        if (!tid) return false;
+        const m = actor && await db.getTeamMember(parseInt(tid, 10), actor.id).catch(() => null);
+        return !!(m && m.status === 'active');
+      };
+      let baseTeamId = teamId ? parseInt(teamId, 10) : null;
+      if (baseTeamId && !(await activeMemberOf(baseTeamId))) baseTeamId = null;
+
       const payload = {
         factory_number:   parsed.factory_number   || '',
         factory_name:     parsed.factory_name     || '',
@@ -842,14 +855,12 @@ router.post('/ai/command', authMiddleware, async (req, res, next) => {
         notes:            parsed.notes            || '',
         lead_type:        parsed.lead_type        || '',
         items:            Array.isArray(parsed.items) ? parsed.items : [],
-        team_id:          teamId ? parseInt(teamId, 10) : null,
+        team_id:          baseTeamId,
       };
       // Honor the user's "Save to" default for where the new lead is stored,
       // but only if they're actually an active member of that team.
-      if (destTeamId) {
-        const actor  = await db.getUserByName(req.user.username).catch(() => null);
-        const member = actor && await db.getTeamMember(parseInt(destTeamId, 10), actor.id).catch(() => null);
-        if (member && member.status === 'active') payload.team_id = parseInt(destTeamId, 10);
+      if (destTeamId && await activeMemberOf(destTeamId)) {
+        payload.team_id = parseInt(destTeamId, 10);
       }
       if (payload.items.length) {
         payload.product  = payload.items[0].product;
@@ -951,7 +962,10 @@ router.post('/parse', authMiddleware, async (req, res, next) => {
     const profile = await resolveBusinessProfileFor(req.user.username, teamId);
     const result  = await gemini.generate(text, vocab, '', businessVocabPrompt(profile));
     const parsed = result ? result.parsed : localParse(text);
-    const leads  = await db.getLeads();
+    // Scope the ADD-vs-UPDATE match to leads the caller can actually see — else
+    // a non-admin could probe whether any factory number exists system-wide (and
+    // learn its row id) via existingRow. Admins keep the full-table match.
+    const leads  = req.user.role === 'admin' ? await db.getLeads() : await db.getLeadsForUser(req.user.username);
     const pNum   = String(parsed.factory_number || '').trim().toLowerCase();
     const pName  = String(parsed.factory_name   || '').trim().toLowerCase();
     let existingRow = -1;
@@ -975,7 +989,9 @@ router.post('/parse/voice', authMiddleware, async (req, res, next) => {
     const result  = await gemini.generateFromAudio(audioBase64, mimeType, vocab, '', businessVocabPrompt(profile));
     if (!result) return res.status(422).json({ error: 'Could not parse audio — try speaking more clearly or use text instead.' });
     const { parsed } = result;
-    const leads = await db.getLeads();
+    // Scope the match to the caller's own leads (admins keep the full table) —
+    // same cross-tenant-oracle fix as /parse.
+    const leads = req.user.role === 'admin' ? await db.getLeads() : await db.getLeadsForUser(req.user.username);
     const pNum  = String(parsed.factory_number || '').trim().toLowerCase();
     let existingRow = -1;
     for (const l of leads) {

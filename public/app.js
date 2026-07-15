@@ -4361,6 +4361,53 @@ function waHref(raw, person) {
   return 'https://wa.me/' + d + txt;
 }
 
+// Inline note editing right on the follow-up card — no need to open the detail
+// sheet. View shows a snippet (or "＋ Add note"); tapping opens a textarea.
+function fuNoteViewHtml(l) {
+  const full = l.notes ? String(l.notes) : '';
+  const snip = full ? escHtml(full.slice(0, 90)) + (full.length > 90 ? '…' : '') : '';
+  return full
+    ? `<div class="fu-note fu-note-clickable" role="button" tabindex="0" title="Edit note"
+         onclick="fuEditNote(${l.rowIndex})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();fuEditNote(${l.rowIndex})}">📝 <span class="fu-note-txt">${snip}</span><span class="fu-note-pen">✏️</span></div>`
+    : `<button type="button" class="fu-note-add" onclick="fuEditNote(${l.rowIndex})">＋ Add note</button>`;
+}
+function fuNoteRefresh(rowIndex) {
+  const wrap = document.getElementById(`fu-note-${rowIndex}`);
+  const l = state.leads.find(x => String(x.rowIndex) === String(rowIndex));
+  if (wrap && l) wrap.innerHTML = fuNoteViewHtml(l);
+}
+function fuEditNote(rowIndex) {
+  const wrap = document.getElementById(`fu-note-${rowIndex}`);
+  const l = state.leads.find(x => String(x.rowIndex) === String(rowIndex));
+  if (!wrap || !l) return;
+  wrap.innerHTML = `
+    <textarea class="fu-note-input" id="fu-note-input-${rowIndex}" rows="2" placeholder="Add a note…"
+      onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();fuSaveNote(${rowIndex})}">${escHtml(l.notes || '')}</textarea>
+    <div class="fu-note-actions">
+      <button type="button" class="btn btn-primary btn-sm" onclick="fuSaveNote(${rowIndex})">Save</button>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="fuNoteRefresh(${rowIndex})">Cancel</button>
+    </div>`;
+  const ta = document.getElementById(`fu-note-input-${rowIndex}`);
+  if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+}
+async function fuSaveNote(rowIndex) {
+  const l  = state.leads.find(x => String(x.rowIndex) === String(rowIndex));
+  const ta = document.getElementById(`fu-note-input-${rowIndex}`);
+  if (!l || !ta) return;
+  const val = ta.value.trim();
+  const prev = l.notes || '';
+  if (val === prev) { fuNoteRefresh(rowIndex); return; }
+  l.notes = val;
+  fuNoteRefresh(rowIndex);                 // optimistic
+  try {
+    await updateLead(rowIndex, { ...l, notes: val });
+    toast('Note saved');
+  } catch (err) {
+    l.notes = prev; fuNoteRefresh(rowIndex);
+    toast('Could not save note: ' + err.message, 'error');
+  }
+}
+
 function buildFollowupCards(leads) {
   const today = fuToday();
   const cards = leads.map(l => {
@@ -4384,7 +4431,6 @@ function buildFollowupCards(leads) {
     const wa   = waHref(pc.raw, pc.name);
     const prods = leadProductNames(l).slice(0, 2).join(', ');
     const mid  = [stageBadge(l), prods ? escHtml(prods) : ''].filter(Boolean).join('<span class="fu-dot">·</span>');
-    const note = l.notes ? escHtml(String(l.notes).slice(0, 90)) + (String(l.notes).length > 90 ? '…' : '') : '';
     return `
     <div class="fu-card ${dueClass}" role="button" tabindex="0"
          onclick="openLeadDetail(${l.rowIndex})"
@@ -4396,7 +4442,8 @@ function buildFollowupCards(leads) {
         </div>
         <div class="fu-due ${dueClass}">${dueLabel}</div>
       </div>
-      <div class="fu-card-mid">${mid}${note ? `<div class="fu-note">📝 ${note}</div>` : ''}</div>
+      <div class="fu-card-mid">${mid}</div>
+      <div class="fu-note-wrap" id="fu-note-${l.rowIndex}" onclick="event.stopPropagation()">${fuNoteViewHtml(l)}</div>
       <div class="fu-actions" onclick="event.stopPropagation()">
         ${tel ? `<a class="fu-act fu-call" href="${escHtml(tel)}">📞 Call</a>`
               : `<span class="fu-act fu-call fu-disabled" title="No phone number">📞 Call</span>`}
@@ -6118,7 +6165,11 @@ async function loadMyTeams() {
   // and skip the stale-org guard + applyDefaultWorkspace below (they'd
   // otherwise misread the empty array as "no teams" and yank the user back
   // to Personal / reset their workspace on a blip).
-  catch (_) { return; }
+  // EXCEPTION: on the very FIRST load (before the default workspace has ever
+  // been applied) still run applyDefaultWorkspace — otherwise a Render cold-start
+  // 502 on this first fetch leaves an admin silently scoped to a stale saved team
+  // (crm_org_id) while the switcher says "All leads", so they can't see everything.
+  catch (_) { if (!_defaultWorkspaceApplied) applyDefaultWorkspace(); return; }
   // Drop a saved org the user is no longer part of
   if (state.activeOrgId && !state.myTeams.some(t => String(t.id) === String(state.activeOrgId))) {
     state.activeOrgId = '';
@@ -6175,8 +6226,17 @@ async function switchOrg(id) {
   // Not a real workspace — open the "find / create a team" prompt instead.
   if (id === '__discover__') { renderOrgSwitcher(); openTeamsDiscover(); return; }
   state.activeOrgId = id || '';
-  if (id) { localStorage.setItem('crm_org_id', id); localStorage.setItem('ws_team_id', id); }
-  else    { localStorage.removeItem('crm_org_id'); }
+  // Persist the chosen team for THIS session's reloads — but NOT for admins:
+  // their default is always the global "All leads" view, so a saved team would
+  // (a) reopen them scoped to one team and (b) risk the cold-start-blip trap.
+  // ws_team_id (the AI "Save to" hint) is still remembered so an admin can view
+  // everything while new leads pool into their team.
+  if (id) {
+    if (state.role !== 'admin') localStorage.setItem('crm_org_id', id);
+    localStorage.setItem('ws_team_id', id);
+  } else {
+    localStorage.removeItem('crm_org_id');
+  }
   // Entering a team makes it your default "Save to" for new leads. Switching to
   // Personal/All-leads leaves the last team destination intact (so an admin can
   // view everything while new leads still pool into their team).

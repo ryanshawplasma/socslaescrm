@@ -229,6 +229,8 @@ router.patch('/teams/:id/departments/:deptId', authMiddleware, teamMemberMiddlew
   const deptId = parseInt(req.params.deptId, 10);
   const { name, description, managerId } = req.body || {};
   try {
+    const dept = await db.getDepartmentById(deptId);
+    if (!dept || dept.team_id !== req.teamId) return res.status(404).json({ error: 'Department not found' });
     await db.updateDepartment(deptId, { name, description, managerId });
     res.json({ success: true });
   } catch (err) { next(err); }
@@ -236,32 +238,47 @@ router.patch('/teams/:id/departments/:deptId', authMiddleware, teamMemberMiddlew
 
 // DELETE /api/teams/:id/departments/:deptId — archive
 router.delete('/teams/:id/departments/:deptId', authMiddleware, teamMemberMiddleware, teamAdminMiddleware, async (req, res, next) => {
+  const deptId = parseInt(req.params.deptId, 10);
   try {
-    await db.archiveDepartment(parseInt(req.params.deptId, 10));
+    const dept = await db.getDepartmentById(deptId);
+    if (!dept || dept.team_id !== req.teamId) return res.status(404).json({ error: 'Department not found' });
+    await db.archiveDepartment(deptId);
     res.json({ success: true });
   } catch (err) { next(err); }
 });
 
 // GET /api/teams/:id/departments/:deptId/members
 router.get('/teams/:id/departments/:deptId/members', authMiddleware, teamMemberMiddleware, async (req, res, next) => {
-  try { res.json(await db.getDepartmentMembers(parseInt(req.params.deptId, 10))); }
-  catch (err) { next(err); }
+  const deptId = parseInt(req.params.deptId, 10);
+  try {
+    const dept = await db.getDepartmentById(deptId);
+    if (!dept || dept.team_id !== req.teamId) return res.status(404).json({ error: 'Department not found' });
+    res.json(await db.getDepartmentMembers(deptId));
+  } catch (err) { next(err); }
 });
 
 // POST /api/teams/:id/departments/:deptId/members
 router.post('/teams/:id/departments/:deptId/members', authMiddleware, teamMemberMiddleware, teamAdminMiddleware, async (req, res, next) => {
+  const deptId = parseInt(req.params.deptId, 10);
   const { userId } = req.body || {};
   if (!userId) return res.status(400).json({ error: 'userId required' });
   try {
-    await db.addDepartmentMember(parseInt(req.params.deptId, 10), parseInt(userId, 10));
+    const dept = await db.getDepartmentById(deptId);
+    if (!dept || dept.team_id !== req.teamId) return res.status(404).json({ error: 'Department not found' });
+    const m = await db.getTeamMember(req.teamId, parseInt(userId, 10));
+    if (!m || m.status !== 'active') return res.status(400).json({ error: 'User is not an active team member' });
+    await db.addDepartmentMember(deptId, parseInt(userId, 10));
     res.json({ success: true });
   } catch (err) { next(err); }
 });
 
 // DELETE /api/teams/:id/departments/:deptId/members/:uid
 router.delete('/teams/:id/departments/:deptId/members/:uid', authMiddleware, teamMemberMiddleware, teamAdminMiddleware, async (req, res, next) => {
+  const deptId = parseInt(req.params.deptId, 10);
   try {
-    await db.removeDepartmentMember(parseInt(req.params.deptId, 10), parseInt(req.params.uid, 10));
+    const dept = await db.getDepartmentById(deptId);
+    if (!dept || dept.team_id !== req.teamId) return res.status(404).json({ error: 'Department not found' });
+    await db.removeDepartmentMember(deptId, parseInt(req.params.uid, 10));
     res.json({ success: true });
   } catch (err) { next(err); }
 });

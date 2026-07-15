@@ -477,18 +477,6 @@ function detectCredentialType(val) {
 // User-name chips are intentionally NOT shown on the login page — we don't
 // expose the list of accounts (incl. admins) publicly. The last-used username
 // is still remembered per device for a fast sign-in.
-function loadLoginUserChips() {
-  document.getElementById('login-user-chips')?.classList.add('hidden');
-}
-
-function selectUserChip(name) {
-  document.getElementById('login-username').value = name;
-  document.getElementById('login-password').value = '';
-  document.getElementById('login-password').focus();
-  document.getElementById('login-error').textContent = '';
-  updateCredentialLabel(name);
-}
-
 function updateCredentialLabel(val) {
   const lbl = document.getElementById('credential-type-label');
   if (lbl) lbl.textContent = detectCredentialType(val);
@@ -1420,6 +1408,7 @@ function orgQuery() { return state.activeOrgId ? `?teamId=${encodeURIComponent(s
 async function loadLeads()  {
   const [leads] = await Promise.all([ apiFetch('/api/leads' + orgQuery()), loadLists(), loadProducts() ]);
   state.leads = leads;
+  state.stats = computeStats(leads);
 }
 async function loadLists() {
   try { state.myLists = await apiFetch('/api/lead-lists' + orgQuery()); }
@@ -1464,7 +1453,7 @@ function leadItemLines(l) {
   return items.filter(i => i.product).map(i =>
     `${i.product}${i.quantity ? ' · ' + i.quantity : ''}${i.rate ? ' @₹' + i.rate : ''}`);
 }
-async function loadStats()  { state.stats = await apiFetch('/api/stats' + orgQuery()); }
+async function loadStats()  { state.stats = computeStats(state.leads); }
 // ── Where new leads are stored ────────────────────────────────
 // Independent of which workspace you're VIEWING: a remembered per-user
 // default so all new leads pool into your team by default (admins included),
@@ -1560,7 +1549,7 @@ function startAutoRefresh() {
       if (profileChanged) switcherDirty = true;
       if (switcherDirty) renderOrgSwitcher();
 
-      await Promise.all([loadLeads(), loadStats()]);
+      await loadLeads();
       lastRefreshed = new Date();
       // Don't re-render out from under the user mid-interaction: skip while a
       // modal / lead-detail / stage-picker is open or the search box is focused.
@@ -2187,6 +2176,7 @@ const PAGE_TITLES = {
   dashboard: 'Dashboard', leads: 'Leads', database: 'Database',
   pipeline: 'Pipeline', followups: 'Follow-ups', reports: 'Reports', team: 'Team', map: 'Map', chat: 'Chat',
   workspace: 'Workspace', brochure: 'Brochure Maker', hub: 'Team Hub',
+  'ai-debug': 'AI Debug',
 };
 
 function navigate(page) {
@@ -2424,17 +2414,9 @@ function renderBrochurePoster() {
 }
 
 // ── Export (lazy-loads html2canvas / jsPDF only on first use) ──
-function loadScriptOnce(src) {
-  return new Promise((resolve, reject) => {
-    if ([...document.scripts].some(s => s.src === src)) return resolve();
-    const el = document.createElement('script');
-    el.src = src; el.onload = () => resolve(); el.onerror = () => reject(new Error('Could not load ' + src));
-    document.head.appendChild(el);
-  });
-}
 async function ensureBrochureLibs(needPdf) {
-  if (!window.html2canvas) await loadScriptOnce('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
-  if (needPdf && !(window.jspdf && window.jspdf.jsPDF)) await loadScriptOnce('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js');
+  if (!window.html2canvas) await loadScriptOnce('html2canvas', 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
+  if (needPdf && !(window.jspdf && window.jspdf.jsPDF)) await loadScriptOnce('jspdf', 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js');
 }
 async function captureBrochureCanvas() {
   const poster = document.querySelector('#brochure-poster .bp');
@@ -2557,7 +2539,7 @@ function upsertAgentMarker(agent) {
   if (!_leafletMap) return;
   const { agentId, lat, lng, name, accuracy } = agent;
   const accuracyText = accuracy ? `±${Math.round(accuracy)}m` : '';
-  const popup = `<b>${name || agentId}</b><br>Live Location ${accuracyText}`;
+  const popup = `<b>${escHtml(name || agentId)}</b><br>Live Location ${escHtml(accuracyText)}`;
   if (agentMarkers[agentId]) {
     agentMarkers[agentId].setLatLng([lat, lng]);
     agentMarkers[agentId].setIcon(createAgentIcon(name));
@@ -2766,7 +2748,7 @@ function startPinMode(rowIndex, name) {
   _pinModeTarget = { rowIndex, name };
   document.getElementById('pin-mode-banner').classList.remove('hidden');
   if (_leafletMap) _leafletMap.getContainer().style.cursor = 'crosshair';
-  toast(`Click on the map to place the pin for "${name}"`);
+  toast(`Tap the map to place the pin for "${name}"`);
 }
 
 function cancelPinMode() {
@@ -2814,7 +2796,7 @@ async function optimizeRoute() {
         icon: createFactoryIcon(stop.factory_number, lead?.lead_type, stop.order),
         zIndexOffset: 500,
       })
-      .bindPopup(`<b>Stop ${stop.order}: ${stop.factory_name}</b><br>${stop.factory_number}<br>${stop.person||''}`)
+      .bindPopup(`<b>Stop ${stop.order}: ${escHtml(stop.factory_name)}</b><br>${escHtml(stop.factory_number)}<br>${escHtml(stop.person||'')}`)
       .addTo(_factoryLayer);
     });
 
@@ -2829,8 +2811,8 @@ async function optimizeRoute() {
       <div class="stop-item">
         <div class="stop-badge" style="background:${TYPE_COLORS[state.leads.find(l=>String(l.rowIndex)===String(s.factory_id))?.lead_type]||'#6366f1'}">${s.order}</div>
         <div class="stop-info">
-          <div class="stop-name">${s.factory_name || s.factory_number}</div>
-          <div class="stop-detail">${s.factory_number}${s.person ? ' · ' + s.person : ''}</div>
+          <div class="stop-name">${escHtml(s.factory_name || s.factory_number)}</div>
+          <div class="stop-detail">${escHtml(s.factory_number)}${s.person ? ' · ' + escHtml(s.person) : ''}</div>
         </div>
       </div>
     `).join('');
@@ -2880,6 +2862,30 @@ function groupOf(l) {
   if (n === '6' || n === '7') return 'won';
   if (n === '0')              return 'lost';
   return 'active';
+}
+
+// Stats used to come from /api/stats, which re-ran the same heavy pipeline
+// /api/leads already runs — twice a minute. The SPA holds the full dataset, so
+// we derive stats client-side instead. by_stage stays keyed by the raw
+// canonical l.stage (NOT display labels) to match the old server output.
+function computeStats(leads) {
+  const by_stage = {}, by_product = {}, by_product_revenue = {};
+  let won = 0, lost = 0;
+  for (const l of (leads || [])) {
+    const s = l.stage || 'Unknown';
+    by_stage[s] = (by_stage[s] || 0) + 1;
+    const items = (l.items && l.items.length) ? l.items : [{ product: l.product, quantity: l.quantity, rate: l.rate }];
+    for (const it of items) {
+      const p = it.product || 'Unknown';
+      by_product[p] = (by_product[p] || 0) + 1;
+      by_product_revenue[p] = (by_product_revenue[p] || 0) + (parseFloat(it.quantity) || 0) * (parseFloat(it.rate) || 0);
+    }
+    if (l.stage_number === '6' || l.stage_number === '7') won++;
+    if (l.stage_number === '0') lost++;
+  }
+  const by_lead_type = (leads || []).reduce((acc, l) => { const t = l.lead_type || 'Unset'; acc[t] = (acc[t] || 0) + 1; return acc; }, {});
+  const total = (leads || []).length;
+  return { total, active: total - won - lost, won, lost, by_stage, by_product, by_product_revenue, by_lead_type };
 }
 
 function filteredLeads() {
@@ -3745,7 +3751,7 @@ function openLeadDetail(rowIndex) {
   const lists = (l.lists && l.lists.length) ? tagChips(l.lists) : '';
   const meta  = [
     l.lead_type ? `<div class="ld-field"><span class="ld-k">Type</span><span class="ld-v">${TYPE_EMOJI[l.lead_type] || ''} ${escHtml(l.lead_type)}</span></div>` : '',
-    l.area      ? `<div class="ld-field"><span class="ld-k">Area</span><span class="ld-v">📍 ${escHtml(l.area)}</span></div>` : '',
+    l.area      ? `<div class="ld-field"><span class="ld-k">${escHtml(T('area'))}</span><span class="ld-v">📍 ${escHtml(l.area)}</span></div>` : '',
     l.follow_up ? `<div class="ld-field"><span class="ld-k">Follow-up</span><span class="ld-v">📅 ${escHtml(l.follow_up)}</span></div>` : '',
     l.created_by? `<div class="ld-field"><span class="ld-k">Added by</span><span class="ld-v">${escHtml(l.created_by)}</span></div>` : '',
   ].filter(Boolean).join('');
@@ -4464,56 +4470,6 @@ async function removeTeamMember(id, name) {
     renderTeam();
   } catch (err) {
     toast('Remove failed: ' + err.message, 'error');
-  }
-}
-
-function openResetPinModal(userId, userName) {
-  let overlay = document.getElementById('reset-pin-overlay');
-  if (overlay) overlay.remove();
-  overlay = document.createElement('div');
-  overlay.id = 'reset-pin-overlay';
-  overlay.style.cssText = 'position:fixed;top:0;right:0;bottom:0;left:0;background:rgba(0,0,0,0.55);z-index:1000;display:flex;align-items:center;justify-content:center';
-  overlay.innerHTML = `
-    <div style="background:var(--card-bg);border-radius:12px;padding:24px;width:320px;max-width:95vw;box-shadow:0 8px 32px rgba(0,0,0,0.4)">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
-        <h3 style="margin:0;font-size:15px;color:var(--text)">Reset PIN — ${escHtml(userName)}</h3>
-        <button onclick="document.getElementById('reset-pin-overlay').remove()" class="icon-btn">✕</button>
-      </div>
-      <div class="form-group" style="margin-bottom:12px">
-        <label>New PIN <span style="font-weight:400;color:var(--text-muted)">(4–6 digits)</span></label>
-        <input id="rp-pin" type="password" placeholder="••••••" inputmode="numeric" maxlength="6" style="width:100%" autofocus />
-      </div>
-      <div class="form-group" style="margin-bottom:16px">
-        <label>Confirm PIN</label>
-        <input id="rp-pin2" type="password" placeholder="••••••" inputmode="numeric" maxlength="6" style="width:100%" />
-      </div>
-      <p id="rp-error" style="color:var(--danger);font-size:13px;margin:0 0 12px;min-height:18px"></p>
-      <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button class="btn btn-ghost" onclick="document.getElementById('reset-pin-overlay').remove()">Cancel</button>
-        <button class="btn btn-primary" id="rp-btn" onclick="submitResetPin(${userId}, '${escAttr(userName)}')">Set PIN</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-}
-
-async function submitResetPin(userId, userName) {
-  const pin   = document.getElementById('rp-pin').value.trim();
-  const pin2  = document.getElementById('rp-pin2').value.trim();
-  const errEl = document.getElementById('rp-error');
-  const btn   = document.getElementById('rp-btn');
-  errEl.textContent = '';
-  if (!/^\d{4,6}$/.test(pin)) { errEl.textContent = 'PIN must be 4–6 digits'; return; }
-  if (pin !== pin2)            { errEl.textContent = 'PINs do not match'; return; }
-  btn.disabled    = true;
-  btn.textContent = 'Saving…';
-  try {
-    await apiFetch(`/api/users/${userId}/pin`, { method: 'PATCH', body: JSON.stringify({ pin }) });
-    document.getElementById('reset-pin-overlay').remove();
-    toast(`PIN reset for ${userName}. Share the new PIN with them.`, 'success');
-  } catch (err) {
-    errEl.textContent = err.message;
-    btn.disabled    = false;
-    btn.textContent = 'Set PIN';
   }
 }
 
@@ -5498,7 +5454,7 @@ async function handleFormSubmit(e) {
     let savedRow = row ? parseInt(row) : null;
     if (row) {
       await updateLead(parseInt(row), data);
-      toast('Lead updated successfully');
+      toast(biz().key==='factory' ? 'Lead updated successfully' : T('entity')+' updated successfully');
     } else {
       const result = await createLead(data);
       if (result && result.conflict) {
@@ -5506,7 +5462,7 @@ async function handleFormSubmit(e) {
         return;
       }
       savedRow = result && result.rowIndex;
-      toast('Lead added successfully');
+      toast(biz().key==='factory' ? 'Lead added successfully' : T('entity')+' added successfully');
     }
     // Persist list (tag) memberships for this lead
     if (savedRow) {
@@ -5532,7 +5488,7 @@ async function confirmDelete(row, name) {
   if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
   try {
     await deleteLead(row);
-    toast('Lead deleted');
+    toast(biz().key==='factory' ? 'Lead deleted' : T('entity')+' deleted');
     await refresh();
   } catch (err) {
     toast('Delete failed: ' + err.message, 'error');
@@ -5546,7 +5502,7 @@ async function refresh() {
   const btn = document.getElementById('btn-refresh');
   btn.textContent = '↻';
   try {
-    await Promise.all([loadLeads(), loadStats()]);
+    await loadLeads();
     lastRefreshed = new Date();
     updateRefreshLabel();
     renderPage(state.page);
@@ -5863,7 +5819,7 @@ async function switchOrg(id) {
   const team = state.myTeams.find(t => String(t.id) === String(id));
   toast(team ? `Workspace: ${team.name} · new leads save here` : 'Personal workspace');
   try {
-    await Promise.all([loadLeads(), loadStats()]);
+    await loadLeads();
     lastRefreshed = new Date();
     renderPage(state.page);
   } catch (err) { toast(err.message, 'error'); }
@@ -5892,7 +5848,7 @@ async function initApp() {
         if (me?.default_area) localStorage.setItem('crm_default_area', me.default_area);
       }).catch(() => {});
     }
-    await Promise.all([loadLeads(), loadStats()]);
+    await loadLeads();
     lastRefreshed = new Date();
     navigate('dashboard');
     applyRoleUI();
@@ -6126,8 +6082,7 @@ async function loadReferralBlock(boxId, linkId, metaId) {
 function copyReferLink(inputId) {
   const el = document.getElementById(inputId);
   if (!el || !el.value) return;
-  navigator.clipboard?.writeText(el.value);
-  toast('Invite link copied!');
+  navigator.clipboard?.writeText(el.value).then(() => toast('Invite link copied!'), () => toast('Copy failed', 'error'));
 }
 
 async function redeemProCode() {
@@ -7016,35 +6971,6 @@ function chatSelectProduct(product) {
   document.getElementById('chat-autocomplete').className = 'chat-autocomplete';
 }
 
-// ── Edit parsed — put data back into input for correction ─
-function chatEditParsed(parsedJson, msgEl) {
-  const parsed = JSON.parse(parsedJson);
-  const parts = [];
-  if (parsed.factory_number)   parts.push(parsed.factory_number);
-  if (parsed.factory_name)     parts.push(parsed.factory_name);
-  if (parsed.person_in_charge) parts.push(parsed.person_in_charge);
-  if (parsed.area)             parts.push(parsed.area);
-  (parsed.items || []).forEach(it => {
-    let s = it.product || '';
-    if (it.quantity) s += ' ' + it.quantity;
-    if (it.rate)     s += '@' + it.rate;
-    if (s.trim()) parts.push(s.trim());
-  });
-  if (parsed.lead_type && parsed.lead_type !== 'Cold') parts.push(parsed.lead_type.toLowerCase());
-  if (parsed.follow_up) parts.push('follow up ' + parsed.follow_up);
-  if (parsed.notes)     parts.push(parsed.notes);
-
-  // remove the preview bubble
-  if (msgEl) msgEl.remove();
-
-  const input = document.getElementById('chat-input');
-  if (input) {
-    input.value = parts.join(' ');
-    input.focus();
-    input.selectionStart = input.selectionEnd = input.value.length;
-  }
-}
-
 function chatAppendMessage(role, html) {
   const box = document.getElementById('chat-messages');
   if (!box) return;
@@ -7063,95 +6989,6 @@ function chatReplaceLastBot(html) {
   const last = bots[bots.length - 1];
   if (last) last.innerHTML = html;
   box.scrollTop = box.scrollHeight;
-}
-
-function buildChatPreview({ parsed, action, existingRow }) {
-  const p = parsed;
-  const itemsHtml = (p.items || []).map(it =>
-    `<div class="chat-item-row">
-      <span class="chat-item-product">${it.product || '—'}</span>
-      <span>${it.quantity || '—'}</span>
-      ${it.rate ? `<span>@ ₹${it.rate}</span>` : ''}
-    </div>`
-  ).join('') || '<div style="color:var(--text-muted)">No items detected</div>';
-
-  const badgeColor = p.lead_type === 'Hot' ? '#ef4444' : p.lead_type === 'Warm' ? '#f59e0b' : '#3b82f6';
-  const actionLabel = action === 'UPDATE' ? '🔄 Update existing lead' : '➕ New lead';
-
-  return `
-    <div class="chat-preview-card">
-      <div class="chat-preview-header">
-        <span class="chat-preview-action">${actionLabel}</span>
-        ${p.lead_type ? `<span class="chat-preview-badge" style="background:${badgeColor}">${p.lead_type}</span>` : ''}
-      </div>
-      <table class="chat-preview-table">
-        <tr><td>${escHtml(T('code'))}</td><td><b>${p.factory_number || '—'}</b></td></tr>
-        <tr><td>${escHtml(T('entity'))}</td><td><b>${p.factory_name || '—'}</b></td></tr>
-        ${p.person_in_charge ? `<tr><td>Contact</td><td>${p.person_in_charge}</td></tr>` : ''}
-        ${p.area ? `<tr><td>Area</td><td>${p.area}</td></tr>` : ''}
-        ${p.stage ? `<tr><td>Stage</td><td>${escHtml(stageLabel(p.stage))}</td></tr>` : ''}
-        ${p.follow_up ? `<tr><td>Follow-up</td><td>${p.follow_up}</td></tr>` : ''}
-      </table>
-      <div class="chat-preview-items">${itemsHtml}</div>
-      <div class="chat-preview-actions">
-        <button class="btn-primary" onclick="chatConfirm(${JSON.stringify({ parsed: p, action, existingRow }).replace(/"/g, '&quot;')})">✅ Confirm</button>
-        <button class="btn-secondary" onclick="chatEditParsed('${JSON.stringify(p).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;')}', this.closest('.chat-msg'))">✏️ Edit</button>
-        <button class="btn-secondary" onclick="this.closest('.chat-msg').remove()">✕</button>
-      </div>
-    </div>`;
-}
-
-async function chatSendLegacy() {
-  const input = document.getElementById('chat-input');
-  const text  = (input?.value || '').trim();
-  if (!text) return;
-  input.value = '';
-  document.getElementById('chat-autocomplete').className = 'chat-autocomplete';
-
-  chatAppendMessage('user', escHtml(text));
-  chatAppendMessage('bot', '⏳ Parsing…');
-
-  try {
-    const data = await apiFetch('/api/parse', { method: 'POST', body: JSON.stringify({ text }) });
-    chatReplaceLastBot(buildChatPreview(data));
-  } catch (err) {
-    chatReplaceLastBot('❌ ' + (err.message || 'Error parsing lead'));
-  }
-}
-
-async function chatConfirm({ parsed, action, existingRow }) {
-  const payload = {
-    factory_number:  parsed.factory_number  || '',
-    factory_name:    parsed.factory_name    || '',
-    person_in_charge: parsed.person_in_charge || '',
-    contact:         parsed.contact         || '',
-    product:         parsed.items?.[0]?.product  || parsed.product  || '',
-    quantity:        parsed.items?.[0]?.quantity || parsed.quantity || '',
-    rate:            parsed.items?.[0]?.rate     || parsed.rate     || '',
-    stage:           parsed.stage           || '',
-    stage_number:    parsed.stage_number    || 0,
-    follow_up:       parsed.follow_up       || '',
-    area:            parsed.area            || '',
-    notes:           parsed.notes           || '',
-    lead_type:       parsed.lead_type       || 'Cold',
-    items:           parsed.items           || [],
-    contacts:        [],
-  };
-
-  try {
-    if (action === 'UPDATE' && existingRow != null && existingRow !== -1) {
-      await apiFetch(`/api/leads/${existingRow}`, { method: 'PUT', body: JSON.stringify(payload) });
-    } else {
-      await apiFetch('/api/leads', { method: 'POST', body: JSON.stringify(payload) });
-    }
-
-    chatAppendMessage('bot', `✅ Lead <b>${escHtml(payload.factory_name || payload.factory_number || 'saved')}</b> ${action === 'UPDATE' ? 'updated' : 'added'} successfully!`);
-    await loadLeads();
-    await loadStats();
-    renderPage(state.page);
-  } catch (err) {
-    chatAppendMessage('bot', '❌ Save failed: ' + escHtml(err.message));
-  }
 }
 
 // Enter key sends, Shift+Enter adds newline; blur hides autocomplete
@@ -7299,14 +7136,12 @@ function wsRenderOverview() {
 }
 
 function wsCopyInvite() {
-  navigator.clipboard?.writeText(ws.activeTeam.invite_code);
-  toast('Invite code copied!');
+  navigator.clipboard?.writeText(ws.activeTeam.invite_code).then(() => toast('Invite code copied!'), () => toast('Copy failed', 'error'));
 }
 
 function wsCopyLink() {
   const link = `${location.origin}?join=${ws.activeTeam.invite_code}`;
-  navigator.clipboard?.writeText(link);
-  toast('Invite link copied!');
+  navigator.clipboard?.writeText(link).then(() => toast('Invite link copied!'), () => toast('Copy failed', 'error'));
 }
 
 async function wsRegenInvite() {
@@ -8578,7 +8413,7 @@ function renderUnderstandingCard(data) {
   if (!cardArea) return;
 
   const FIELD_LABELS = {
-    factory_number: T('code'), factory_name: 'Business', person_in_charge: 'Contact',
+    factory_number: T('code'), factory_name: biz().key === 'factory' ? 'Business' : T('entity'), person_in_charge: 'Contact',
     contact: 'Phone', stage: 'Stage', follow_up: 'Follow-up', area: 'Area',
     notes: 'Notes', lead_type: 'Lead Type',
   };
@@ -8745,11 +8580,11 @@ async function aiConfirmSave() {
     const existingRow = aiSession.existingRow;
     if (existingRow && existingRow !== -1) {
       await apiFetch(`/api/leads/${existingRow}`, { method: 'PUT', body: JSON.stringify(payload) });
-      toast('Lead updated');
+      toast(biz().key==='factory' ? 'Lead updated' : T('entity')+' updated');
     } else {
       const result = await apiFetch('/api/leads', { method: 'POST', body: JSON.stringify(payload) });
       if (result?.conflict) { toast(`Duplicate: ${result.message}`, 'error'); return; }
-      toast('Lead saved');
+      toast(biz().key==='factory' ? 'Lead saved' : T('entity')+' saved');
     }
     aiClearUnderstandingCard();
     await loadLeads(); await loadStats(); renderPage(state.page);
@@ -8985,7 +8820,7 @@ async function confirmCommand(btn, enc) {
     if (data.action === 'find') html += cmdFindResults(data.results);
     bubble.innerHTML = html;
     if (data.ok && data.action !== 'find') {
-      await Promise.all([loadLeads(), loadStats()]).catch(() => {});
+      await loadLeads().catch(() => {});
     }
   } catch (err) {
     bubble.innerHTML = '❌ ' + escHtml(err.message || 'Command failed');

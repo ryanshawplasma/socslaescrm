@@ -729,7 +729,7 @@ async function getLeads(limit = null, offset = 0) {
   return rows.map(r => {
     const out = {};
     for (const [k, v] of Object.entries(r)) out[k] = v == null ? '' : String(v);
-    out.items = itemsByLead[r.rowIndex] || [];
+    out.items = itemsByLead[r.rowIndex] || (out.product ? [{ product: out.product, quantity: out.quantity, rate: out.rate }] : []);
     const extras = extraContactsByLead[r.rowIndex] || [];
     out.contacts = [
       { id: 'primary', person_name: out.person_in_charge || '', contact: out.contact || '', designation: out.designation || '' },
@@ -772,7 +772,7 @@ async function getLeadsForUser(displayName) {
   return rows.map(r => {
     const out = {};
     for (const [k, v] of Object.entries(r)) out[k] = v == null ? '' : String(v);
-    out.items = itemsByLead[r.rowIndex] || [];
+    out.items = itemsByLead[r.rowIndex] || (out.product ? [{ product: out.product, quantity: out.quantity, rate: out.rate }] : []);
     const extras = extraContactsByLead[r.rowIndex] || [];
     out.contacts = [
       { id: 'primary', person_name: out.person_in_charge || '', contact: out.contact || '', designation: out.designation || '' },
@@ -826,8 +826,13 @@ async function addLead(data, createdBy = '') {
 
   // Dedupe within the SAME bucket only — a working lead may mirror a Database
   // entry (that's exactly what "copy to my leads" produces).
+  const owner = (createdBy || data.created_by || '').trim();
   const { rows: existing } = await pool.query(
-    `SELECT id, factory_number, factory_name FROM leads WHERE COALESCE(bucket,'working')=$1 AND team_id IS NOT DISTINCT FROM $2`, [bucket, data.team_id || null]);
+    `SELECT id, factory_number, factory_name FROM leads
+       WHERE COALESCE(bucket,'working')=$1
+         AND team_id IS NOT DISTINCT FROM $2
+         AND ($2 IS NOT NULL OR LOWER(created_by)=LOWER($3))`,
+    [bucket, data.team_id || null, owner]);
   for (const row of existing) {
     const rNum  = String(row.factory_number || '').trim().toLowerCase();
     const rName = String(row.factory_name   || '').trim().toLowerCase();
@@ -916,9 +921,12 @@ async function importLeads(rows, defaultCreatedBy, teamId, listId, bucket = 'wor
   // Dedupe only within the destination bucket — importing into the Database
   // never collides with the working sheet and vice-versa.
   const { rows: existing } = await pool.query(
-    `SELECT factory_number, factory_name FROM leads WHERE COALESCE(bucket,'working')=$1 AND team_id IS NOT DISTINCT FROM $2`, [dest, teamId || null]);
-  const nums  = new Set(existing.map(r => String(r.factory_number || '').trim().toLowerCase()).filter(Boolean));
-  const names = new Set(existing.map(r => String(r.factory_name   || '').trim().toLowerCase()).filter(Boolean));
+    `SELECT factory_number, factory_name, created_by FROM leads
+       WHERE COALESCE(bucket,'working')=$1 AND team_id IS NOT DISTINCT FROM $2`,
+    [dest, teamId || null]);
+  const sets = new Map();
+  const bucketFor = (o) => { const key = teamId ? '' : String(o || '').trim().toLowerCase(); if (!sets.has(key)) sets.set(key, { nums: new Set(), names: new Set() }); return sets.get(key); };
+  for (const e of existing) { const b = bucketFor(e.created_by); const n = String(e.factory_number||'').trim().toLowerCase(); if (n) b.nums.add(n); const m = String(e.factory_name||'').trim().toLowerCase(); if (m) b.names.add(m); }
 
   const now = nowIST();
   let added = 0;
@@ -930,11 +938,11 @@ async function importLeads(rows, defaultCreatedBy, teamId, listId, bucket = 'wor
     const name = String(r.factory_name   || '').trim();
     if (!num && !name) { skipped.push({ row: i + 1, reason: 'no factory name or number' }); continue; }
 
-    const numKey = num.toLowerCase(), nameKey = name.toLowerCase();
-    if (numKey && nums.has(numKey))            { skipped.push({ row: i + 1, reason: `duplicate factory number "${num}"` }); continue; }
-    if (!numKey && nameKey && names.has(nameKey)) { skipped.push({ row: i + 1, reason: `duplicate factory name "${name}"` }); continue; }
-
     const createdBy = String(r.created_by || '').trim() || defaultCreatedBy;
+    const b = bucketFor(createdBy);
+    const numKey = num.toLowerCase(), nameKey = name.toLowerCase();
+    if (numKey && b.nums.has(numKey))            { skipped.push({ row: i + 1, reason: `duplicate factory number "${num}"` }); continue; }
+    if (!numKey && nameKey && b.names.has(nameKey)) { skipped.push({ row: i + 1, reason: `duplicate factory name "${name}"` }); continue; }
     const { rows: [newRow] } = await pool.query(`
       INSERT INTO leads
         (factory_number, factory_name, person_in_charge, contact, designation, product,
@@ -985,8 +993,8 @@ async function importLeads(rows, defaultCreatedBy, teamId, listId, bucket = 'wor
       ).catch(e => console.warn('[db] non-fatal:', e && e.message));
     }
 
-    if (numKey) nums.add(numKey);
-    if (nameKey) names.add(nameKey);
+    if (numKey) b.nums.add(numKey);
+    if (nameKey) b.names.add(nameKey);
     added++;
   }
 
@@ -1995,7 +2003,7 @@ async function getLeadsByTeam(teamId, memberNames = null) {
   return rows.map(r => {
     const out = {};
     for (const [k, v] of Object.entries(r)) out[k] = v == null ? '' : String(v);
-    out.items    = itemMap[r.rowIndex] || [];
+    out.items    = itemMap[r.rowIndex] || (out.product ? [{ product: out.product, quantity: out.quantity, rate: out.rate }] : []);
     const extras = contactMap[r.rowIndex] || [];
     out.contacts = [
       { id: 'primary', person_name: out.person_in_charge || '', contact: out.contact || '', designation: out.designation || '' },
@@ -2761,7 +2769,8 @@ async function extendUserProDaysPreservingKind(userId, days) {
 // written (which REPLACES the 14-day trial). Mirrors the referral spec's steps
 // 1–4; the caller adds step 5 (surfacing referralApplied/referralDays in its
 // response). The self-referral fingerprint guard runs only when a fingerprint is
-// supplied — /register does not currently send one (see report).
+// supplied — /register sends one (public/app.js getDeviceFingerprint()), so the
+// device check below is active.
 async function applyRegistrationReferral({ newUserId, newUserName, code, fingerprint } = {}) {
   const result = { referralApplied: false, referralDays: 0 };
   try {
@@ -2847,6 +2856,11 @@ async function getDepartments(teamId) {
     [teamId]
   );
   return rows;
+}
+
+async function getDepartmentById(id) {
+  const { rows } = await pool.query(`SELECT * FROM departments WHERE id=$1`, [id]);
+  return rows[0] || null;
 }
 
 async function createDepartment(teamId, name, managerId) {
@@ -3081,7 +3095,7 @@ module.exports = {
   // Activity timeline + history
   logLeadActivity, getLeadActivities, logLeadHistory, getLeadHistory,
   // Departments
-  getDepartments, createDepartment, updateDepartment, archiveDepartment,
+  getDepartments, getDepartmentById, createDepartment, updateDepartment, archiveDepartment,
   getDepartmentMembers, addDepartmentMember, removeDepartmentMember,
   // Granular permissions
   getUserPermissions, grantPermission, revokePermission,

@@ -18,7 +18,7 @@
        lazy-loaded on demand (dashboard/reports charts, import, map) via the
        ensureChart/ensureXLSX/ensureLeaflet loaders in app.js — off the startup
        critical path so the first paint isn't waiting on them. -->
-  <link rel="stylesheet" href="style.css?v=51" />
+  <link rel="stylesheet" href="style.css?v=52" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -94,7 +94,6 @@
       <!-- ── Sign In screen ───────────────────────────────── -->
       <div id="login-screen">
         <h2 class="login-title">Sign in</h2>
-        <div id="login-user-chips" class="login-user-chips hidden"></div>
         <form id="login-form" autocomplete="off">
           <div class="form-group credential-type-wrap">
             <label>Username / Email / Mobile</label>
@@ -903,7 +902,7 @@
             <div class="map-wrap">
               <div id="crm-map"></div>
               <div id="pin-mode-banner" class="pin-mode-banner hidden">
-                <span data-bizterm-tpl="📍 Click anywhere on the map to place this {entity|lower}'s pin">📍 Click anywhere on the map to place this factory's pin</span>
+                <span data-bizterm-tpl="📍 Tap anywhere on the map to place this {entity|lower}'s pin">📍 Tap anywhere on the map to place this factory's pin</span>
                 <button onclick="cancelPinMode()">✕ Cancel</button>
               </div>
             </div>
@@ -1264,7 +1263,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=51"></script>
+  <script src="app.js?v=52"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:1400, once:true };</script>
   <script src="dive-splash.js?v=2"></script>

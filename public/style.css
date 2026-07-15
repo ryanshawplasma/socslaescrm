@@ -1070,28 +1070,6 @@ html { scrollbar-width: thin; scrollbar-color: var(--text-muted) transparent; }
 
 .full-width { width: 100%; }
 
-/* ── Login user chips ───────────────────────────────────────── */
-.login-user-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 16px;
-}
-.login-user-chips.hidden { display: none; }
-.user-chip {
-  padding: 6px 14px;
-  border-radius: 20px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  font-family: inherit;
-  transition: background var(--transition), border-color var(--transition);
-}
-.user-chip:hover { background: var(--primary-muted); border-color: var(--primary); color: var(--primary-lt); }
-
 /* ── Theme palette picker ───────────────────────────────── */
 .theme-palette {
   display: flex;
@@ -1275,6 +1253,7 @@ html { scrollbar-width: thin; scrollbar-color: var(--text-muted) transparent; }
     display: flex; flex-direction: column;
   }
   #profile-form { overflow-y: auto; flex: 1; }
+  #profile-modal .modal-footer { padding-bottom: max(20px, env(safe-area-inset-bottom)); }
 
   /* Login */
   #login-box { padding: 28px 20px; border-radius: 12px; }
@@ -1594,7 +1573,10 @@ tr.row-cold:hover td { background: #dbeafe; }
 
 /* Mobile responsive */
 @media (max-width: 640px) {
-  .route-panel { width: 220px; padding: 12px 10px; }
+  .map-page   { height: calc(100dvh - var(--topbar-h) - 56px - env(safe-area-inset-bottom, 0px)); }
+  .map-layout { flex-direction: column; }
+  .route-panel { width: 100%; padding: 12px 10px; max-height: 38vh; border-right: none; border-bottom: 1px solid var(--border); }
+  .map-wrap   { min-height: 52vh; }
   .factory-checklist { max-height: 160px; }
 }
 
@@ -4032,6 +4014,7 @@ tr.row-cold:hover td { background: #dbeafe; }
   .stage-picker { width: 100vw; max-width: 100vw; border-radius: 18px 18px 0 0;
     padding-bottom: max(18px, env(safe-area-inset-bottom)); }
   .ld-grid { grid-template-columns: 1fr; }
+  .ld-foot { padding-bottom: max(14px, env(safe-area-inset-bottom)); }
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -4046,6 +4029,7 @@ tr.row-cold:hover td { background: #dbeafe; }
   textarea {
     font-size: 16px !important;
   }
+  .chat-input-wrap { padding-bottom: env(safe-area-inset-bottom); }
 }
 
 /* ── PIN length chooser (4- vs 6-digit) in the setup modal ── */

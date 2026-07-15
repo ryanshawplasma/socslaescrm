@@ -109,10 +109,13 @@ async function leadsForRequest(req, bucket = 'working') {
     }
     const leads   = bucketFilter(await db.getLeadsByTeam(ctx.teamId, memberNames), bucket);
     const shared  = manager ? null : await db.getAccessibleLeadIds(req.user.username);
-    let mapped    = leads.map(l => ({
-      ...l,
-      can_edit: manager || l.created_by === req.user.username || shared.has(Number(l.rowIndex)),
-    }));
+    let mapped    = leads.map(l => {
+      const ownedOrShared = l.created_by === req.user.username || (shared && shared.has(Number(l.rowIndex)));
+      // Managers can edit team-tagged leads (requireLeadAccess grants it) and their
+      // own; a member's Personal lead (team_id NULL) is VIEW-ONLY for a manager —
+      // the server has no write branch for it, so leaving it editable 403s on save.
+      return { ...l, can_edit: manager ? (!!l.team_id || ownedOrShared) : ownedOrShared };
+    });
     // Hidden ('private') leads are invisible to other salespeople — but the
     // owner, anyone they've shared with, and team managers/admins still see them.
     if (!manager) {

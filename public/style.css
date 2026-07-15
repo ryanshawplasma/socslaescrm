@@ -4790,3 +4790,15 @@ p, .today-subline, .fu-note-txt, .ld-notes-view, .lead-card-line, .up-sub, .stat
   box-shadow: 0 0 0 3px var(--card-bg), 0 0 0 6px var(--primary-muted);
 }
 .ld-timeline .activity-latest .activity-desc { font-weight: 600; }
+
+/* ── First-load progress bar (seamless auto-login) ───────────── */
+#app-loading-bar {
+  position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 12000;
+  background: linear-gradient(90deg, transparent, var(--primary), var(--primary-lt), transparent);
+  background-size: 42% 100%; background-repeat: no-repeat; pointer-events: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  #app-loading-bar { animation: app-loading-slide 1.1s ease-in-out infinite; }
+}
+@keyframes app-loading-slide { 0% { background-position: -42% 0; } 100% { background-position: 142% 0; } }
+#app-loading-bar.done { animation: none; background: var(--primary); opacity: 0; transition: opacity .35s ease; }

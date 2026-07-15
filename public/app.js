@@ -644,6 +644,7 @@ function resetAccountScopedState() {
   localStorage.removeItem('ws_team_id');
   localStorage.removeItem('crm_lead_dest');
   localStorage.removeItem('crm_default_area');
+  localStorage.removeItem('crm_leads_cache');   // don't leak leads to the next user
   _defaultWorkspaceApplied = false;   // next sign-in re-applies its default workspace
   state.activeOrgId  = '';
   state.myTeams      = [];
@@ -1409,6 +1410,33 @@ async function loadLeads()  {
   const [leads] = await Promise.all([ apiFetch('/api/leads' + orgQuery()), loadLists(), loadProducts() ]);
   state.leads = leads;
   state.stats = computeStats(leads);
+  cacheLeads(leads);                 // keep the instant-open cache fresh
+}
+
+// Instant-open cache: the last-loaded lead set is kept in localStorage (scoped to
+// the active workspace) so a remembered device opens STRAIGHT into a populated
+// dashboard while fresh data loads in the background — no blank wait on a cold
+// server. Cleared on logout/account-switch (resetAccountScopedState) so leads
+// never leak to the next user.
+const LEADS_CACHE_KEY = 'crm_leads_cache';
+function cacheLeads(leads) {
+  if (state.role === 'guest') return;   // never cache demo data
+  try {
+    const payload = JSON.stringify({
+      ts: Date.now(),
+      user: String(localStorage.getItem('crm_user') || ''),
+      org: String(state.activeOrgId || ''),
+      leads,
+    });
+    if (payload.length <= 2_500_000) localStorage.setItem(LEADS_CACHE_KEY, payload);
+    else localStorage.removeItem(LEADS_CACHE_KEY);   // too large to cache safely
+  } catch (_) { /* quota / serialization — skip caching, non-fatal */ }
+}
+function loadCachedLeads() {
+  try {
+    const d = JSON.parse(localStorage.getItem(LEADS_CACHE_KEY) || 'null');
+    return (d && Array.isArray(d.leads)) ? d : null;
+  } catch (_) { return null; }
 }
 async function loadLists() {
   try { state.myLists = await apiFetch('/api/lead-lists' + orgQuery()); }
@@ -6287,6 +6315,27 @@ async function refreshTeamsEverywhere(switchToId) {
 
 async function initApp() {
   touchActivity();   // any successful entry (login/unlock/auto) resets the idle timer
+
+  // ── Instant paint ──────────────────────────────────────────────────────────
+  // Hydrate from the last-open cache (when it matches the current workspace) and
+  // reveal the app shell IMMEDIATELY — a remembered device lands straight in a
+  // populated dashboard instead of staring at a splash on a cold server. Fresh
+  // data loads in the background below and repaints when it arrives.
+  const cached = loadCachedLeads();
+  const haveCache = !!(cached && cached.leads.length && state.role !== 'guest' &&
+    cached.user === String(localStorage.getItem('crm_user') || '') &&   // never cross-user
+    cached.org  === String(state.activeOrgId || ''));
+  if (haveCache) {
+    state.leads = cached.leads;
+    state.stats = computeStats(cached.leads);
+  }
+  hideLoginPage();
+  applyRoleUI();
+  refreshAiBubbleVisibility();  // reveal the floating AI bubble (unless hidden)
+  if (!haveCache) showAppLoading(true);   // no cached data → show a top progress bar
+  navigate('dashboard');
+
+  // ── Fresh data + the rest of init, in the background ────────────────────────
   try {
     await consumePendingInvite();   // invite link → auto-join right after auth
     await loadMyTeams();
@@ -6300,10 +6349,9 @@ async function initApp() {
     }
     await loadLeads();
     lastRefreshed = new Date();
-    navigate('dashboard');
-    applyRoleUI();
+    showAppLoading(false);
+    renderPage(state.page);     // repaint the current page with fresh data
     updateSecurityButtons();    // show/hide the "Set PIN" shortcut for this device
-    refreshAiBubbleVisibility(); // reveal the floating AI bubble (unless hidden)
     loadPlan();                 // Lite/Pro entitlement → sidebar badge + gating
     document.getElementById('btn-codes')?.classList.toggle('hidden', state.role !== 'admin');
     startPresenceHeartbeat();   // "who's online" for the Team Hub
@@ -6312,12 +6360,32 @@ async function initApp() {
     maybeShowTeamsDiscover();   // nudge team-less users to join a public team
     maybePromptActiveList();    // ask which list today's new leads are filed into
   } catch (err) {
-    if (err.message.includes('401') || err.message.includes('Session expired')) {
-      showLoginPage();
-    } else {
-      toast('Could not connect to server. Is it running?', 'error');
-    }
+    showAppLoading(false);
     console.error(err);
+    if (err.message.includes('401') || err.message.includes('Session expired')) {
+      showLoginPage();          // session genuinely dead → back to login
+      return;
+    }
+    // Transient (server still waking): the app shell is already up. Keep it,
+    // start the background loops so data fills in on the next tick, and only nag
+    // if we had nothing cached to show.
+    if (!haveCache) toast('Connecting… your data will appear in a moment.', 'warning');
+    startAutoRefresh();
+    startPresenceHeartbeat();
+    initSocket();
+  }
+}
+
+// Thin indeterminate progress bar at the very top — shown while the first data
+// load is in flight (only when there was no cache to paint instantly).
+function showAppLoading(on) {
+  let bar = document.getElementById('app-loading-bar');
+  if (on) {
+    if (!bar) { bar = document.createElement('div'); bar.id = 'app-loading-bar'; document.body.appendChild(bar); }
+    bar.classList.remove('done');
+  } else if (bar) {
+    bar.classList.add('done');
+    setTimeout(() => bar.remove(), 400);
   }
 }
 

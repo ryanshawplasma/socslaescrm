@@ -2311,16 +2311,22 @@ function renderPage(page) {
   if (page === 'map')        renderMap();
   if (page === 'chat') {
     chatFocusInput();
-    // Refresh the composer for whatever mode we're already in — command
-    // mode's chips/placeholder reference T('entity'), which goes stale if the
-    // workspace/business type switches while the user is sitting on this
-    // page. Placeholder only (never .value, so a half-typed message survives)
-    // and no call into the hello-greeting path, so _modeGreeted is untouched
-    // and the mode's greeting never repeats.
-    renderChatChips(aiMode);
-    const chatInputEl = document.getElementById('chat-input');
-    const modeInfo = chatModeInfo(aiMode);
-    if (chatInputEl && modeInfo?.ph) chatInputEl.placeholder = modeInfo.ph;
+    if (!_chatInited) {
+      // First open: fully initialise the default mode (Command) — sets the active
+      // button, shows the messages area (not the understanding card), and prints
+      // the mode's one-time greeting.
+      _chatInited = true;
+      setAiMode(aiMode);
+    } else {
+      // Later opens: refresh the composer for whatever mode we're already in —
+      // command mode's chips/placeholder reference T('entity'), which goes stale
+      // if the workspace/business type switches. Placeholder only (never .value,
+      // so a half-typed message survives) and no hello-greeting path.
+      renderChatChips(aiMode);
+      const chatInputEl = document.getElementById('chat-input');
+      const modeInfo = chatModeInfo(aiMode);
+      if (chatInputEl && modeInfo?.ph) chatInputEl.placeholder = modeInfo.ph;
+    }
   }
   if (page === 'workspace')  renderWorkspace();
   if (page === 'brochure')   renderBrochure();
@@ -8647,8 +8653,11 @@ async function deleteVocabAlias(id) {
 //  AI UNDERSTANDING ENGINE — Card UI
 // ============================================================
 
-// Current AI mode: 'understanding' | 'assistant' | 'command'
-let aiMode = 'understanding';
+// Current AI mode: 'understanding' | 'assistant' | 'command'. Command is the
+// default — most users open the chat to DO something ("add …", "set stage …"),
+// so it's the primary entry point; Understanding/Assistant are one tap away.
+let aiMode = 'command';
+let _chatInited = false;
 const _modeGreeted = {};
 
 // Per-mode composer placeholder / greeting / quick-chips. A FUNCTION — not a

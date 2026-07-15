@@ -941,23 +941,18 @@
           <div class="chat-container">
             <!-- AI Mode switcher -->
             <div class="ai-mode-bar">
-              <button class="ai-mode-btn active" data-mode="understanding" onclick="setAiMode('understanding')">🧠 Understanding</button>
+              <button class="ai-mode-btn" data-mode="understanding" onclick="setAiMode('understanding')">🧠 Understanding</button>
               <button class="ai-mode-btn" data-mode="assistant" onclick="setAiMode('assistant')">💬 Assistant</button>
-              <button class="ai-mode-btn" data-mode="command" onclick="setAiMode('command')">⚡ Command</button>
+              <button class="ai-mode-btn active" data-mode="command" onclick="setAiMode('command')">⚡ Command</button>
             </div>
 
             <!-- Understanding Card area (shown in understanding mode) -->
-            <div id="ai-card-area" class="ai-card-area">
+            <div id="ai-card-area" class="ai-card-area" style="display:none">
               <div class="ai-empty">🧠 Type a lead above and AI will parse it here.</div>
             </div>
 
-            <!-- Chat messages (shown in assistant/command mode) -->
-            <div id="chat-messages" class="chat-messages" style="display:none">
-              <div class="chat-msg bot">
-                👋 <b>CRM Chat</b> — Type a lead and I'll parse it.<br>
-                E.g. <code data-bizterm-tpl="{example}">M277 Ramesh hotmelt 500@120 hot</code>
-              </div>
-            </div>
+            <!-- Chat messages (shown in assistant/command mode — the default) -->
+            <div id="chat-messages" class="chat-messages"></div>
             <!-- Quick-insert chips -->
             <div class="chat-chips-bar" id="chat-chips-bar">
               <button class="chat-chip chip-hot"  onclick="chatInsertChip('hot')">🔴 Hot</button>
@@ -1280,7 +1275,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=58"></script>
+  <script src="app.js?v=59"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:1400, once:true };</script>
   <script src="dive-splash.js?v=2"></script>

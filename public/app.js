@@ -3929,6 +3929,22 @@ function openLeadDetail(rowIndex) {
        <div class="ld-notes-actions"><button class="btn btn-primary btn-sm ld-notes-save" onclick="saveLeadNotes(${l.rowIndex})">Save note</button></div>`
     : `<div class="ld-notes-view">${notes || '<span class="ld-empty">No notes</span>'}</div>`;
 
+  // Prominent "next step" bar — call / message / schedule-or-snooze the follow-up
+  // / mark it done, right at the top of the sheet, so tapping any lead (Leads or
+  // Follow-ups) lets you act without hunting through sections.
+  const _pc  = fuPhoneContact(l);
+  const _tel = telHref(_pc.raw);
+  const _wa  = waHref(_pc.raw, _pc.name);
+  const quickBar = `
+    <div class="ld-quick" onclick="event.stopPropagation()">
+      ${_tel ? `<a class="ld-q ld-q-call" href="${escHtml(_tel)}">📞 Call</a>`
+             : `<span class="ld-q ld-q-call ld-q-off" title="No phone number">📞 Call</span>`}
+      ${_wa  ? `<a class="ld-q ld-q-wa" href="${escHtml(_wa)}" target="_blank" rel="noopener">💬 WhatsApp</a>`
+             : `<span class="ld-q ld-q-wa ld-q-off" title="No phone number">💬 WhatsApp</span>`}
+      ${canEdit ? `<button type="button" class="ld-q ld-q-fu" onclick="openSnoozeMenu(${l.rowIndex}, event)">📅 ${l.follow_up ? 'Reschedule' : 'Set follow-up'}</button>` : ''}
+      ${canEdit && l.follow_up ? `<button type="button" class="ld-q ld-q-done" onclick="followupDone(${l.rowIndex})">✅ Done</button>` : ''}
+    </div>`;
+
   const html = `
   <div class="lead-detail-overlay" id="lead-detail-overlay" onclick="if(event.target===this)closeLeadDetail()">
     <div class="lead-detail" role="dialog" aria-modal="true" aria-label="Lead details">
@@ -3940,6 +3956,7 @@ function openLeadDetail(rowIndex) {
         <button class="ld-close" onclick="closeLeadDetail()" aria-label="Close">✕</button>
       </div>
       <div class="ld-body">
+        ${quickBar}
         <div class="ld-section">
           <div class="ld-label">Stage${canEdit ? ' <span class="ld-hint">— tap to change</span>' : ''}</div>
           <div class="ld-stages">${stagePills}</div>
@@ -4531,6 +4548,13 @@ function buildFollowupCards(leads) {
   return `<div class="fu-list">${cards}</div>`;
 }
 
+// If the lead-detail sheet is open (these actions can be fired from its quick-
+// action bar too), rebuild it so its follow-up date + Done/Reschedule state stay
+// in sync with the change we just made.
+function refreshLeadDetailIfOpen(rowIndex) {
+  if (document.getElementById('lead-detail-overlay')) openLeadDetail(rowIndex);
+}
+
 // Clear the reminder — the lead stays, it just drops off the follow-up worklist.
 async function followupDone(rowIndex) {
   const l = state.leads.find(x => String(x.rowIndex) === String(rowIndex));
@@ -4539,12 +4563,13 @@ async function followupDone(rowIndex) {
   if (!prev) return;
   l.follow_up = '';
   renderPage(state.page);                 // optimistic — card leaves the list
+  refreshLeadDetailIfOpen(rowIndex);
   try {
     await updateLead(rowIndex, { follow_up: '' });   // partial — don't clobber items/contacts
     toast('Follow-up marked done ✓');
     try { await loadStats(); } catch (_) {}
   } catch (err) {
-    l.follow_up = prev; renderPage(state.page);
+    l.follow_up = prev; renderPage(state.page); refreshLeadDetailIfOpen(rowIndex);
     toast('Could not update: ' + err.message, 'error');
   }
 }
@@ -4556,11 +4581,12 @@ async function setFollowupDate(rowIndex, dmy) {
   const prev = l.follow_up;
   l.follow_up = dmy;
   renderPage(state.page);
+  refreshLeadDetailIfOpen(rowIndex);
   try {
     await updateLead(rowIndex, { follow_up: dmy });   // partial — don't clobber items/contacts
     toast('Follow-up → ' + dmy);
   } catch (err) {
-    l.follow_up = prev; renderPage(state.page);
+    l.follow_up = prev; renderPage(state.page); refreshLeadDetailIfOpen(rowIndex);
     toast('Could not reschedule: ' + err.message, 'error');
   }
 }

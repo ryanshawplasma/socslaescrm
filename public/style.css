@@ -4841,3 +4841,24 @@ p, .today-subline, .fu-note-txt, .ld-notes-view, .lead-card-line, .up-sub, .stat
   .list-manage-actions { flex-basis: 100%; justify-content: flex-end; }
   .list-manage-actions .action-btn { min-height: 38px; padding: 8px 16px; font-size: 13px; }
 }
+
+/* ── Lead-detail quick-action bar ("do the next step" from any lead) ──────── */
+.ld-quick { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.ld-q {
+  flex: 1 1 0; min-width: 88px; box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  min-height: 44px; padding: 9px 10px; border-radius: 11px;
+  font-size: 13px; font-weight: 650; font-family: inherit; text-decoration: none;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  cursor: pointer; transition: background var(--transition), border-color var(--transition), transform var(--transition);
+}
+.ld-q:active { transform: scale(.97); }
+.ld-q-call { color: #059669; border-color: rgba(5,150,105,.34);  background: rgba(5,150,105,.09); }
+.ld-q-wa   { color: #128C7E; border-color: rgba(18,140,126,.34); background: rgba(37,211,102,.10); }
+.ld-q-fu   { color: #d97706; border-color: rgba(245,158,11,.34); background: rgba(245,158,11,.09); }
+.ld-q-done { color: #2563eb; border-color: rgba(37,99,235,.30);  background: rgba(37,99,235,.09); }
+.ld-q-off  { opacity: .45; cursor: not-allowed; pointer-events: none; }
+[data-theme="dark"] .ld-q-call { color: #6ee7b7; }
+[data-theme="dark"] .ld-q-wa   { color: #5eead4; }
+[data-theme="dark"] .ld-q-fu   { color: #fcd34d; }
+[data-theme="dark"] .ld-q-done { color: #93c5fd; }

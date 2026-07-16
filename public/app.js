@@ -5630,8 +5630,10 @@ function renderListsManageBody() {
       <span class="list-dot" style="background:${c}"></span>
       <span class="list-manage-name">${escHtml(l.name)}</span>
       <span class="list-manage-count">${l.count || 0} lead${l.count === 1 ? '' : 's'}</span>
-      <button class="action-btn" onclick="renameListPrompt(${l.id})">Rename</button>
-      <button class="action-btn del" onclick="deleteListConfirm(${l.id}, '${escAttr(l.name)}')">Delete</button>
+      <div class="list-manage-actions">
+        <button class="action-btn" onclick="renameListPrompt(${l.id})">Rename</button>
+        <button class="action-btn del" onclick="deleteListConfirm(${l.id}, '${escAttr(l.name)}')">Delete</button>
+      </div>
     </div>`;
   }).join('');
 }

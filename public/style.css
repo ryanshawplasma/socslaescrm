@@ -4862,3 +4862,74 @@ p, .today-subline, .fu-note-txt, .ld-notes-view, .lead-card-line, .up-sub, .stat
 [data-theme="dark"] .ld-q-wa   { color: #5eead4; }
 [data-theme="dark"] .ld-q-fu   { color: #fcd34d; }
 [data-theme="dark"] .ld-q-done { color: #93c5fd; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   AURORA GLASS SHELL — premium app chrome (2026-07-17)
+   Reskins the EXISTING shell DOM only (background · frosted sidebar · glass
+   topbar & bottom-nav). No DOM/structure changes; theme-aware; contrast-safe.
+   ══════════════════════════════════════════════════════════════════════ */
+:root{
+  --shell-side:rgba(255,255,255,.58); --shell-side-brd:rgba(20,26,52,.10);
+  --shell-txt:#14162E; --shell-muted:#4C5470; --shell-hover:rgba(20,26,52,.06);
+  --shell-top:rgba(247,247,248,.6);
+  --shell-glow1:color-mix(in srgb, var(--primary) 20%, transparent);
+  --shell-glow2:color-mix(in srgb, #7C4DFF 14%, transparent);
+  --shell-glow3:color-mix(in srgb, #0EA5E9 9%, transparent);
+}
+[data-theme="dark"]{
+  --shell-side:rgba(16,18,28,.55); --shell-side-brd:rgba(255,255,255,.08);
+  --shell-txt:#EDEFF9; --shell-muted:#98A0BC; --shell-hover:rgba(255,255,255,.06);
+  --shell-top:rgba(18,18,24,.55);
+  --shell-glow1:color-mix(in srgb, var(--primary) 26%, transparent);
+  --shell-glow2:color-mix(in srgb, #A78BFA 20%, transparent);
+  --shell-glow3:color-mix(in srgb, #22D3EE 12%, transparent);
+}
+/* Ambient aurora — sits on body, behind the (transparent) content, so it glows
+   softly around every card without touching text or layout. */
+body{
+  background:
+    radial-gradient(1050px 580px at 6% -8%,  var(--shell-glow1), transparent 58%),
+    radial-gradient(880px 620px at 106% 0%,  var(--shell-glow2), transparent 52%),
+    radial-gradient(760px 700px at 52% 120%, var(--shell-glow3), transparent 60%),
+    var(--bg);
+  background-attachment:fixed;
+}
+/* Frosted, theme-aware sidebar (light frosted in light mode — "keep it light" —
+   deep glass in dark mode). Every text element recoloured for contrast. */
+#sidebar{
+  background:var(--shell-side);
+  -webkit-backdrop-filter:blur(26px) saturate(1.35); backdrop-filter:blur(26px) saturate(1.35);
+  border-right:1px solid var(--shell-side-brd);
+}
+.sidebar-brand{ border-bottom-color:var(--shell-side-brd); }
+.sidebar-footer{ border-top-color:var(--shell-side-brd); }
+.brand-name{ color:var(--shell-txt); }
+.nav-item{ color:var(--shell-muted); }
+.nav-item:hover{ background:var(--shell-hover); color:var(--shell-txt); }
+.nav-item.active{ background:color-mix(in srgb, var(--primary) 15%, transparent); color:var(--primary); font-weight:600; }
+.sidebar-badge, .sidebar-user{ color:var(--shell-muted); }
+/* Glass topbar */
+#topbar{
+  background:var(--shell-top);
+  -webkit-backdrop-filter:blur(20px) saturate(1.3); backdrop-filter:blur(20px) saturate(1.3);
+  border-bottom:1px solid var(--shell-side-brd);
+}
+/* Glass mobile bottom-nav */
+@media (max-width:640px){
+  #bottom-nav{
+    background:var(--shell-top);
+    -webkit-backdrop-filter:blur(22px) saturate(1.2); backdrop-filter:blur(22px) saturate(1.2);
+    border-top:1px solid var(--shell-side-brd);
+  }
+}
+
+/* Aurora shell — recolour the sidebar FOOTER controls theme-aware too (they were
+   hardcoded white-on-dark and would vanish on the light frosted sidebar). */
+.sb-action{ color:var(--shell-muted); background:var(--shell-hover); border-color:var(--shell-side-brd); }
+.sb-action:hover{ color:var(--shell-txt); background:color-mix(in srgb, var(--primary) 12%, transparent); border-color:color-mix(in srgb, var(--primary) 24%, transparent); }
+.user-name{ color:var(--shell-txt); }
+.user-role{ color:var(--shell-muted); }
+.user-card-btn{ color:var(--shell-muted); }
+.user-card-btn:hover{ color:var(--shell-txt); }
+.btn-biometric-enable{ color:var(--shell-txt); border-color:var(--shell-side-brd); }
+.btn-biometric-enable:hover{ background:var(--shell-hover); }

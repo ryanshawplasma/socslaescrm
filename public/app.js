@@ -3932,6 +3932,11 @@ function buildCards(leads) {
       ? itemLines.map(t => `<span class="lead-item-chip">${escHtml(t)}</span>`).join('')
       : '';
     const line = (icon, val, clip) => val ? `<div class="lead-card-line${clip ? ' lead-card-line-clip' : ''}"><span>${icon}</span> ${val}</div>` : '';
+    // Thumb-reachable quick actions right on the card — call / WhatsApp the
+    // primary contact without opening the detail sheet (stopPropagation so the
+    // tap doesn't also open the lead).
+    const tel = telHref(c.contact);
+    const wa  = waHref(c.contact, c.person_name);
     return `
       <div class="lead-card ${typeCls}" onclick="openLeadDetail(${l.rowIndex})" tabindex="0"
            onkeydown="if(event.key==='Enter'){openLeadDetail(${l.rowIndex})}">
@@ -3950,6 +3955,10 @@ function buildCards(leads) {
             ? `<span class="lead-card-stage" style="--stg:${stageCol}">${escHtml(l.stage ? stageLabel(l.stage) : '—')}</span>`
             : `<button type="button" class="lead-card-stage lead-card-stage-btn" style="--stg:${stageCol}" title="Tap to change stage"
                  onclick="event.stopPropagation(); openStagePicker(${l.rowIndex})">${escHtml(l.stage ? stageLabel(l.stage) : '—')} ▾</button>`}
+          ${(tel || wa) ? `<div class="lc-quick">
+            ${tel ? `<a class="lc-q lc-q-call" href="${escHtml(tel)}" onclick="event.stopPropagation()" title="Call" aria-label="Call">📞</a>` : ''}
+            ${wa  ? `<a class="lc-q lc-q-wa" href="${escHtml(wa)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="WhatsApp" aria-label="WhatsApp">💬</a>` : ''}
+          </div>` : ''}
         </div>
       </div>`;
   }).join('');

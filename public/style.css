@@ -5074,3 +5074,66 @@ body{
 }
 .ai-card-saved .ai-saved-msg { font-size: 15px; color: var(--text); margin-bottom: 14px; }
 .ai-card-saved .ai-card-footer { justify-content: center; }
+
+/* ══════════════════════════════════════════════════════════
+   MOBILE UI OVERHAUL — native-feel cards, sheets, nav & touch.
+   Built on the Aurora tokens; base rules first, phone tier (≤640px) after.
+   ══════════════════════════════════════════════════════════ */
+
+/* Lead-card quick actions (Call / WhatsApp) — on every card, all viewports. */
+.lead-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lc-quick { display: flex; gap: 8px; flex-shrink: 0; }
+.lc-q {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px; border-radius: 11px; font-size: 17px; line-height: 1;
+  text-decoration: none; border: 1px solid var(--border); background: var(--bg);
+  transition: transform .12s ease, filter .15s ease;
+}
+.lc-q:hover  { filter: brightness(1.06); }
+.lc-q:active { transform: scale(.9); }
+.lc-q-call { background: color-mix(in srgb, var(--primary) 12%, transparent); border-color: color-mix(in srgb, var(--primary) 26%, transparent); }
+.lc-q-wa   { background: color-mix(in srgb, #25D366 15%, transparent);        border-color: color-mix(in srgb, #25D366 32%, transparent); }
+
+@media (max-width: 640px) {
+  /* Momentum scrolling on the main content pane. */
+  #content { -webkit-overflow-scrolling: touch; }
+
+  /* ── Lead cards: one clean column, larger, tactile ── */
+  .lead-cards { grid-template-columns: 1fr; gap: 12px; }
+  .lead-card {
+    padding: 15px 16px; border-radius: 18px; border-left-width: 5px;
+    box-shadow: 0 1px 3px rgba(16,24,40,.06), 0 10px 26px -14px rgba(16,24,40,.22);
+  }
+  .lead-card:active { transform: scale(.985); }
+  .lead-card-name { font-size: 16px; }
+  .lead-card-num  { font-size: 13px; }
+  .lead-card-line { font-size: 14px; margin-top: 7px; }
+  .lead-card-foot { margin-top: 12px; }
+  .lead-card-stage { font-size: 12.5px; padding: 6px 14px; }
+  .lead-card-stage-btn { min-height: 38px; }
+  .lc-q { width: 44px; height: 44px; font-size: 19px; border-radius: 13px; }
+
+  /* ── Bottom sheets: grabber handle + safe-area for a native feel ── */
+  .lead-detail { position: relative; border-radius: 22px 22px 0 0 !important; }
+  .lead-detail::before {
+    content: ''; position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+    width: 40px; height: 4px; border-radius: 999px; background: var(--border); z-index: 6;
+  }
+  .lead-detail .ld-head { padding-top: 20px; }
+  .ld-body { padding-bottom: max(20px, env(safe-area-inset-bottom)); }
+
+  /* ── Bottom nav: clearer active indicator + subtle icon lift ── */
+  .bn-item { position: relative; }
+  .bn-item svg { transition: transform var(--transition); }
+  .bn-item.active svg { transform: translateY(-1px) scale(1.05); }
+  .bn-item.active::before {
+    content: ''; position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+    width: 24px; height: 3px; border-radius: 0 0 4px 4px;
+    background: linear-gradient(90deg, var(--primary), var(--primary-lt));
+  }
+
+  /* ── Universal press feedback + comfortable tap targets ── */
+  .btn { min-height: 44px; }
+  .btn:active, .action-btn:active, .toggle-btn:active,
+  .pill:active, .tag-chip:active, .lead-card-stage-btn:active { transform: scale(.97); }
+}

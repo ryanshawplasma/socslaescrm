@@ -1410,10 +1410,11 @@ async function apiFetch(path, opts = {}) {
   if (!res.ok) {
     // Surface the server's own error message (e.g. the Google-Sheets import's
     // "set sharing to Anyone with the link can view") instead of a cryptic
-    // "POST /api/… → 400". Fall back to the status line if there's no body.
+    // "POST /api/… → 400". Fall back to a friendly line if the body isn't JSON
+    // (e.g. a proxy / Render cold-start HTML page), never a raw route+status.
     let msg = '';
     try { const body = await res.json(); msg = body && body.error; } catch (_) {}
-    throw new Error(msg || `${opts.method || 'GET'} ${path} → ${res.status}`);
+    throw new Error(msg || 'Something went wrong. Please try again.');
   }
   return res.json();
 }
@@ -2248,7 +2249,7 @@ async function runImport() {
           state.role === 'admin' ? ` — <a href="#" onclick="closeImportModal(true); openProductCleanup(); return false;">Fix Product Data →</a>` : ''}</div>`
       : '';
     document.getElementById('import-result-summary').innerHTML = `
-      <div class="import-result-big">✅ Imported <b>${result.added}</b> of ${result.total} leads</div>
+      <div class="import-result-big">✅ Imported <b>${result.added}</b> of ${result.total} lead${result.total === 1 ? '' : 's'}</div>
       ${normHtml}${reviewHtml}${skippedHtml}`;
     document.getElementById('import-step-map').classList.add('hidden');
     document.getElementById('import-step-done').classList.remove('hidden');
@@ -2822,7 +2823,7 @@ function renderFactoryChecklist() {
     html += withCoords.map(l => `
       <label class="factory-check-item">
         <input type="checkbox" value="${l.rowIndex}" onchange="updateOptimizeBtn()">
-        <span class="check-name">${l.factory_name || l.factory_number}</span>
+        <span class="check-name">${escHtml(l.factory_name || l.factory_number || '—')}</span>
         <span class="check-type" style="color:${TYPE_COLORS[l.lead_type]||'#94a3b8'}">${l.lead_type||''}</span>
       </label>
     `).join('');
@@ -2832,7 +2833,7 @@ function renderFactoryChecklist() {
     html += `<div class="route-label" style="margin-top:10px;margin-bottom:4px">No location set</div>`;
     html += withoutCoords.map(l => `
       <div class="factory-check-item no-coords">
-        <span class="check-name" style="color:#94a3b8">${l.factory_name || l.factory_number}</span>
+        <span class="check-name" style="color:#94a3b8">${escHtml(l.factory_name || l.factory_number || '—')}</span>
         <button class="btn-pin-sm" data-row="${l.rowIndex}"
           data-name="${(l.factory_name||l.factory_number).replace(/"/g,'')}"
           title="Click to pin on map">📍 Pin</button>
@@ -5379,6 +5380,8 @@ function openAddModal() {
   // word ('Add Shop', 'Add Student', …). textContent → safe for custom terms.
   document.getElementById('modal-title').textContent =
     biz().key === 'factory' ? 'Add Lead' : 'Add ' + T('entity');
+  document.getElementById('btn-save-lead').textContent =
+    biz().key === 'factory' ? 'Save Lead' : 'Save ' + T('entity');
   document.getElementById('f-row').value = '';
   FIELDS.forEach(f => {
     const el = document.getElementById('f-' + f);
@@ -5411,6 +5414,8 @@ function openEditModal(rowIndex) {
   if (!lead) return;
   document.getElementById('modal-title').textContent =
     biz().key === 'factory' ? 'Edit Lead' : 'Edit ' + T('entity');
+  document.getElementById('btn-save-lead').textContent =
+    biz().key === 'factory' ? 'Save Lead' : 'Save ' + T('entity');
   document.getElementById('f-row').value = rowIndex;
   // "Save to" is an add-time choice only — a lead's team isn't changed from here.
   const destSection = document.getElementById('modal-dest-section');
@@ -6021,7 +6026,7 @@ async function handleFormSubmit(e) {
     toast('Save failed: ' + err.message, 'error');
   } finally {
     btn.disabled    = false;
-    btn.textContent = 'Save Lead';
+    btn.textContent = biz().key === 'factory' ? 'Save Lead' : 'Save ' + T('entity');
   }
 }
 
@@ -6431,7 +6436,10 @@ async function initApp() {
     showAppLoading(false);
     renderPage(state.page);     // repaint the current page with fresh data
     updateSecurityButtons();    // show/hide the "Set PIN" shortcut for this device
-    loadPlan();                 // Lite/Pro entitlement → sidebar badge + gating
+    // Re-render Team Hub once the real plan lands: the app reveals instantly from
+    // cache before loadPlan() resolves, so an entitled user who taps Team Hub in
+    // that window would otherwise be shown the "Unlock Pro" gate until they leave.
+    loadPlan().then(() => { if (state.page === 'hub') renderHub(); });   // Lite/Pro entitlement
     document.getElementById('btn-codes')?.classList.toggle('hidden', state.role !== 'admin');
     startPresenceHeartbeat();   // "who's online" for the Team Hub
     startAutoRefresh();
@@ -6908,7 +6916,12 @@ const HUB_COLS = [
   { key: 'doing', label: 'In progress' },
   { key: 'done',  label: 'Done' },
 ];
-const hubToday = () => new Date().toISOString().slice(0, 10);
+// Local (device/IST) calendar date — toISOString() would return the UTC date,
+// which flags tasks overdue a day late between midnight and 5:30am IST.
+const hubToday = () => {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+};
 
 async function renderHubTasks() {
   const panel = document.getElementById('hub-panel-tasks');
@@ -7235,8 +7248,11 @@ function applyBubblePosition() {
   const m = 8, w = bubble.offsetWidth || 56, h = bubble.offsetHeight || 56;
   if (pos && typeof pos.left === 'number') {
     // Re-clamp to the current viewport (handles rotation / smaller screens).
+    // On phones reserve the fixed bottom-nav strip so the bubble can't park on
+    // top of a nav icon after a rotate/resize.
+    const navReserve = bubbleVW() <= 640 ? 74 : 0;
     const left = Math.max(m, Math.min(bubbleVW() - w - m, pos.left));
-    const top  = Math.max(m, Math.min(bubbleVH() - h - m, pos.top));
+    const top  = Math.max(m, Math.min(bubbleVH() - h - m - navReserve, pos.top));
     bubble.style.left = left + 'px'; bubble.style.top = top + 'px';
     bubble.style.right = 'auto'; bubble.style.bottom = 'auto';
   } else {
@@ -7304,8 +7320,9 @@ function initAiBubble() {
     if (!moved && Math.abs(dx) + Math.abs(dy) > 6) { moved = true; document.body.classList.add('bubble-dragging'); }
     if (!moved) return;
     const m = 8, w = bubble.offsetWidth, h = bubble.offsetHeight;
+    const navReserve = bubbleVW() <= 640 ? 74 : 0;   // keep clear of the fixed mobile bottom nav
     const left = Math.max(m, Math.min(bubbleVW() - w - m, start.left + dx));
-    const top  = Math.max(m, Math.min(bubbleVH() - h - m, start.top + dy));
+    const top  = Math.max(m, Math.min(bubbleVH() - h - m - navReserve, start.top + dy));
     bubble.style.left = left + 'px'; bubble.style.top = top + 'px';
     bubble.style.right = 'auto'; bubble.style.bottom = 'auto';
     if (trash) trash.classList.toggle('hot', overTrash(e.clientX, e.clientY));
@@ -7394,8 +7411,9 @@ async function enableBiometric() {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
     });
-    if (!optRes.ok) throw new Error((await optRes.json()).error);
-    const options = await optRes.json();
+    const optBody = await optRes.json().catch(() => null);
+    if (!optRes.ok || !optBody) throw new Error((optBody && optBody.error) || 'Could not start biometric setup. Please try again.');
+    const options = optBody;
 
     // Step 2: browser prompts for biometric (fingerprint / Face ID)
     const credential = await SimpleWebAuthnBrowser.startRegistration(options);
@@ -7406,8 +7424,8 @@ async function enableBiometric() {
       headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
       body: JSON.stringify(credential),
     });
-    const verData = await verRes.json();
-    if (!verRes.ok) throw new Error(verData.error);
+    const verData = await verRes.json().catch(() => ({}));
+    if (!verRes.ok) throw new Error(verData.error || 'Could not finish biometric setup. Please try again.');
 
     // Save flag so login page shows the biometric button
     const name = localStorage.getItem('crm_user') || '';
@@ -7443,8 +7461,9 @@ async function loginWithBiometric() {
     const optRes = await fetch('/api/webauthn/auth-options', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
     });
-    if (!optRes.ok) throw new Error((await optRes.json()).error);
-    const { sessionId, ...options } = await optRes.json();
+    const optBody = await optRes.json().catch(() => null);
+    if (!optRes.ok || !optBody) throw new Error((optBody && optBody.error) || 'Biometric sign-in is unavailable right now. Please try again.');
+    const { sessionId, ...options } = optBody;
 
     // Step 2: browser shows biometric / passkey picker
     const credential = await SimpleWebAuthnBrowser.startAuthentication(options);
@@ -7455,8 +7474,8 @@ async function loginWithBiometric() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ credential, sessionId }),
     });
-    const data = await verRes.json();
-    if (!verRes.ok) throw new Error(data.error);
+    const data = await verRes.json().catch(() => ({}));
+    if (!verRes.ok) throw new Error(data.error || 'Biometric sign-in failed. Please try again.');
 
     // Logged in — persist a FULL remembered session (refresh token + expiry) via
     // storeTokens, exactly like password login, so it survives past the 15-minute
@@ -7561,10 +7580,15 @@ function chatInputChanged(val) {
   // the AI suggests what YOU usually type.
   const seen = new Set();
   const matches = [];
-  for (const p of CHAT_PRODUCTS) {
-    if (p.label.toLowerCase().startsWith(last) && p.label.toLowerCase() !== last) {
-      matches.push({ icon: p.icon, label: p.label });
-      seen.add(p.label.toLowerCase());
+  // The built-in product names are chemical/adhesive terms — only meaningful for
+  // the factory business. Other businesses (retail, pharma, education…) get their
+  // suggestions from their own leads below, not these. Mirrors renderChatChips().
+  if (biz().key === 'factory') {
+    for (const p of CHAT_PRODUCTS) {
+      if (p.label.toLowerCase().startsWith(last) && p.label.toLowerCase() !== last) {
+        matches.push({ icon: p.icon, label: p.label });
+        seen.add(p.label.toLowerCase());
+      }
     }
   }
   for (const l of state.leads) {

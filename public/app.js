@@ -700,8 +700,10 @@ function switchAccount() {
   localStorage.removeItem('crm_device_has_pin');
   resetAccountScopedState();
   state.role = null;
-  document.getElementById('pin-unlock-screen').style.display = 'none';
-  showLoginScreen();
+  // showLoginScreen() only toggles the inner login/register panels — it never
+  // unhides #login-overlay or re-hides #app, so the previous account's UI stayed
+  // on screen after a switch. showLoginPage() does the full reveal (like logout).
+  showLoginPage();
 }
 
 // ── PIN Unlock screen ─────────────────────────────────────────
@@ -1204,6 +1206,11 @@ async function enterGuest() {
     localStorage.setItem('crm_role',    'guest');
     localStorage.removeItem('crm_refresh_token');
     localStorage.removeItem('crm_session_id');
+    // Seed in-memory role too — state.role is read once at module load, and every
+    // guest gate (loadMyTeams, maybeShowTeamsDiscover, renderPlanBadge, renderHub)
+    // checks state.role === 'guest'. Without this the button click leaves it null,
+    // so those gates fail open (it only self-healed after a manual reload).
+    state.role = 'guest';
     hideLoginPage();
     showDemoBanner();
     await initApp();
@@ -2302,7 +2309,13 @@ function navigate(page) {
   const chatInvolved = prev === 'chat' || page === 'chat';
   if (changed && !chatInvolved && document.startViewTransition &&
       !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    document.startViewTransition(() => _navigate(page));
+    // Navigating again before a transition finishes aborts the in-flight one,
+    // whose .ready/.finished then reject with "Transition was aborted…". That's
+    // expected on rapid nav — swallow it so it doesn't surface as a red
+    // unhandledrejection in the console (looks like a failure; it isn't).
+    const vt = document.startViewTransition(() => _navigate(page));
+    vt.ready?.catch(() => {});
+    vt.finished?.catch(() => {});
   } else {
     _navigate(page);
   }
@@ -2778,11 +2791,11 @@ function loadFactoryMarkers() {
       const m = L.marker([+l.lat, +l.lng], { icon: createFactoryIcon(l.factory_number, l.lead_type) });
       m.bindPopup(`
         <div style="min-width:160px">
-          <b>${l.factory_name || l.factory_number}</b><br>
-          <span style="color:#64748b;font-size:12px">${l.factory_number} · ${l.stage ? stageLabel(l.stage) : '—'}</span><br>
-          <span style="font-size:12px">${l.person_in_charge || ''}</span>
+          <b>${escHtml(l.factory_name || l.factory_number)}</b><br>
+          <span style="color:#64748b;font-size:12px">${escHtml(l.factory_number)} · ${l.stage ? escHtml(stageLabel(l.stage)) : '—'}</span><br>
+          <span style="font-size:12px">${escHtml(l.person_in_charge || '')}</span>
           <br><br>
-          <button onclick="startPinMode(${l.rowIndex},'${(l.factory_name||l.factory_number).replace(/'/g,'')}');document.querySelector('.leaflet-popup-close-button')?.click()"
+          <button onclick="startPinMode(${l.rowIndex},'${escAttr(l.factory_name||l.factory_number)}');document.querySelector('.leaflet-popup-close-button')?.click()"
             style="font-size:12px;cursor:pointer">📍 Move Pin</button>
         </div>
       `);
@@ -3080,25 +3093,30 @@ const TYPE_EMOJI      = { Hot: '🔥', Warm: '🟡', Cold: '🔵' };
 function buildTable(leads, cols, actions = true, selectable = false, rowClickFn = null) {
   if (!leads.length) return emptyState('No leads found');
 
+  // These accessors return HTML that is injected via innerHTML (tableWrap /
+  // recent-table). Every free-text column MUST go through escHtml — otherwise a
+  // teammate can plant <img onerror=…> in a lead field and it runs for every
+  // viewer (buildCards/buildFollowupCards already escape the same fields).
+  // 'product'/'stage' build their own escaped HTML; 'lists' → tagChips escapes.
   const colDefs = {
-    factory_number:   ['#',          l => l.factory_number   || '—'],
-    factory_name:     [T('entity'),  l => l.factory_name     || '—'],
+    factory_number:   ['#',          l => escHtml(l.factory_number   || '—')],
+    factory_name:     [T('entity'),  l => escHtml(l.factory_name     || '—')],
     // Factory keeps its historic short header 'Person' (T('person') would be
     // the longer 'Person in Charge'); every other business shows its own term.
-    person_in_charge: [biz().key === 'factory' ? 'Person' : T('person'), l => l.person_in_charge || '—'],
-    contact:          ['Contact',    l => l.contact          || '—'],
+    person_in_charge: [biz().key === 'factory' ? 'Person' : T('person'), l => escHtml(l.person_in_charge || '—')],
+    contact:          ['Contact',    l => escHtml(l.contact          || '—')],
     product:          [T('product'), l => { const n = leadProductNames(l); if (!n.length) return '—';
                                             const shown = escHtml(n.slice(0, 2).join(', '));
                                             return n.length > 2 ? `${shown} <span class="more-badge" title="${escAttr(n.join(', '))}">+${n.length - 2}</span>` : shown; }],
-    quantity:         ['Qty',        l => l.quantity         || '—'],
-    rate:             ['Rate',       l => l.rate             || '—'],
+    quantity:         ['Qty',        l => escHtml(l.quantity         || '—')],
+    rate:             ['Rate',       l => escHtml(l.rate             || '—')],
     stage:            ['Stage',      l => stageBadge(l)],
-    follow_up:        ['Follow Up',  l => l.follow_up        || '—'],
-    area:             [T('area'),    l => l.area             || '—'],
-    notes:            ['Notes',      l => l.notes            || '—'],
-    last_updated:     ['Updated',    l => l.last_updated     || '—'],
-    lead_type:        ['Type',       l => l.lead_type ? `${TYPE_EMOJI[l.lead_type] || ''} ${l.lead_type}` : '—'],
-    created_by:       ['Added By',   l => l.created_by       || '—'],
+    follow_up:        ['Follow Up',  l => escHtml(l.follow_up        || '—')],
+    area:             [T('area'),    l => escHtml(l.area             || '—')],
+    notes:            ['Notes',      l => escHtml(l.notes            || '—')],
+    last_updated:     ['Updated',    l => escHtml(l.last_updated     || '—')],
+    lead_type:        ['Type',       l => l.lead_type ? `${TYPE_EMOJI[l.lead_type] || ''} ${escHtml(l.lead_type)}` : '—'],
+    created_by:       ['Added By',   l => escHtml(l.created_by       || '—')],
     lists:            ['Lists',      l => tagChips(l.lists)],
   };
 
@@ -3118,7 +3136,7 @@ function buildTable(leads, cols, actions = true, selectable = false, rowClickFn 
     const selCell = selectable
       ? `<td class="sel-col" onclick="event.stopPropagation()"><input type="checkbox" class="lead-sel" ${state.selectedLeads.has(Number(l.rowIndex)) ? 'checked' : ''} onchange="toggleLeadSelect(${l.rowIndex}, this.checked)"></td>`
       : '';
-    const cells = selCell + cols.map(c => `<td>${colDefs[c] ? colDefs[c][1](l) : (l[c] || '—')}</td>`).join('');
+    const cells = selCell + cols.map(c => `<td>${colDefs[c] ? colDefs[c][1](l) : escHtml(l[c] || '—')}</td>`).join('');
     let act = '';
     if (actions && state.role !== 'guest') {
       const canEdit   = state.role === 'admin' || l.can_edit !== false;
@@ -4335,7 +4353,7 @@ function renderToday() {
   const quick = document.getElementById('today-quick');
   if (quick) {
     quick.innerHTML =
-      todayChip('📋', overdue.length + dueToday.length, 'Due now',   "state.fuFilter='overdue'; navigate('followups')", overdue.length + dueToday.length ? 'hot' : '') +
+      todayChip('📋', overdue.length + dueToday.length, 'Due now',   "state.fuFilter='due'; navigate('followups')", overdue.length + dueToday.length ? 'hot' : '') +
       todayChip('🔜', upcoming.length,                  'Upcoming',  "state.fuFilter='week'; navigate('followups')", '') +
       todayChip('🎯', s.active ?? '—',                  'In pipeline', "dashFilter('active')", '') +
       todayChip('🏆', s.won ?? '—',                     'Won',       "dashFilter('won')", '');
@@ -4392,6 +4410,11 @@ function renderFollowups() {
   let filtered = state.leads.filter(l => l.follow_up);
   if (state.fuFilter === 'overdue') {
     filtered = filtered.filter(l => { const d = parseDate(l.follow_up); return d && d < now; });
+  } else if (state.fuFilter === 'due') {
+    // "Due now" from the Today screen = overdue + due-today (d <= today). The
+    // strict 'overdue' filter drops same-day leads, so a day with only today's
+    // follow-ups showed an empty screen despite the chip's non-zero count.
+    filtered = filtered.filter(l => { const d = parseDate(l.follow_up); return d && d <= now; });
   } else if (state.fuFilter === 'today') {
     filtered = filtered.filter(l => { const d = parseDate(l.follow_up); return d && d.toDateString() === now.toDateString(); });
   } else if (state.fuFilter === 'week') {
@@ -5162,7 +5185,9 @@ async function handleProfileSubmit(e) {
       body: JSON.stringify({ display_name: name, default_area: defaultArea, ...(pin ? { pin } : {}) }),
     });
     if (result.token) {
-      localStorage.setItem('crm_token', result.token);
+      // storeTokens() also refreshes crm_token_exp from the new token; a bare
+      // setItem left the old expiry in place, triggering one needless refresh.
+      storeTokens(result.token, null);
       localStorage.setItem('crm_user',  result.username);
       localStorage.setItem('crm_role',  result.role);
       state.role = result.role;
@@ -7285,16 +7310,32 @@ function initAiBubble() {
     bubble.style.right = 'auto'; bubble.style.bottom = 'auto';
     if (trash) trash.classList.toggle('hot', overTrash(e.clientX, e.clientY));
   };
-  const onUp = (e) => {
+  const endDrag = () => {
     document.removeEventListener('pointermove', onMove);
     document.removeEventListener('pointerup', onUp);
+    document.removeEventListener('pointercancel', onCancel);
     bubble.classList.remove('grabbing');
     document.body.classList.remove('bubble-dragging');
     if (trash) trash.classList.remove('hot');
+  };
+  const onUp = (e) => {
+    endDrag();
     const wasMoved = moved, s = start; start = null; moved = false;
     if (!wasMoved) { navigate('chat'); return; }              // a tap → open chat
     if (s && overTrash(e.clientX, e.clientY)) { hideAiBubble(); return; }  // dropped on Remove
     saveBubblePosition();
+  };
+  // A cancelled pointer — the OS/browser taking over the gesture (scroll hand-off,
+  // an incoming notification, palm rejection on a phone) — fires pointercancel
+  // INSTEAD of pointerup. Without handling it the drag never tears down: body keeps
+  // .bubble-dragging and the document pointermove listener lingers, so the bubble
+  // follows every later touch and hijacks scrolling/taps — that's the "phone symbol
+  // overlaps the page and it gets stuck" bug. Clean up the same way; keep the last
+  // position only if we'd actually started moving.
+  const onCancel = () => {
+    endDrag();
+    const wasMoved = moved; start = null; moved = false;
+    if (wasMoved) saveBubblePosition();
   };
   bubble.addEventListener('pointerdown', (e) => {
     if (e.button != null && e.button !== 0) return;
@@ -7305,6 +7346,7 @@ function initAiBubble() {
     try { bubble.setPointerCapture(e.pointerId); } catch (_) {}
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onCancel);
   });
   // Keep it on-screen after rotation / resize.
   window.addEventListener('resize', () => { if (!bubbleHidden()) applyBubblePosition(); });
@@ -9151,6 +9193,10 @@ async function aiAnswerClarification(answer) {
         field: aiSession?.clarification?.field,
         answer: answer.trim(),
         originalText: aiSession?.originalText || '',
+        // Re-parse must stay scoped to the active workspace, or it loses team AI
+        // vocabulary, the team business profile, and CRM context (the initial
+        // /understand call sends this; the clarify round-trip was dropping it).
+        teamId: state.activeOrgId || null,
       }),
     });
     renderUnderstandingCard(data);
@@ -9209,7 +9255,12 @@ function aiEditAll() {
 function openEditModalFromParsed(parsed) {
   document.getElementById('modal-title').textContent =
     biz().key === 'factory' ? 'Edit Lead' : 'Edit ' + T('entity');
-  document.getElementById('f-row').value = aiSession?.existingRow || '';
+  // existingRow is -1 when the AI found no match (a brand-new lead). -1 is truthy,
+  // so `|| ''` kept it and the form did PUT /api/leads/-1 (404 → "Save failed")
+  // instead of creating the lead. Treat -1/absent as "new" → empty f-row so
+  // handleFormSubmit POSTs a new lead, matching the guard in aiConfirmSave().
+  const er = aiSession?.existingRow;
+  document.getElementById('f-row').value = (er != null && er !== -1) ? er : '';
   FIELDS.forEach(f => {
     const el = document.getElementById('f-' + f);
     if (!el) return;
@@ -9218,6 +9269,15 @@ function openEditModalFromParsed(parsed) {
   });
   renderItemsEditor(parsed.items || []);
   renderContactsEditor([]);
+  // This modal is shared with Add/Edit. A prior openEditModal() may have left the
+  // owner-only sharing / hide-from-team / send-to-database controls visible and
+  // still wired to THAT lead's rowIndex; they don't apply to an AI-parsed lead, so
+  // hide them — otherwise clicking one mutates the previously-edited lead.
+  ['modal-access-section', 'modal-dest-section', 'modal-hide-section'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.style.display = 'none';
+  });
+  const moveBtn = document.getElementById('btn-move-database');
+  if (moveBtn) moveBtn.style.display = 'none';
   document.getElementById('modal-overlay').classList.remove('hidden');
 }
 

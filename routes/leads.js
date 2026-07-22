@@ -12,10 +12,15 @@ const getGemini = () => require('./ai').gemini;
 
 const router = express.Router();
 
+// NOTE: real leads are returned by db.getLeads as `id AS "rowIndex"`, and the
+// entire frontend keys every lead interaction (openLeadDetail, stage picker,
+// edit, row/card select) off `l.rowIndex`. Demo leads MUST use the same key —
+// with a plain `id` here, rowIndex is undefined and findLead(undefined) matches
+// the first demo lead, so every card click opened the same lead. Keep `rowIndex`.
 const DEMO_LEADS = [
-  { id: 9001, factory_number: 'D1', factory_name: 'Arun Enterprises', person_in_charge: 'Arun Sharma', contact: '+91 98100 00001', lead_type: 'Hot', stage: 'Sample Sent', stage_number: '3', notes: 'Interested in Hotmelt', created_by: 'demo', last_updated: '', items: [{ product: 'Hotmelt', quantity: '500 kg', rate: '120' }], contacts: [] },
-  { id: 9002, factory_number: 'D2', factory_name: 'Mehta Industries',  person_in_charge: 'Priya Mehta',  contact: '+91 98200 00002', lead_type: 'Warm', stage: 'Quotation', stage_number: '4', notes: 'Asked for brochure', created_by: 'demo', last_updated: '', items: [{ product: 'Solvent', quantity: '200 ltr', rate: '80' }], contacts: [] },
-  { id: 9003, factory_number: 'D3', factory_name: 'Joshi Trading',     person_in_charge: 'Vikram Joshi', contact: '+91 98300 00003', lead_type: 'Cold', stage: 'New Lead', stage_number: '1', notes: 'Found via referral', created_by: 'demo', last_updated: '', items: [{ product: 'Rubber Adhesive', quantity: '100 kg', rate: '150' }], contacts: [] },
+  { rowIndex: 9001, factory_number: 'D1', factory_name: 'Arun Enterprises', person_in_charge: 'Arun Sharma', contact: '+91 98100 00001', lead_type: 'Hot', stage: 'Sample Sent', stage_number: '3', notes: 'Interested in Hotmelt', created_by: 'demo', last_updated: '', items: [{ product: 'Hotmelt', quantity: '500 kg', rate: '120' }], contacts: [] },
+  { rowIndex: 9002, factory_number: 'D2', factory_name: 'Mehta Industries',  person_in_charge: 'Priya Mehta',  contact: '+91 98200 00002', lead_type: 'Warm', stage: 'Quotation', stage_number: '4', notes: 'Asked for brochure', created_by: 'demo', last_updated: '', items: [{ product: 'Solvent', quantity: '200 ltr', rate: '80' }], contacts: [] },
+  { rowIndex: 9003, factory_number: 'D3', factory_name: 'Joshi Trading',     person_in_charge: 'Vikram Joshi', contact: '+91 98300 00003', lead_type: 'Cold', stage: 'New Lead', stage_number: '1', notes: 'Found via referral', created_by: 'demo', last_updated: '', items: [{ product: 'Rubber Adhesive', quantity: '100 kg', rate: '150' }], contacts: [] },
 ];
 
 // ── Team context helper (?teamId= scoping) ───────────────────
@@ -751,8 +756,15 @@ router.patch('/leads/:row/location', authMiddleware, requireLeadAccess, async (r
 router.get('/leads/:id/photos', authMiddleware, async (req, res, next) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.json([]);   // e.g. demo leads have no real id
-  try { res.json(await db.getPhotos(id)); }
-  catch (err) { next(err); }
+  if (req.user.role === 'guest') return res.json([]); // demo leads have no stored photos
+  try {
+    // Same access model as attaching/removing photos (admin, the lead's owner, or
+    // an active member of the lead's team). Without it, any token could read any
+    // lead's photos across every team by guessing the global-serial id (IDOR).
+    const auth = await canManageLeadPhotos(req, id);
+    if (!auth.ok) return res.status(auth.code).json({ error: auth.error });
+    res.json(await db.getPhotos(id));
+  } catch (err) { next(err); }
 });
 
 // Can this user attach/remove photos on this lead? Admin, the lead's owner, or
@@ -1126,7 +1138,7 @@ router.get('/stats', authMiddleware, async (req, res, next) => {
 });
 
 // ── POST /api/route/optimize ──────────────────────────────────
-router.post('/route/optimize', authMiddleware, async (req, res, next) => {
+router.post('/route/optimize', authMiddleware, noGuest, async (req, res, next) => {
   try {
     const { factory_ids, start_location } = req.body || {};
     if (!Array.isArray(factory_ids) || factory_ids.length < 1)
@@ -1134,7 +1146,18 @@ router.post('/route/optimize', authMiddleware, async (req, res, next) => {
     if (!start_location?.lat || !start_location?.lng)
       return res.status(400).json({ error: 'start_location { lat, lng } is required.' });
 
-    const rows    = await db.getLeadCoordinates(factory_ids);
+    // Scope the requested ids to leads THIS caller can actually see — otherwise
+    // any authenticated user could pass arbitrary (global-serial) ids and read
+    // back factory_name / person / GPS for other teams' leads (IDOR).
+    const visibleIds = new Set(
+      [...await leadsForRequest(req, 'working'), ...await leadsForRequest(req, 'database')]
+        .map(l => Number(l.rowIndex))
+    );
+    const scopedIds = factory_ids.map(Number).filter(id => visibleIds.has(id));
+    if (!scopedIds.length)
+      return res.status(400).json({ error: 'None of the selected factories are in your workspace.' });
+
+    const rows    = await db.getLeadCoordinates(scopedIds);
     const valid   = rows.filter(r => r.lat && r.lng && !isNaN(+r.lat) && !isNaN(+r.lng));
     const skipped = rows.filter(r => !r.lat || !r.lng || isNaN(+r.lat) || isNaN(+r.lng));
 

@@ -5333,6 +5333,66 @@ async function revokeAccess(leadId, userName) {
 // ============================================================
 const FIELDS = ['factory_number','factory_name','stage','follow_up','area','notes','lead_type'];
 
+// ── Form choice pills — tap to pick Stage / Lead Type instead of a dropdown.
+// Backed by hidden inputs #f-stage / #f-lead_type, which handleFormSubmit reads
+// via FIELDS and the open-modal functions set — so nothing downstream changes.
+function renderStagePills(selected) {
+  const wrap = document.getElementById('f-stage-pills');
+  const hidden = document.getElementById('f-stage');
+  if (!wrap || !hidden) return;
+  hidden.value = selected || '';
+  wrap.innerHTML = Object.keys(STAGE_NUMBERS).map(s => {
+    const col = STAGE_COLORS[s] || '#64748b';
+    return `<button type="button" class="choice-pill${selected === s ? ' active' : ''}" style="--stg:${col}"
+      data-val="${escAttr(s)}" onclick="pickStage(this.dataset.val)">${escHtml(stageLabel(s))}</button>`;
+  }).join('');
+}
+function pickStage(s) {
+  const hidden = document.getElementById('f-stage');
+  if (hidden) hidden.value = s;
+  document.querySelectorAll('#f-stage-pills .choice-pill').forEach(b =>
+    b.classList.toggle('active', b.dataset.val === s));
+}
+function renderLeadTypePills(selected) {
+  const wrap = document.getElementById('f-leadtype-pills');
+  const hidden = document.getElementById('f-lead_type');
+  if (!wrap || !hidden) return;
+  hidden.value = selected || '';
+  const opts = [['', 'Not set', ''], ['Hot', '🔥 Hot', '#ef4444'], ['Warm', '🟡 Warm', '#f59e0b'], ['Cold', '🔵 Cold', '#3b82f6']];
+  wrap.innerHTML = opts.map(([v, label, col]) =>
+    `<button type="button" class="choice-pill${selected === v ? ' active' : ''}"${col ? ` style="--stg:${col}"` : ''}
+      data-val="${escAttr(v)}" onclick="pickLeadType(this.dataset.val)">${label}</button>`).join('');
+}
+function pickLeadType(v) {
+  const hidden = document.getElementById('f-lead_type');
+  if (hidden) hidden.value = v;
+  document.querySelectorAll('#f-leadtype-pills .choice-pill').forEach(b =>
+    b.classList.toggle('active', b.dataset.val === v));
+}
+// Re-render both pill groups from whatever the hidden inputs currently hold —
+// called by every open-modal path after it sets the field values.
+function syncChoicePills() {
+  const st = document.getElementById('f-stage');
+  const lt = document.getElementById('f-lead_type');
+  renderStagePills(st ? st.value : '');
+  renderLeadTypePills(lt ? lt.value : '');
+}
+// Tap a catalog product chip → drop it into the first empty product row, else a
+// fresh row. Keeps qty/rate per row and still allows free typing.
+function pickProduct(name) {
+  const editor = document.getElementById('items-editor');
+  if (!editor) return;
+  const rows = [...editor.querySelectorAll('.item-row')];
+  let target = null;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const inp = rows[i].querySelector('.i-product');
+    if (inp && !inp.value.trim()) { target = rows[i]; break; }
+  }
+  if (!target) target = addItemRow(name);
+  else target.querySelector('.i-product').value = name;
+  target?.querySelector('.i-qty')?.focus();
+}
+
 // ── Contacts editor ──────────────────────────────────────────
 function renderContactsEditor(contacts) {
   const editor = document.getElementById('contacts-editor');
@@ -5416,34 +5476,49 @@ function productSelect(selected = '') {
   </select>`;
 }
 
+// Catalog product names → tappable quick-pick chips + a <datalist> for
+// type-ahead. The product cell is a plain text input so users can still type
+// anything (custom/legacy products); tapping a chip fills a row (see pickProduct).
+function itemsChrome() {
+  const catalog = state.myProducts || [];
+  const names = catalog.length ? [...new Set(catalog.map(p => p.name).filter(Boolean))] : (PRODUCT_OPTIONS || []).slice();
+  if (!names.length) return '';
+  const datalist = `<datalist id="product-datalist">${names.map(n => `<option value="${escAttr(n)}"></option>`).join('')}</datalist>`;
+  const chips = `<div class="product-chips">${names.map(n =>
+    `<button type="button" class="prod-chip" data-name="${escAttr(n)}" onclick="pickProduct(this.dataset.name)">${escHtml(n)}</button>`).join('')}</div>`;
+  return datalist + chips;
+}
+function itemRowHtml(item, i) {
+  return `<div class="item-row" data-idx="${i}">
+      <input type="text" class="i-product" placeholder="${escAttr(T('product'))}" value="${escAttr(item.product || '')}" list="product-datalist" />
+      <input type="text" class="i-qty"  placeholder="Qty"  value="${escAttr(item.quantity || '')}" />
+      <input type="text" class="i-rate" placeholder="Rate" value="${escAttr(item.rate || '')}" />
+      ${i > 0 ? `<button type="button" class="remove-item" onclick="removeItemRow(this)">✕</button>` : '<span class="item-row-spacer"></span>'}
+    </div>`;
+}
 function renderItemsEditor(items) {
   const editor = document.getElementById('items-editor');
   if (!editor) return;
   const rows = (items && items.length)
     ? items.map(i => ({ product: i.product || '', quantity: i.quantity || '', rate: i.rate || '' }))
     : [{ product: '', quantity: '', rate: '' }];
-  editor.innerHTML = rows.map((item, i) => `
-    <div class="item-row" data-idx="${i}">
-      ${productSelect(item.product)}
-      <input type="text" class="i-qty"  placeholder="Qty"  value="${escAttr(item.quantity)}" />
-      <input type="text" class="i-rate" placeholder="Rate" value="${escAttr(item.rate)}" />
-      ${i > 0 ? `<button type="button" class="remove-item" onclick="removeItemRow(this)">✕</button>` : '<span class="item-row-spacer"></span>'}
-    </div>`).join('');
+  editor.innerHTML = itemsChrome() + rows.map((item, i) => itemRowHtml(item, i)).join('');
 }
 
-function addItemRow() {
+function addItemRow(product = '') {
   const editor = document.getElementById('items-editor');
-  if (!editor) return;
+  if (!editor) return null;
   const idx = editor.querySelectorAll('.item-row').length;
   const div = document.createElement('div');
   div.className = 'item-row';
   div.dataset.idx = idx;
   div.innerHTML = `
-    ${productSelect()}
+    <input type="text" class="i-product" placeholder="${escAttr(T('product'))}" value="${escAttr(product)}" list="product-datalist" />
     <input type="text" class="i-qty"  placeholder="Qty"  value="" />
     <input type="text" class="i-rate" placeholder="Rate" value="" />
     <button type="button" class="remove-item" onclick="removeItemRow(this)">✕</button>`;
   editor.appendChild(div);
+  return div;
 }
 
 function removeItemRow(btn) {
@@ -5493,6 +5568,7 @@ function openAddModal() {
   if (accessSection) accessSection.style.display = 'none';
   const moveBtn = document.getElementById('btn-move-database');
   if (moveBtn) moveBtn.style.display = 'none';   // add-mode: nothing to move yet
+  syncChoicePills();
   document.getElementById('modal-overlay').classList.remove('hidden');
 }
 
@@ -5526,6 +5602,7 @@ function openEditModal(rowIndex) {
     : (lead.product ? [{ product: lead.product, quantity: lead.quantity, rate: lead.rate }] : []);
   renderItemsEditor(itemsToEdit);
   renderLeadListsEditor(lead.list_ids || []);
+  syncChoicePills();
   document.getElementById('modal-overlay').classList.remove('hidden');
 
   // Activity timeline
@@ -9421,6 +9498,7 @@ function openEditModalFromParsed(parsed) {
   });
   renderItemsEditor(parsed.items || []);
   renderContactsEditor([]);
+  syncChoicePills();
   // This modal is shared with Add/Edit. A prior openEditModal() may have left the
   // owner-only sharing / hide-from-team / send-to-database controls visible and
   // still wired to THAT lead's rowIndex; they don't apply to an AI-parsed lead, so

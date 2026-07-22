@@ -18,7 +18,7 @@
        lazy-loaded on demand (dashboard/reports charts, import, map) via the
        ensureChart/ensureXLSX/ensureLeaflet loaders in app.js — off the startup
        critical path so the first paint isn't waiting on them. -->
-  <link rel="stylesheet" href="style.css?v=70" />
+  <link rel="stylesheet" href="style.css?v=71" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -1206,17 +1206,8 @@
           </div>
           <div class="form-group">
             <label>Stage</label>
-            <select id="f-stage">
-              <option value="">Select…</option>
-              <option value="New Lead">New Lead</option>
-              <option value="Sample Required">Sample Required</option>
-              <option value="Sample Sent">Sample Sent</option>
-              <option value="Quotation">Quotation</option>
-              <option value="Negotiation">Negotiation</option>
-              <option value="Order Won">Order Won</option>
-              <option value="Repeat Customer">Repeat Customer</option>
-              <option value="Lost">Lost</option>
-            </select>
+            <input type="hidden" id="f-stage" />
+            <div id="f-stage-pills" class="choice-pills"></div>
           </div>
           <div class="form-group">
             <label>Follow Up Date</label>
@@ -1228,12 +1219,8 @@
           </div>
           <div class="form-group">
             <label>Lead Type</label>
-            <select id="f-lead_type">
-              <option value="">Not Set</option>
-              <option value="Hot">🔥 Hot</option>
-              <option value="Warm">🟡 Warm</option>
-              <option value="Cold">🔵 Cold</option>
-            </select>
+            <input type="hidden" id="f-lead_type" />
+            <div id="f-leadtype-pills" class="choice-pills"></div>
           </div>
           <div class="form-group full-width">
             <label>Notes</label>
@@ -1279,7 +1266,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=74"></script>
+  <script src="app.js?v=75"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:1400, once:true };</script>
   <script src="dive-splash.js?v=2"></script>

@@ -5137,3 +5137,35 @@ body{
   .btn:active, .action-btn:active, .toggle-btn:active,
   .pill:active, .tag-chip:active, .lead-card-stage-btn:active { transform: scale(.97); }
 }
+
+/* ══════════════════════════════════════════════════════════
+   FORM CHOICE PILLS (Stage / Lead Type) + PRODUCT QUICK-PICK CHIPS
+   Tap to choose instead of hunting through a dropdown.
+   ══════════════════════════════════════════════════════════ */
+.choice-pills { display: flex; flex-wrap: wrap; gap: 7px; }
+.choice-pill {
+  font: 600 12.5px/1 inherit; padding: 9px 13px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text-muted);
+  transition: all var(--transition); -webkit-tap-highlight-color: transparent;
+}
+.choice-pill:hover { color: var(--text); border-color: var(--stg, var(--primary)); }
+.choice-pill.active {
+  background: color-mix(in srgb, var(--stg, var(--primary)) 16%, transparent);
+  border-color: var(--stg, var(--primary)); color: var(--stg, var(--primary)); font-weight: 700;
+}
+.choice-pill:active { transform: scale(.96); }
+
+.product-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.prod-chip {
+  font: 600 12px/1 inherit; padding: 8px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px dashed color-mix(in srgb, var(--primary) 34%, var(--border));
+  background: color-mix(in srgb, var(--primary) 7%, transparent); color: var(--primary);
+  transition: all var(--transition); -webkit-tap-highlight-color: transparent;
+}
+.prod-chip:hover  { background: color-mix(in srgb, var(--primary) 14%, transparent); }
+.prod-chip:active { transform: scale(.95); }
+
+@media (max-width: 640px) {
+  .choice-pill { padding: 11px 15px; font-size: 13.5px; }
+  .prod-chip   { padding: 10px 14px; font-size: 13px; }
+}

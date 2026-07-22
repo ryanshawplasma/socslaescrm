@@ -219,6 +219,12 @@ async function initSchema() {
     // team's separate reference bank / staging pool, hidden from working views.
     await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS bucket      TEXT DEFAULT 'working'`).catch(e => console.warn('[db] non-fatal:', e && e.message));
     await client.query(`CREATE INDEX IF NOT EXISTS idx_leads_bucket ON leads(bucket)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    // Entry date for the "Date Added" column. Added WITHOUT a default so existing
+    // rows stay NULL (shown as "—" — we don't know their real entry date) rather
+    // than all backfilling to the migration moment; new inserts get NOW() via the
+    // default set immediately after. getLeads/getLeadsForUser select this column.
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`ALTER TABLE leads ALTER COLUMN created_at SET DEFAULT NOW()`).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
     // ── Auth system tables ─────────────────────────────────────
     // Extend users with email, mobile, lockout fields
@@ -706,7 +712,7 @@ async function getLeads(limit = null, offset = 0) {
       id AS "rowIndex",
       factory_number, factory_name, person_in_charge, contact, designation,
       product, quantity, rate, stage, follow_up, notes, area,
-      lead_type, created_by, assigned_to, last_updated, mapped_stage, stage_number,
+      lead_type, created_by, assigned_to, last_updated, created_at, mapped_stage, stage_number,
       lat, lng, COALESCE(bucket,'working') AS bucket
     FROM leads ORDER BY id ASC${paging}
   `, params);
@@ -746,7 +752,7 @@ async function getLeadsForUser(displayName) {
       id AS "rowIndex",
       factory_number, factory_name, person_in_charge, contact, designation,
       product, quantity, rate, stage, follow_up, notes, area,
-      lead_type, created_by, assigned_to, last_updated, mapped_stage, stage_number,
+      lead_type, created_by, assigned_to, last_updated, created_at, mapped_stage, stage_number,
       COALESCE(bucket,'working') AS bucket
     FROM leads
     WHERE created_by = $1
@@ -1989,7 +1995,7 @@ async function getLeadsByTeam(teamId, memberNames = null) {
   const { rows } = await pool.query(`
     SELECT id AS "rowIndex", factory_number, factory_name, person_in_charge, contact, designation,
       product, quantity, rate, stage, follow_up, notes, area,
-      lead_type, created_by, assigned_to, last_updated, mapped_stage, stage_number,
+      lead_type, created_by, assigned_to, last_updated, created_at, mapped_stage, stage_number,
       lat, lng, team_id, visibility, COALESCE(bucket,'working') AS bucket
     FROM leads ${where} ORDER BY id ASC`, params
   );

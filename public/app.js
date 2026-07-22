@@ -23,6 +23,7 @@ const state = {
   dbSearch:    '',
   selectedLeads: new Set(),   // bulk-select on the main Leads table
   view:        'table',
+  leadCols:    (function () { try { return JSON.parse(localStorage.getItem('crm_leads_cols')) || null; } catch (_) { return null; } })(),
   fuFilter:    'overdue',
   sortKey:     '',
   sortDir:     'asc',
@@ -3091,6 +3092,15 @@ const TYPE_ROW_CLASS  = { Hot: 'row-hot', Warm: 'row-warm', Cold: 'row-cold' };
 const TYPE_CARD_CLASS = { Hot: 'card-hot', Warm: 'card-warm', Cold: 'card-cold' };
 const TYPE_EMOJI      = { Hot: '🔥', Warm: '🟡', Cold: '🔵' };
 
+// created_at (a TIMESTAMPTZ from Postgres) → "21 Jul 2026" for the Date Added
+// column. Returns '' for leads that predate the column (older rows have none).
+function fmtLeadDate(v) {
+  if (!v) return '';
+  const d = new Date(String(v).replace(' ', 'T'));
+  if (isNaN(d.getTime())) return String(v).slice(0, 10);
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
 function buildTable(leads, cols, actions = true, selectable = false, rowClickFn = null) {
   if (!leads.length) return emptyState('No leads found');
 
@@ -3116,6 +3126,7 @@ function buildTable(leads, cols, actions = true, selectable = false, rowClickFn 
     area:             [T('area'),    l => escHtml(l.area             || '—')],
     notes:            ['Notes',      l => escHtml(l.notes            || '—')],
     last_updated:     ['Updated',    l => escHtml(l.last_updated     || '—')],
+    date_added:       ['Date Added', l => escHtml(fmtLeadDate(l.created_at) || '—')],
     lead_type:        ['Type',       l => l.lead_type ? `${TYPE_EMOJI[l.lead_type] || ''} ${escHtml(l.lead_type)}` : '—'],
     created_by:       ['Added By',   l => escHtml(l.created_by       || '—')],
     lists:            ['Lists',      l => tagChips(l.lists)],
@@ -3712,6 +3723,82 @@ function renderGroupChip() {
     </span>${pipeLink}`;
 }
 
+// ── Leads table columns — user-toggleable via the ⚙ Columns menu ──────────
+// The chooser lets each user pick exactly which columns show (persisted), so a
+// phone can trim to a fits-on-screen set (no sideways slide) and anyone can add
+// the Date Added / other columns. Labels stay business-term aware.
+const LEAD_COL_KEYS   = ['factory_number','factory_name','person_in_charge','contact','product','quantity','rate','stage','lead_type','follow_up','area','date_added','last_updated','created_by','notes','lists'];
+const LEAD_COLS_WIDE   = ['factory_number','factory_name','person_in_charge','contact','product','stage','lead_type','follow_up','date_added'];
+const LEAD_COLS_NARROW = ['factory_name','contact','stage','date_added'];
+
+function leadColLabel(k) {
+  const LB = {
+    factory_number: '#', factory_name: T('entity'),
+    person_in_charge: biz().key === 'factory' ? 'Person' : T('person'),
+    contact: 'Contact', product: T('product'), quantity: 'Qty', rate: 'Rate',
+    stage: 'Stage', lead_type: 'Type', follow_up: 'Follow Up', area: T('area'),
+    date_added: 'Date Added', last_updated: 'Updated', created_by: 'Added By',
+    notes: 'Notes', lists: 'Lists',
+  };
+  return LB[k] || k;
+}
+
+function getEffectiveLeadCols() {
+  if (Array.isArray(state.leadCols) && state.leadCols.length) {
+    const chosen = state.leadCols.filter(c => LEAD_COL_KEYS.includes(c));
+    if (chosen.length) return chosen;
+  }
+  if (window.matchMedia('(max-width: 640px)').matches) return LEAD_COLS_NARROW.slice();
+  const d = LEAD_COLS_WIDE.slice();
+  if (state.role === 'admin' || state.activeOrgId) d.push('created_by');
+  if (state.myLists.length || state.leads.some(l => (l.list_ids || []).length)) d.push('lists');
+  return d;
+}
+
+function toggleLeadCol(key) {
+  const set = new Set(getEffectiveLeadCols());
+  set.has(key) ? set.delete(key) : set.add(key);
+  state.leadCols = LEAD_COL_KEYS.filter(k => set.has(k));       // keep canonical order
+  if (!state.leadCols.length) state.leadCols = ['factory_name']; // never fully empty
+  localStorage.setItem('crm_leads_cols', JSON.stringify(state.leadCols));
+  renderColumnMenu();
+  renderLeadsView();
+}
+
+function resetLeadCols() {
+  state.leadCols = null;
+  localStorage.removeItem('crm_leads_cols');
+  renderColumnMenu();
+  renderLeadsView();
+}
+
+function renderColumnMenu() {
+  const menu = document.getElementById('col-menu');
+  if (!menu) return;
+  const active = new Set(getEffectiveLeadCols());
+  menu.innerHTML =
+    `<div class="col-menu-head">Show columns</div>` +
+    LEAD_COL_KEYS.map(k =>
+      `<label class="col-menu-item"><input type="checkbox" ${active.has(k) ? 'checked' : ''}
+        onchange="toggleLeadCol('${k}')"><span>${escHtml(leadColLabel(k))}</span></label>`).join('') +
+    `<button class="col-menu-reset" onclick="resetLeadCols()">Reset to default</button>`;
+}
+
+function toggleColumnMenu(e) {
+  if (e) e.stopPropagation();
+  const menu = document.getElementById('col-menu');
+  if (!menu) return;
+  if (menu.classList.contains('hidden')) { renderColumnMenu(); menu.classList.remove('hidden'); }
+  else menu.classList.add('hidden');
+}
+
+// Dismiss the column menu on an outside tap.
+document.addEventListener('click', (e) => {
+  const menu = document.getElementById('col-menu');
+  if (!menu || menu.classList.contains('hidden')) return;
+  if (!e.target.closest('#col-menu') && !e.target.closest('#btn-columns')) menu.classList.add('hidden');
+});
+
 function renderLeadsView() {
   renderGroupChip();
   const leads = filteredLeads();
@@ -3719,16 +3806,7 @@ function renderLeadsView() {
   // you have to slide sideways to read anything. On the drawer/phone layout show
   // a compact, fits-on-screen set; a tap still opens the full lead detail.
   const narrow = window.matchMedia('(max-width: 640px)').matches;
-  let cols;
-  if (narrow) {
-    cols = ['factory_name', 'contact', 'stage', 'lead_type'];
-  } else {
-    // Admins (and team views) see whose lead each row is
-    cols = ['factory_number','factory_name','person_in_charge','contact','product','quantity','rate','stage','lead_type','follow_up','area'];
-    if (state.role === 'admin' || state.activeOrgId) cols.push('created_by');
-    // Show the Lists column once any list exists (or any lead is tagged)
-    if (state.myLists.length || state.leads.some(l => (l.list_ids || []).length)) cols.push('lists');
-  }
+  const cols   = getEffectiveLeadCols();   // the user's ⚙ Columns choice, else a device default
   const tableWrap  = document.getElementById('leads-table-wrap');
   const cardsWrap  = document.getElementById('leads-cards-wrap');
   const kanbanWrap = document.getElementById('leads-kanban-wrap');
@@ -9252,10 +9330,26 @@ async function aiConfirmSave() {
     payload.rate     = payload.items[0].rate;
   }
   try {
-    // Check for existing lead
     const existingRow = aiSession.existingRow;
+    let savedRow  = null;
+    let savedName = parsed.factory_name || parsed.factory_number || '';
     if (existingRow && existingRow !== -1) {
-      await apiFetch(`/api/leads/${existingRow}`, { method: 'PUT', body: JSON.stringify(payload) });
+      // Editing an existing lead from chat: only send the fields the user
+      // actually gave. updateLead() writes every non-undefined key, so passing
+      // '' for an unmentioned field would BLANK it — this keeps "make Arun's
+      // stage Won" to just the stage and leaves contact / area / notes intact.
+      const upd = {};
+      ['factory_number','factory_name','person_in_charge','contact','stage','follow_up','area','notes','lead_type']
+        .forEach(k => { if (parsed[k] != null && String(parsed[k]).trim() !== '') upd[k] = parsed[k]; });
+      if (upd.stage) upd.stage_number = STAGE_NUMBERS[upd.stage] ?? 0;
+      if (parsed.items && parsed.items.length) {
+        upd.items   = parsed.items;
+        upd.product = parsed.items[0].product; upd.quantity = parsed.items[0].quantity; upd.rate = parsed.items[0].rate;
+      }
+      await apiFetch(`/api/leads/${existingRow}`, { method: 'PUT', body: JSON.stringify(upd) });
+      savedRow = existingRow;
+      const m = state.leads.find(x => String(x.rowIndex) === String(existingRow));
+      if (!savedName && m) savedName = m.factory_name || m.factory_number || '';
       toast(biz().key==='factory' ? 'Lead updated' : T('entity')+' updated');
     } else {
       // Route through createLead (NOT a bare POST) so an AI-chat lead lands in
@@ -9263,11 +9357,36 @@ async function aiConfirmSave() {
       // otherwise it silently went to Personal and vanished from a team view.
       const result = await createLead(payload);
       if (result?.conflict) { toast(`Duplicate: ${result.message}`, 'error'); return; }
+      savedRow = (result && result.rowIndex != null) ? result.rowIndex : null;
       toast(biz().key==='factory' ? 'Lead saved' : T('entity')+' saved');
     }
-    aiClearUnderstandingCard();
     await loadLeads(); await loadStats(); renderPage(state.page);
+    // Don't blank the card the instant you save — show a clear "saved" state so
+    // the chat stays interactive (view the lead, or start the next one).
+    aiRenderSavedCard(savedName, existingRow && existingRow !== -1, savedRow);
   } catch (err) { toast('Save failed: ' + err.message, 'error'); }
+}
+
+// A compact confirmation shown in place of the parse card after a save, so the
+// chat doesn't vanish the moment you tap Add / Update.
+function aiRenderSavedCard(name, isUpdate, rowIndex) {
+  aiSession = null;
+  const input = document.getElementById('chat-input');
+  if (input) input.value = '';
+  const cardArea = document.getElementById('ai-card-area');
+  if (!cardArea) return;
+  const noun = biz().key === 'factory' ? 'lead' : T('entity').toLowerCase();
+  const view = (rowIndex != null && rowIndex !== -1)
+    ? `<button class="btn btn-ghost" onclick="openLeadDetail(${Number(rowIndex)})">👁 View</button>` : '';
+  cardArea.innerHTML = `
+    <div class="ai-card ai-card-saved">
+      <div class="ai-saved-tick">✓</div>
+      <div class="ai-saved-msg"><b>${escHtml(name || ('The ' + noun))}</b> ${isUpdate ? 'updated' : 'added'}.</div>
+      <div class="ai-card-footer">
+        ${view}
+        <button class="btn btn-primary" onclick="aiClearUnderstandingCard()">➕ New ${escHtml(noun)}</button>
+      </div>
+    </div>`;
 }
 
 function aiEditAll() {

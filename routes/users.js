@@ -13,6 +13,21 @@ const {
 } = require('../middleware/auth');
 
 const router = express.Router();
+const rateLimit = require('express-rate-limit');
+
+// Public, unauthenticated endpoints — throttle to stop automated mass account
+// creation (which feeds referral farming + access-code brute force) and rapid
+// username-existence probing.
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, limit: 10,
+  standardHeaders: 'draft-7', legacyHeaders: false,
+  message: { error: 'Too many sign-up attempts. Try again later.' },
+});
+const checkUsernameLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, limit: 60,
+  standardHeaders: 'draft-7', legacyHeaders: false,
+  message: { error: 'Too many requests. Slow down a moment.' },
+});
 
 function isValidUsername(name) {
   if (!name || name.length < 3 || name.length > 20) return false;
@@ -153,7 +168,7 @@ router.patch('/users/:id/password', authMiddleware, adminOnly, async (req, res, 
 });
 
 // ── GET /api/check-username (public) ─────────────────────────
-router.get('/check-username', async (req, res, next) => {
+router.get('/check-username', checkUsernameLimiter, async (req, res, next) => {
   const name = (req.query.name || '').toLowerCase().trim();
   if (!isValidUsername(name)) return res.json({ available: false, reason: 'invalid' });
   try {
@@ -164,7 +179,7 @@ router.get('/check-username', async (req, res, next) => {
 });
 
 // ── POST /api/register (public self-registration) ─────────────
-router.post('/register', async (req, res, next) => {
+router.post('/register', registerLimiter, async (req, res, next) => {
   const { name, pin, mobile, password, inviteCode, fingerprint } = req.body || {};
   const clean = (name || '').toLowerCase().trim();
   if (!isValidUsername(clean)) return res.status(400).json({ error: 'Invalid username — use 3–20 lowercase letters, numbers, _ or . only' });

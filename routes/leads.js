@@ -4,6 +4,15 @@ const express  = require('express');
 const axios    = require('axios');
 const db       = require('../db');
 const { authMiddleware, adminOnly, noGuest, requireLeadAccess } = require('../middleware/auth');
+const rateLimit = require('express-rate-limit');
+
+// Access codes grant Pro time and accept human-friendly strings — throttle
+// redemption so codes can't be brute-forced by an authenticated account.
+const redeemLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, limit: 12,
+  standardHeaders: 'draft-7', legacyHeaders: false,
+  message: { error: 'Too many code attempts. Try again in an hour.' },
+});
 
 // Lazy accessor for the shared Gemini provider. Required lazily (not at module
 // load) because ai.js already requires THIS module (leadsForRequest) — a static
@@ -831,7 +840,7 @@ router.get('/me/plan', authMiddleware, async (req, res, next) => {
 });
 
 // Redeem a dev-issued access code → extends the caller's Pro window.
-router.post('/plan/redeem', authMiddleware, noGuest, async (req, res, next) => {
+router.post('/plan/redeem', redeemLimiter, authMiddleware, noGuest, async (req, res, next) => {
   try {
     const user = await db.getUserByName(req.user.username);
     if (!user) return res.status(404).json({ error: 'User not found' });

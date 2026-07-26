@@ -54,6 +54,26 @@ function sha256(str) {
   return crypto.createHash('sha256').update(String(str)).digest('hex');
 }
 
+// Run fn(client) inside a single BEGIN/COMMIT transaction, rolling back on any
+// error and always releasing the client. Use for multi-statement writes that
+// must be all-or-nothing (lead + items + contacts, a rename that fans out across
+// name-keyed tables, cascade deletes) so a mid-way failure can't leave the row
+// half-updated or its children deleted-but-not-reinserted.
+async function withTransaction(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 // ── Schema init ──────────────────────────────────────────────
 async function initSchema() {
   const client = await pool.connect();
@@ -760,8 +780,15 @@ async function getLeadsForUser(displayName) {
     ORDER BY id ASC
   `, [displayName, displayName]);
 
-  const { rows: allItems }    = await pool.query(`SELECT * FROM lead_items    ORDER BY lead_id, id ASC`);
-  const { rows: allContacts } = await pool.query(`SELECT * FROM lead_contacts ORDER BY lead_id, id ASC`);
+  // Scope the item/contact fetch to THIS user's leads. The old unqualified
+  // SELECT * pulled every item/contact row in the database and threw all but
+  // this user's away — memory/latency that grew with total system size.
+  const leadIds = rows.map(r => r.rowIndex);
+  let allItems = [], allContacts = [];
+  if (leadIds.length) {
+    ({ rows: allItems }    = await pool.query(`SELECT * FROM lead_items    WHERE lead_id = ANY($1) ORDER BY lead_id, id ASC`, [leadIds]));
+    ({ rows: allContacts } = await pool.query(`SELECT * FROM lead_contacts WHERE lead_id = ANY($1) ORDER BY lead_id, id ASC`, [leadIds]));
+  }
 
   const itemsByLead = {};
   for (const item of allItems) {
@@ -1035,49 +1062,60 @@ async function updateLead(rowIndex, data) {
   }
 
   params.push(rowIndex);
-  await pool.query(`UPDATE leads SET ${setClauses.join(', ')} WHERE id = $${idx}`, params);
 
-  if (Array.isArray(data.items)) {
-    await pool.query(`DELETE FROM lead_items WHERE lead_id = $1`, [rowIndex]);
-    for (const item of data.items) {
-      await pool.query(
-        `INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES ($1,$2,$3,$4)`,
-        [rowIndex, item.product || '', item.quantity || '', item.rate || '']
+  // The lead row update and the items/contacts delete-then-reinsert must be one
+  // atomic unit: without a transaction, a failure after the DELETE would wipe a
+  // lead's items/contacts with nothing reinserted (silent data loss).
+  await withTransaction(async (client) => {
+    await client.query(`UPDATE leads SET ${setClauses.join(', ')} WHERE id = $${idx}`, params);
+
+    if (Array.isArray(data.items)) {
+      await client.query(`DELETE FROM lead_items WHERE lead_id = $1`, [rowIndex]);
+      for (const item of data.items) {
+        await client.query(
+          `INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES ($1,$2,$3,$4)`,
+          [rowIndex, item.product || '', item.quantity || '', item.rate || '']
+        );
+      }
+      const first = data.items[0] || { product: '', quantity: '', rate: '' };
+      await client.query(
+        `UPDATE leads SET product = $1, quantity = $2, rate = $3 WHERE id = $4`,
+        [first.product || '', first.quantity || '', first.rate || '', rowIndex]
       );
     }
-    const first = data.items[0] || { product: '', quantity: '', rate: '' };
-    await pool.query(
-      `UPDATE leads SET product = $1, quantity = $2, rate = $3 WHERE id = $4`,
-      [first.product || '', first.quantity || '', first.rate || '', rowIndex]
-    );
-  }
 
-  if (Array.isArray(data.contacts)) {
-    const validContacts = data.contacts.filter(c => c.person_name || c.contact);
-    const primary = validContacts[0] || { person_name: '', contact: '', designation: '' };
-    await pool.query(
-      `UPDATE leads SET person_in_charge = $1, contact = $2, designation = $3 WHERE id = $4`,
-      [primary.person_name || '', primary.contact || '', primary.designation || '', rowIndex]
-    );
-    await pool.query(`DELETE FROM lead_contacts WHERE lead_id = $1`, [rowIndex]);
-    for (const c of validContacts.slice(1)) {
-      await pool.query(
-        `INSERT INTO lead_contacts (lead_id, person_name, contact, designation) VALUES ($1,$2,$3,$4)`,
-        [rowIndex, c.person_name || '', c.contact || '', c.designation || '']
+    if (Array.isArray(data.contacts)) {
+      const validContacts = data.contacts.filter(c => c.person_name || c.contact);
+      const primary = validContacts[0] || { person_name: '', contact: '', designation: '' };
+      await client.query(
+        `UPDATE leads SET person_in_charge = $1, contact = $2, designation = $3 WHERE id = $4`,
+        [primary.person_name || '', primary.contact || '', primary.designation || '', rowIndex]
       );
+      await client.query(`DELETE FROM lead_contacts WHERE lead_id = $1`, [rowIndex]);
+      for (const c of validContacts.slice(1)) {
+        await client.query(
+          `INSERT INTO lead_contacts (lead_id, person_name, contact, designation) VALUES ($1,$2,$3,$4)`,
+          [rowIndex, c.person_name || '', c.contact || '', c.designation || '']
+        );
+      }
     }
-  }
+  });
 
   return { ok: true };
 }
 
 // ── WRITE: delete a lead ──────────────────────────────────────
 async function deleteLead(rowIndex) {
-  await pool.query(`DELETE FROM lead_items    WHERE lead_id = $1`, [rowIndex]);
-  await pool.query(`DELETE FROM lead_contacts WHERE lead_id = $1`, [rowIndex]);
-  await pool.query(`DELETE FROM lead_photos   WHERE lead_id = $1`, [rowIndex]);
-  await pool.query(`DELETE FROM lead_access   WHERE lead_id = $1`, [rowIndex]);
-  await pool.query(`DELETE FROM leads WHERE id = $1`, [rowIndex]);
+  // lead_list_items has no FK → it isn't cleaned by cascade; delete it explicitly
+  // or every deleted lead leaves a stale list membership that inflates list counts.
+  await withTransaction(async (client) => {
+    await client.query(`DELETE FROM lead_items      WHERE lead_id = $1`, [rowIndex]);
+    await client.query(`DELETE FROM lead_contacts   WHERE lead_id = $1`, [rowIndex]);
+    await client.query(`DELETE FROM lead_photos     WHERE lead_id = $1`, [rowIndex]);
+    await client.query(`DELETE FROM lead_access      WHERE lead_id = $1`, [rowIndex]);
+    await client.query(`DELETE FROM lead_list_items WHERE lead_id = $1`, [rowIndex]);
+    await client.query(`DELETE FROM leads            WHERE id = $1`, [rowIndex]);
+  });
   return { ok: true };
 }
 
@@ -1350,7 +1388,18 @@ async function getAdminCount() {
 }
 
 async function deleteUser(userId) {
-  await pool.query(`DELETE FROM users WHERE id = $1`, [userId]);
+  // Several tables reference users(id) with a plain FK (RESTRICT on delete). The
+  // attribution ones are nullable — clear them so deleting a normal user doesn't
+  // 23503 on a stale "reviewed_by"/"granted_by"/"manager_id". If the user still
+  // OWNS a team (teams.owner_id), the delete deliberately fails and the route
+  // surfaces a clear "transfer the team first" 409 (via the global 23503 handler).
+  await withTransaction(async (client) => {
+    await client.query(`UPDATE join_requests   SET reviewed_by = NULL WHERE reviewed_by = $1`, [userId]);
+    await client.query(`UPDATE departments      SET manager_id  = NULL WHERE manager_id  = $1`, [userId]);
+    await client.query(`UPDATE user_permissions SET granted_by  = NULL WHERE granted_by  = $1`, [userId]);
+    await client.query(`UPDATE team_invitations SET created_by  = NULL WHERE created_by  = $1`, [userId]);
+    await client.query(`DELETE FROM users WHERE id = $1`, [userId]);
+  });
   return { ok: true };
 }
 
@@ -1382,7 +1431,27 @@ async function updateUserName(userId, newName) {
     `SELECT id FROM users WHERE display_name = $1 AND id != $2`, [newName, userId]
   );
   if (existing.length) return { ok: false, message: 'Name already taken. Choose another.' };
-  await pool.query(`UPDATE users SET display_name = $1 WHERE id = $2`, [newName, userId]);
+  const { rows: [me] } = await pool.query(`SELECT display_name FROM users WHERE id = $1`, [userId]);
+  const oldName = me && me.display_name;
+  if (!oldName) return { ok: false, message: 'User not found.' };
+  if (oldName === newName) return { ok: true };
+
+  // Ownership across the app is keyed by the display-name STRING (leads.created_by,
+  // assigned_to, lead_access, team tasks/messages, share requests) — not by user id.
+  // A rename must carry every reference with it in one transaction, or the user's
+  // leads/shares/tasks silently orphan (they'd stop seeing their own data).
+  await withTransaction(async (client) => {
+    await client.query(`UPDATE users              SET display_name      = $1 WHERE id                = $2`, [newName, userId]);
+    await client.query(`UPDATE leads              SET created_by        = $1 WHERE created_by        = $2`, [newName, oldName]);
+    await client.query(`UPDATE leads              SET assigned_to       = $1 WHERE assigned_to       = $2`, [newName, oldName]);
+    await client.query(`UPDATE lead_access        SET user_display_name = $1 WHERE user_display_name = $2`, [newName, oldName]);
+    await client.query(`UPDATE lead_access        SET granted_by        = $1 WHERE granted_by        = $2`, [newName, oldName]);
+    await client.query(`UPDATE team_tasks         SET assignee          = $1 WHERE assignee          = $2`, [newName, oldName]);
+    await client.query(`UPDATE team_tasks         SET created_by        = $1 WHERE created_by        = $2`, [newName, oldName]);
+    await client.query(`UPDATE team_messages      SET sender            = $1 WHERE sender            = $2`, [newName, oldName]);
+    await client.query(`UPDATE lead_share_requests SET requester        = $1 WHERE requester         = $2`, [newName, oldName]);
+    await client.query(`UPDATE lead_share_requests SET owner            = $1 WHERE owner             = $2`, [newName, oldName]);
+  });
   return { ok: true };
 }
 
@@ -2615,12 +2684,22 @@ async function redeemAccessCode(rawCode, userId) {
   const rec = rows[0];
   if (!rec) return { ok: false, error: 'That code isn’t valid' };
   if (rec.uses >= rec.max_uses) return { ok: false, error: 'This code has already been used up' };
+  // Record this user's redemption first — the unique index blocks the SAME user
+  // redeeming twice.
   try {
     await pool.query(`INSERT INTO access_code_redemptions (code, user_id) VALUES ($1,$2)`, [rec.code, userId]);
   } catch (e) {
     return { ok: false, error: 'You’ve already redeemed this code' };
   }
-  await pool.query(`UPDATE access_codes SET uses = uses + 1 WHERE id=$1`, [rec.id]);
+  // Atomically claim a use: the `uses < max_uses` guard in the UPDATE prevents
+  // two DIFFERENT users from both passing the stale read above and over-redeeming
+  // a single-use code. If we lose the race, undo our redemption row.
+  const claim = await pool.query(
+    `UPDATE access_codes SET uses = uses + 1 WHERE id=$1 AND uses < max_uses RETURNING id`, [rec.id]);
+  if (!claim.rowCount) {
+    await pool.query(`DELETE FROM access_code_redemptions WHERE code=$1 AND user_id=$2`, [rec.code, userId]).catch(() => {});
+    return { ok: false, error: 'This code has already been used up' };
+  }
   const proUntil = await extendUserPro(userId, rec.days, 'code');
   return { ok: true, days: rec.days, proUntil };
 }

@@ -42,7 +42,11 @@ function verifyLegacyToken(token) {
   let payload;
   try { payload = Buffer.from(b64, 'base64').toString(); } catch { return null; }
   const expected = crypto.createHmac('sha256', JWT_SECRET).update(payload).digest('hex');
-  if (sig !== expected) return null;
+  // Constant-time compare — this is a signature check on an attacker-controlled
+  // token, so never leak length/prefix timing via `!==`.
+  const sigBuf = Buffer.from(sig, 'utf8');
+  const expBuf = Buffer.from(expected, 'utf8');
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) return null;
   const parts = payload.split(':');
   if (parts.length < 3) return null;
   if (Date.now() > parseInt(parts[2], 10)) return null;
@@ -52,7 +56,7 @@ function verifyLegacyToken(token) {
 function verifyAccessToken(token) {
   if (!token) return null;
   try {
-    const p = jwt.verify(token, JWT_SECRET);
+    const p = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
     return { userId: p.sub, username: p.username, role: p.role, sessionId: p.sid };
   } catch {}
   const legacy = verifyLegacyToken(token);

@@ -7,8 +7,22 @@ const db      = require('../db');
 const cache   = require('../cache');
 const { resolveBusinessProfile, businessVocabPrompt, entityTriggerWords } = require('../business-types');
 const { authMiddleware, adminOnly } = require('../middleware/auth');
+const rateLimit = require('express-rate-limit');
 
 const router = express.Router();
+
+// Throttle the expensive Gemini-backed endpoints (each call can fan out to up to
+// 3 models). One misbehaving client — or a script — could otherwise burn quota /
+// run up cost unbounded. Light routes (vocab CRUD, ai-audit logging) are exempt.
+const aiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 40,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'You’re sending AI requests too fast — give it a few seconds.' },
+});
+const isAiHeavy = (p) => p.startsWith('/ai/') || p.startsWith('/parse') || p === '/import/ai-map';
+router.use((req, res, next) => (isAiHeavy(req.path) ? aiLimiter(req, res, next) : next()));
 
 // ── System Prompt ─────────────────────────────────────────────
 const CRM_SYSTEM_PROMPT = `You are a CRM data extraction AI for an adhesive sales team in India. Your ONLY output must be a single raw JSON object — no markdown, no code fences, no explanation.
@@ -509,8 +523,11 @@ async function runUnderstandingPipeline(text, teamId, username, sessionId) {
 
 // ── POST /api/ai/understand ───────────────────────────────────
 router.post('/ai/understand', authMiddleware, async (req, res, next) => {
-  const { text, teamId } = req.body || {};
-  if (!text) return res.status(400).json({ error: 'text required' });
+  const { teamId } = req.body || {};
+  // Cap free-text before it hits the prompt (cost/DoS guard). A lead message is
+  // never this long; sibling endpoints already slice their inputs.
+  const text = String((req.body || {}).text || '').slice(0, 3000);
+  if (!text.trim()) return res.status(400).json({ error: 'text required' });
   try {
     const sessionId = uuidv4();
     const userId    = req.user.username;
@@ -615,7 +632,9 @@ router.post('/import/ai-map', authMiddleware, async (req, res, next) => {
 
 // ── POST /api/ai/clarify — answer clarification and re-run ────
 router.post('/ai/clarify', authMiddleware, async (req, res, next) => {
-  const { sessionId, field, answer, originalText, teamId } = req.body || {};
+  const { sessionId, field, teamId } = req.body || {};
+  const originalText = String((req.body || {}).originalText || '').slice(0, 3000);
+  const answer       = String((req.body || {}).answer || '').slice(0, 500);
   if (!originalText || !field || !answer) return res.status(400).json({ error: 'originalText, field, answer required' });
   try {
     const augmented = `${originalText}\n[Clarification for ${field}: ${answer}]`;
@@ -955,8 +974,9 @@ router.post('/ai/command', authMiddleware, async (req, res, next) => {
 
 // ── POST /api/parse (alias — Telegram bot uses this) ─────────
 router.post('/parse', authMiddleware, async (req, res, next) => {
-  const { text, teamId } = req.body || {};
-  if (!text) return res.status(400).json({ error: 'text required' });
+  const { teamId } = req.body || {};
+  const text = String((req.body || {}).text || '').slice(0, 3000);
+  if (!text.trim()) return res.status(400).json({ error: 'text required' });
   try {
     const vocab   = teamId ? await db.getVocab(teamId) : [];
     const profile = await resolveBusinessProfileFor(req.user.username, teamId);

@@ -1242,6 +1242,17 @@ html { scrollbar-width: thin; scrollbar-color: var(--text-muted) transparent; }
   }
   .form-grid { grid-template-columns: 1fr; gap: 10px; }
 
+  /* Pin Save/Cancel to the bottom of the (scrolling) lead form so they don't
+     scroll away below a long lead, and clear the home-indicator on notched
+     phones — matching the Profile modal's treatment. */
+  #lead-form { padding-bottom: 0; }
+  #lead-form .modal-footer {
+    position: sticky; bottom: 0; z-index: 1;
+    background: var(--card-bg);
+    margin: 8px -24px 0;
+    padding: 12px 24px max(12px, env(safe-area-inset-bottom));
+  }
+
   /* Profile/Settings modal — was unbounded height, so on short phone
      screens it overflowed off both the top AND bottom of the viewport
      with no way to scroll to the fields or the Save/Cancel buttons.
@@ -1806,7 +1817,9 @@ tr.row-cold:hover td { background: #dbeafe; }
 .remove-contact:hover { background: #fee2e2; }
 .contact-row-spacer { width: 28px; }
 @media (max-width: 600px) {
-  .contact-row { grid-template-columns: 1fr 1fr; }
+  /* Keep name | phone | ✕ on ONE row — the old "1fr 1fr" left three items
+     (name, phone, remove) flowing into two columns, so the ✕ wrapped underneath. */
+  .contact-row { grid-template-columns: 1fr 1fr auto; }
   .contact-row .c-desig { display: none; }
 }
 
@@ -2244,9 +2257,12 @@ tr.row-cold:hover td { background: #dbeafe; }
 .pin-switch a { color: var(--primary); text-decoration: none; }
 
 /* ── PIN setup / Set password modals ──────────────────────── */
+/* z-index sits ABOVE the Profile modal (9500) — "Change Password" is launched
+   from inside Profile, so at the old 1100 it rendered behind Profile's dimmed
+   backdrop and looked like a dead button. */
 #pin-setup-modal,
 #set-password-modal {
-  position: fixed; inset: 0; z-index: 1100;
+  position: fixed; inset: 0; z-index: 9800;
   display: flex; align-items: center; justify-content: center;
   background: rgba(0,0,0,.45); backdrop-filter: blur(4px);
 }
@@ -2255,6 +2271,9 @@ tr.row-cold:hover td { background: #dbeafe; }
 .pin-setup-box {
   background: var(--card-bg); border: 1px solid var(--border);
   border-radius: 14px; padding: 28px; width: 340px; max-width: 94vw;
+  /* Cap height + scroll so the Set-PIN / Set-Password buttons stay reachable on
+     short (landscape) phones instead of clipping off the bottom. */
+  max-height: 92vh; overflow-y: auto;
   box-shadow: var(--shadow-md); animation: fadeInUp .2s ease;
 }
 .pin-setup-box h3 { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
@@ -3333,7 +3352,9 @@ tr.row-cold:hover td { background: #dbeafe; }
   -webkit-tap-highlight-color: transparent;
   min-width: 0;
 }
-.lead-card:hover, .lead-card:focus-visible { transform: translateY(-2px); box-shadow: var(--shadow-md); outline: none; }
+.lead-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+/* Keyboard focus needs a real, visible ring — not just the hover lift. */
+.lead-card:focus-visible { transform: translateY(-2px); box-shadow: var(--shadow-md); outline: 2px solid var(--primary); outline-offset: 2px; }
 .lead-card.card-hot  { border-left-color: #ef4444; }
 .lead-card.card-warm { border-left-color: #f59e0b; }
 .lead-card.card-cold { border-left-color: #3b82f6; }
@@ -4517,22 +4538,30 @@ body.bubble-dragging .ai-bubble-trash { opacity: 1; transform: translateX(-50%) 
 
 /* ── Phone: condensed leads table fits the screen (no sideways slide) ──────── */
 @media (max-width: 640px) {
-  /* Fixed layout + wrapping keeps the four data columns inside the viewport
-     instead of running off the right edge (the old nowrap forced a scroll). */
-  #leads-table-wrap .crm-table { table-layout: fixed; width: 100%; }
-  #leads-table-wrap .crm-table th,
-  #leads-table-wrap .crm-table td {
+  /* ≤4 columns (the default): fixed layout + wrapping keeps every column inside
+     the viewport instead of running off the right edge. Scoped to .cols-fit so
+     it doesn't apply when the user shows more columns (see the scroll rule below). */
+  #leads-table-wrap.cols-fit .crm-table { table-layout: fixed; width: 100%; }
+  #leads-table-wrap.cols-fit .crm-table th,
+  #leads-table-wrap.cols-fit .crm-table td {
     padding: 9px 8px; white-space: normal;
     word-break: break-word; overflow-wrap: anywhere; vertical-align: top;
   }
-  #leads-table-wrap .crm-table th:nth-child(1),
-  #leads-table-wrap .crm-table td:nth-child(1) { width: 42%; }
-  #leads-table-wrap .crm-table th:nth-child(2),
-  #leads-table-wrap .crm-table td:nth-child(2) { width: 26%; }
-  #leads-table-wrap .crm-table th:nth-child(3),
-  #leads-table-wrap .crm-table td:nth-child(3) { width: 18%; }
-  #leads-table-wrap .crm-table th:nth-child(4),
-  #leads-table-wrap .crm-table td:nth-child(4) { width: 14%; }
+  #leads-table-wrap.cols-fit .crm-table th:nth-child(1),
+  #leads-table-wrap.cols-fit .crm-table td:nth-child(1) { width: 42%; }
+  #leads-table-wrap.cols-fit .crm-table th:nth-child(2),
+  #leads-table-wrap.cols-fit .crm-table td:nth-child(2) { width: 26%; }
+  #leads-table-wrap.cols-fit .crm-table th:nth-child(3),
+  #leads-table-wrap.cols-fit .crm-table td:nth-child(3) { width: 18%; }
+  #leads-table-wrap.cols-fit .crm-table th:nth-child(4),
+  #leads-table-wrap.cols-fit .crm-table td:nth-child(4) { width: 14%; }
+
+  /* >4 columns: don't crush them to zero — let the table keep natural widths and
+     scroll horizontally inside its own wrapper (page body still never scrolls). */
+  #leads-table-wrap:not(.cols-fit) { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  #leads-table-wrap:not(.cols-fit) .crm-table { min-width: max-content; }
+  #leads-table-wrap:not(.cols-fit) .crm-table th,
+  #leads-table-wrap:not(.cols-fit) .crm-table td { white-space: nowrap; padding: 9px 10px; }
 }
 
 /* ── Follow-up action cards ───────────────────────────────── */

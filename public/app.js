@@ -3034,8 +3034,12 @@ function computeStats(leads) {
       by_product[p] = (by_product[p] || 0) + 1;
       by_product_revenue[p] = (by_product_revenue[p] || 0) + (parseFloat(it.quantity) || 0) * (parseFloat(it.rate) || 0);
     }
-    if (l.stage_number === '6' || l.stage_number === '7') won++;
-    if (l.stage_number === '0') lost++;
+    // Derive the number the same way groupOf() / the KPI drill-downs do, so the
+    // Won/Lost/Active totals can't disagree with the list you land on or the
+    // doughnut when a lead has a canonical stage but a blank stage_number.
+    const sn = String(l.stage_number || STAGE_NUMBERS[l.stage] || '');
+    if (sn === '6' || sn === '7') won++;
+    if (sn === '0') lost++;
   }
   const by_lead_type = (leads || []).reduce((acc, l) => { const t = l.lead_type || 'Unset'; acc[t] = (acc[t] || 0) + 1; return acc; }, {});
   const total = (leads || []).length;
@@ -3832,6 +3836,10 @@ function renderLeadsView() {
     kanbanWrap.innerHTML = buildKanban(leads, true);
   } else {
     tableWrap.classList.remove('hidden');
+    // The phone fixed-4-column layout only fits when ≤4 data columns are shown.
+    // If the user picks more via ⚙ Columns, let the table scroll sideways instead
+    // of crushing columns 5+ to ~0 width (cols-fit toggles the CSS between the two).
+    tableWrap.classList.toggle('cols-fit', cols.length <= 4);
     // Drop any selected ids no longer in view (filters/search changed).
     const visible = new Set(leads.map(l => Number(l.rowIndex)));
     for (const id of [...state.selectedLeads]) if (!visible.has(id)) state.selectedLeads.delete(id);
@@ -8755,7 +8763,10 @@ async function aiPanelSend(page) {
   const text = (ta?.value || '').trim();
   if (!text) return;
   ta.value = '';
-  const teamId = ws?.activeTeam?.id || null;
+  // Use the active workspace id (set app-wide), NOT ws.activeTeam which is only
+  // populated after visiting the Workspace page — otherwise a user working inside
+  // a team sends teamId:null and loses the team's custom AI vocab + business profile.
+  const teamId = state.activeOrgId ? parseInt(state.activeOrgId, 10) : null;
   aiMsgAppend(page, 'user', escHtml(text));
   aiMsgAppend(page, 'bot', '⏳ AI is thinking…');
   try {
@@ -8935,21 +8946,30 @@ async function aiConfirmFromCard(uuid) {
   if (!d) return;
   const { parsed, action, existingRow, page } = d;
 
-  const payload = {
+  // Drop the model's placeholder empty item ({product:'',...}) so it can't wipe a
+  // lead's real products on update.
+  const realItems = (parsed.items || []).filter(it => (it.product || '').trim());
+
+  // A NEW lead gets a fully-formed row (sensible defaults). An UPDATE must send
+  // ONLY the fields the user actually mentioned — updateLead writes every
+  // non-undefined key, so defaulted ''/'New Lead'/'Cold'/empty items[]/contacts[]
+  // would BLANK the matched lead's real data (silent, irreversible loss). This is
+  // the same contract aiConfirmSave (chat mode) already follows.
+  const addPayload = {
     factory_number:   parsed.factory_number   || '',
     factory_name:     parsed.factory_name     || '',
     person_in_charge: parsed.person_in_charge || '',
     contact:          parsed.contact          || '',
-    product:          parsed.items?.[0]?.product   || parsed.product   || '',
-    quantity:         parsed.items?.[0]?.quantity  || parsed.quantity  || '',
-    rate:             parsed.items?.[0]?.rate      || parsed.rate      || '',
+    product:          realItems[0]?.product   || parsed.product   || '',
+    quantity:         realItems[0]?.quantity  || parsed.quantity  || '',
+    rate:             realItems[0]?.rate      || parsed.rate      || '',
     stage:            parsed.stage            || 'New Lead',
     stage_number:     STAGE_NUMBERS[parsed.stage] ?? (parsed.stage_number || 1),
     follow_up:        parsed.follow_up        || '',
     area:             parsed.area             || '',
     notes:            parsed.notes            || '',
     lead_type:        parsed.lead_type        || 'Cold',
-    items:            parsed.items            || [],
+    items:            realItems,
     contacts:         [],
   };
 
@@ -8958,24 +8978,35 @@ async function aiConfirmFromCard(uuid) {
 
   try {
     let savedId;
+    let auditPayload = addPayload;
     if (action === 'UPDATE' && existingRow != null && existingRow !== -1) {
-      await apiFetch(`/api/leads/${existingRow}`, { method: 'PUT', body: JSON.stringify(payload) });
+      const upd = {};
+      ['factory_number','factory_name','person_in_charge','contact','stage','follow_up','area','notes','lead_type']
+        .forEach(k => { if (parsed[k] != null && String(parsed[k]).trim() !== '') upd[k] = parsed[k]; });
+      if (upd.stage) upd.stage_number = STAGE_NUMBERS[upd.stage] ?? 0;
+      if (realItems.length) {
+        upd.items    = realItems;
+        upd.product  = realItems[0].product;
+        upd.quantity = realItems[0].quantity;
+        upd.rate     = realItems[0].rate;
+      }
+      auditPayload = upd;
+      await apiFetch(`/api/leads/${existingRow}`, { method: 'PUT', body: JSON.stringify(upd) });
       savedId = existingRow;
     } else {
       // Route through createLead so AI-saved leads land in the same "Save to"
       // team as everything else, instead of always Personal.
-      const result = await createLead(payload);
+      const result = await createLead(addPayload);
       savedId = result?.rowIndex;
     }
 
-    logAiAudit(savedId, action, 'text', '', JSON.stringify(payload));
+    logAiAudit(savedId, action, 'text', '', JSON.stringify(auditPayload));
 
     aiClearCard(uuid);
-    const summary = [];
-    if (action === 'ADD') summary.push(`✓ Lead Added — <b>${escHtml(payload.factory_name || payload.factory_number || 'new lead')}</b>`);
-    if (action === 'UPDATE') summary.push(`✓ Lead Updated — <b>${escHtml(payload.factory_name || payload.factory_number)}</b>`);
-    if (payload.follow_up) summary.push(`✓ Follow-up: ${escHtml(payload.follow_up)}`);
-    if (payload.stage) summary.push(`✓ Stage: ${escHtml(payload.stage)}`);
+    const dispName = parsed.factory_name || parsed.factory_number || 'lead';
+    const summary = [`✓ Lead ${action === 'UPDATE' ? 'Updated' : 'Added'} — <b>${escHtml(dispName)}</b>`];
+    if (parsed.follow_up) summary.push(`✓ Follow-up: ${escHtml(parsed.follow_up)}`);
+    if (parsed.stage)     summary.push(`✓ Stage: ${escHtml(parsed.stage)}`);
     aiMsgAppend(page || 'leads', 'bot', `<div class="ai-summary">${summary.map(s => `<div class="ai-summary-item">${s}</div>`).join('')}</div>`);
 
     await loadLeads();
@@ -8988,7 +9019,7 @@ async function aiConfirmFromCard(uuid) {
 }
 
 function logAiAudit(leadId, action, inputType, rawInput, parsedJson) {
-  const teamId = ws?.activeTeam?.id || null;
+  const teamId = state.activeOrgId ? parseInt(state.activeOrgId, 10) : null;
   apiFetch('/api/ai-audit', {
     method: 'POST',
     body: JSON.stringify({ leadId, action, inputType, rawInput, parsedJson, teamId }),
@@ -9396,6 +9427,8 @@ async function aiAnswerClarification(answer) {
 async function aiConfirmSave() {
   if (!aiSession?.parsed) return;
   const parsed = aiSession.parsed;
+  // Drop the model's placeholder empty item so it can't wipe real products.
+  const realItems = (parsed.items || []).filter(it => (it.product || '').trim());
   const payload = {
     factory_number:   parsed.factory_number  || '',
     factory_name:     parsed.factory_name    || '',
@@ -9407,7 +9440,7 @@ async function aiConfirmSave() {
     area:             parsed.area            || '',
     notes:            parsed.notes           || '',
     lead_type:        parsed.lead_type       || 'Cold',
-    items:            parsed.items           || [],
+    items:            realItems,
     contacts:         [],
   };
   if (payload.items.length) {
@@ -9428,9 +9461,9 @@ async function aiConfirmSave() {
       ['factory_number','factory_name','person_in_charge','contact','stage','follow_up','area','notes','lead_type']
         .forEach(k => { if (parsed[k] != null && String(parsed[k]).trim() !== '') upd[k] = parsed[k]; });
       if (upd.stage) upd.stage_number = STAGE_NUMBERS[upd.stage] ?? 0;
-      if (parsed.items && parsed.items.length) {
-        upd.items   = parsed.items;
-        upd.product = parsed.items[0].product; upd.quantity = parsed.items[0].quantity; upd.rate = parsed.items[0].rate;
+      if (realItems.length) {
+        upd.items   = realItems;
+        upd.product = realItems[0].product; upd.quantity = realItems[0].quantity; upd.rate = realItems[0].rate;
       }
       await apiFetch(`/api/leads/${existingRow}`, { method: 'PUT', body: JSON.stringify(upd) });
       savedRow = existingRow;

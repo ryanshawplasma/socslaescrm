@@ -18,7 +18,7 @@
        lazy-loaded on demand (dashboard/reports charts, import, map) via the
        ensureChart/ensureXLSX/ensureLeaflet loaders in app.js — off the startup
        critical path so the first paint isn't waiting on them. -->
-  <link rel="stylesheet" href="style.css?v=72" />
+  <link rel="stylesheet" href="style.css?v=73" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -1175,6 +1175,12 @@
       </div>
       <form id="lead-form" autocomplete="off">
         <input type="hidden" id="f-row" />
+        <!-- Two-step quick-add progress (shown only when adding; hidden for edit) -->
+        <div id="lead-step-nav" style="display:none">
+          <button type="button" class="lsn-step" id="lsn-1" onclick="leadFormGoStep(1)"><span class="lsn-dot">1</span> Essentials</button>
+          <span class="lsn-line"></span>
+          <button type="button" class="lsn-step" id="lsn-2" onclick="leadFormGoStep(2)"><span class="lsn-dot">2</span> Details</button>
+        </div>
         <div class="form-grid">
           <div class="form-group full-width" id="modal-dest-section" style="display:none">
             <label>📥 Save to <span style="font-weight:400;color:var(--text-muted);font-size:12px">— where this lead is stored (remembered for next time)</span></label>
@@ -1182,51 +1188,57 @@
               <select id="f-dest" class="dest-3d-select" onchange="onLeadDestChange(this.value)"></select>
             </div>
           </div>
-          <div class="form-group">
+          <div class="form-group" data-step="1">
             <label data-bizterm="code">Factory Number</label>
             <input id="f-factory_number" type="text" placeholder="M277" />
           </div>
-          <div class="form-group">
+          <div class="form-group" data-step="1">
             <label data-bizterm="name">Factory Name</label>
             <input id="f-factory_name" type="text" placeholder="Ramesh Industries" />
           </div>
-          <div class="form-group full-width" id="contacts-form-group">
+          <div class="form-group full-width" id="contacts-form-group" data-step="1">
             <label style="display:flex;align-items:center;justify-content:space-between">
               <span>Contacts</span>
               <button type="button" class="btn btn-ghost" style="font-size:11px;padding:2px 8px" onclick="addContactRow()">+ Add Contact</button>
             </label>
             <div id="contacts-editor"></div>
           </div>
-          <div class="form-group full-width" id="items-form-group">
-            <label style="display:flex;align-items:center;justify-content:space-between">
-              <span>Products</span>
-              <button type="button" class="btn btn-ghost" style="font-size:11px;padding:2px 8px" onclick="addItemRow()" data-bizterm-tpl="+ Add {product}">+ Add Product</button>
-            </label>
-            <div id="items-editor"></div>
+          <!-- Quick-add: tap products as buttons (step 1). Rates/quantities are set
+               on step 2 via the items-editor below. Shown only in stepped add. -->
+          <div class="form-group full-width" id="qa-products-group" data-step="quick">
+            <label data-bizterm-tpl="Tap the {product}s for this lead">Tap the products for this lead</label>
+            <div id="qa-products" class="qa-products"></div>
           </div>
-          <div class="form-group">
+          <div class="form-group" data-step="1">
             <label>Stage</label>
             <input type="hidden" id="f-stage" />
             <div id="f-stage-pills" class="choice-pills"></div>
           </div>
-          <div class="form-group">
-            <label>Follow Up Date</label>
-            <input id="f-follow_up" type="date" />
-          </div>
-          <div class="form-group">
-            <label data-bizterm="area">Area</label>
-            <input id="f-area" type="text" placeholder="Mumbai" />
-          </div>
-          <div class="form-group">
+          <div class="form-group" data-step="1">
             <label>Lead Type</label>
             <input type="hidden" id="f-lead_type" />
             <div id="f-leadtype-pills" class="choice-pills"></div>
           </div>
-          <div class="form-group full-width">
+          <div class="form-group full-width" id="items-form-group" data-step="2">
+            <label style="display:flex;align-items:center;justify-content:space-between">
+              <span data-bizterm-tpl="{product}s — quantity & rate">Products — quantity &amp; rate</span>
+              <button type="button" class="btn btn-ghost" style="font-size:11px;padding:2px 8px" onclick="addItemRow()" data-bizterm-tpl="+ Add {product}">+ Add Product</button>
+            </label>
+            <div id="items-editor"></div>
+          </div>
+          <div class="form-group" data-step="2">
+            <label>Follow Up Date</label>
+            <input id="f-follow_up" type="date" />
+          </div>
+          <div class="form-group" data-step="2">
+            <label data-bizterm="area">Area</label>
+            <input id="f-area" type="text" placeholder="Mumbai" />
+          </div>
+          <div class="form-group full-width" data-step="2">
             <label>Notes</label>
             <textarea id="f-notes" rows="3" placeholder="Any additional notes…"></textarea>
           </div>
-          <div class="form-group full-width" id="modal-lists-section">
+          <div class="form-group full-width" id="modal-lists-section" data-step="2">
             <label>🏷️ Lists <span style="font-weight:400;color:var(--text-muted);font-size:12px">— file this lead into one or more lists</span></label>
             <div id="lead-lists-editor" class="lead-lists-editor"></div>
           </div>
@@ -1254,7 +1266,9 @@
         </div>
         <div class="modal-footer">
           <button type="button" id="btn-move-database" class="btn btn-ghost" style="display:none;margin-right:auto" title="Move this lead into the team Database (out of the working sheet)">🗄 Send to Database</button>
+          <button type="button" id="btn-lead-back" class="btn btn-ghost" style="display:none" onclick="leadFormGoStep(1)">← Back</button>
           <button type="button" id="btn-cancel-modal" class="btn btn-ghost">Cancel</button>
+          <button type="button" id="btn-lead-next" class="btn btn-primary" style="display:none" onclick="leadFormGoStep(2)">Add details →</button>
           <button type="submit" class="btn btn-primary" id="btn-save-lead">Save Lead</button>
         </div>
       </form>
@@ -1266,7 +1280,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=76"></script>
+  <script src="app.js?v=78"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:1400, once:true };</script>
   <script src="dive-splash.js?v=2"></script>

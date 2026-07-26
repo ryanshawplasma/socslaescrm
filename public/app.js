@@ -1510,8 +1510,13 @@ async function loadStats()  { state.stats = computeStats(state.leads); }
 // default so all new leads pool into your team by default (admins included),
 // without changing what anyone can see. '' = Personal (no team).
 function getLeadDest() {
+  // Default new leads to the workspace you're CURRENTLY viewing, so a lead added
+  // inside a team can't silently land in Personal (or another team) and vanish
+  // from the view you're in — the core "team data not showing" complaint. The
+  // Add-form "Save to" selector still overrides per-lead (see createLead).
+  if (state.activeOrgId) return String(state.activeOrgId);
   const saved = localStorage.getItem('crm_lead_dest');
-  if (saved !== null) return saved;                 // explicit choice (may be '')
+  if (saved !== null) return saved;                 // explicit Personal-view choice
   return state.myTeams && state.myTeams.length ? String(state.myTeams[0].id) : '';
 }
 function setLeadDest(v) { localStorage.setItem('crm_lead_dest', v == null ? '' : String(v)); }
@@ -1551,16 +1556,24 @@ function activeListName() {
 }
 
 async function createLead(data) {
-  // An explicit team_id (from the form's "Save to" selector) wins; otherwise
-  // fall back to the remembered default destination.
+  // An explicit per-lead choice from the on-screen "Save to" selector wins;
+  // otherwise default to the workspace you're viewing (getLeadDest). Checking the
+  // selector directly (only when the Add modal is actually visible) lets a user
+  // cross-post one lead to another team / Personal without that choice sticking
+  // globally the way the old localStorage-only default did.
   if (data.team_id == null) {
-    const dest = getLeadDest();
+    const sel = document.getElementById('f-dest');
+    const modalOpen = !document.getElementById('modal-overlay')?.classList.contains('hidden');
+    const dest = (modalOpen && sel && sel.offsetParent !== null) ? sel.value : getLeadDest();
     data.team_id = dest ? parseInt(dest, 10) : null;
   }
   const result = await apiFetch('/api/leads', { method: 'POST', body: JSON.stringify(data) });
-  // File the new lead into the session's active list, if one is set.
+  // File the new lead into the session's active list, if one is set AND it belongs
+  // to the workspace you're currently in (the active-list id isn't org-scoped, so
+  // after switching org it can point at a list from the other context).
   const listId = getActiveList();
-  if (listId && result && result.rowIndex != null && !result.conflict) {
+  const listInContext = listId && (state.myLists || []).some(l => String(l.id) === String(listId));
+  if (listInContext && result && result.rowIndex != null && !result.conflict) {
     try {
       await apiFetch(`/api/lead-lists/${listId}/add-leads` + orgQuery(),
         { method: 'POST', body: JSON.stringify({ lead_ids: [result.rowIndex] }) });
@@ -5545,6 +5558,96 @@ function collectItems() {
   return items;
 }
 
+// ── Two-step quick-add flow ───────────────────────────────────
+// Step 1 collects the essentials with big tap targets (who, which products,
+// stage, type); step 2 is optional detail (quantity/rate per product, follow-up,
+// area, notes). The SAME #items-editor rows back both — a step-1 product tap adds
+// a row, step-2 fills its qty/rate. Edit mode shows everything flat (no stepping).
+function quickAddSelectedNames() {
+  return [...document.querySelectorAll('#items-editor .item-row')]
+    .map(r => (r.querySelector('.i-product')?.value || '').trim())
+    .filter(Boolean);
+}
+
+function quickAddToggleProduct(name) {
+  const editor = document.getElementById('items-editor');
+  if (!editor) return;
+  const rows = [...editor.querySelectorAll('.item-row')];
+  const hit = rows.find(r => (r.querySelector('.i-product')?.value || '').trim().toLowerCase() === name.toLowerCase());
+  if (hit) {
+    hit.remove();                                   // tapping an active product removes it
+  } else {
+    const empty = rows.find(r => !(r.querySelector('.i-product')?.value || '').trim());
+    if (empty) empty.querySelector('.i-product').value = name;   // reuse a blank row
+    else addItemRow(name);
+  }
+  if (!editor.querySelector('.item-row')) addItemRow('');        // keep ≥1 row for step 2
+  renderQuickAddProducts();
+}
+
+function renderQuickAddProducts() {
+  const wrap = document.getElementById('qa-products');
+  if (!wrap) return;
+  const catalog = state.myProducts || [];
+  const names = catalog.length
+    ? [...new Set(catalog.map(p => p.name).filter(Boolean))]
+    : PRODUCT_OPTIONS.filter(n => n !== 'Other');
+  const selected = new Set(quickAddSelectedNames().map(s => s.toLowerCase()));
+  wrap.innerHTML = names.map(n => {
+    const on = selected.has(n.toLowerCase());
+    return `<button type="button" class="qa-prod${on ? ' active' : ''}" data-name="${escAttr(n)}"
+      onclick="quickAddToggleProduct(this.dataset.name)">${on ? '✓ ' : ''}${escHtml(n)}</button>`;
+  }).join('');
+}
+
+function leadFormGoStep(step) {
+  const form = document.getElementById('lead-form');
+  if (!form) return;
+  form.dataset.step = String(step);
+  form.querySelectorAll('[data-step]').forEach(el => {
+    const s = el.getAttribute('data-step');
+    const show = (step === 1) ? (s === '1' || s === 'quick') : (s === '2');
+    el.style.display = show ? '' : 'none';
+  });
+  const c1 = document.getElementById('lsn-1'), c2 = document.getElementById('lsn-2');
+  if (c1) { c1.classList.toggle('active', step === 1); c1.classList.toggle('done', step > 1); }
+  if (c2) c2.classList.toggle('active', step === 2);
+  const back = document.getElementById('btn-lead-back');
+  const next = document.getElementById('btn-lead-next');
+  const save = document.getElementById('btn-save-lead');
+  if (back) back.style.display = step === 2 ? '' : 'none';
+  if (next) next.style.display = step === 1 ? '' : 'none';
+  if (save) save.textContent = step === 1 ? 'Save now' : (biz().key === 'factory' ? 'Save Lead' : 'Save ' + T('entity'));
+  form.scrollTop = 0;
+}
+
+// Add mode → stepped; Edit / AI-parsed → flat (every field visible at once).
+function configureLeadFormStepped() {
+  const nav = document.getElementById('lead-step-nav');
+  if (nav) nav.style.display = '';
+  renderQuickAddProducts();
+  leadFormGoStep(1);
+}
+function configureLeadFormFlat() {
+  const nav = document.getElementById('lead-step-nav');
+  if (nav) nav.style.display = 'none';
+  const form = document.getElementById('lead-form');
+  if (form) {
+    form.dataset.step = 'flat';
+    form.querySelectorAll('[data-step]').forEach(el => {
+      // Show every field EXCEPT the quick-only product buttons (edit uses the
+      // full items-editor instead).
+      el.style.display = el.getAttribute('data-step') === 'quick' ? 'none' : '';
+    });
+  }
+  const back = document.getElementById('btn-lead-back');
+  const next = document.getElementById('btn-lead-next');
+  if (back) back.style.display = 'none';
+  if (next) next.style.display = 'none';
+  const save = document.getElementById('btn-save-lead');
+  if (save) save.textContent = biz().key === 'factory' ? 'Save Lead' : 'Save ' + T('entity');
+}
+
 function openAddModal() {
   // Factory keeps the historic 'Add Lead'; other businesses say their entity
   // word ('Add Shop', 'Add Student', …). textContent → safe for custom terms.
@@ -5577,6 +5680,7 @@ function openAddModal() {
   const moveBtn = document.getElementById('btn-move-database');
   if (moveBtn) moveBtn.style.display = 'none';   // add-mode: nothing to move yet
   syncChoicePills();
+  configureLeadFormStepped();
   document.getElementById('modal-overlay').classList.remove('hidden');
 }
 
@@ -5611,6 +5715,7 @@ function openEditModal(rowIndex) {
   renderItemsEditor(itemsToEdit);
   renderLeadListsEditor(lead.list_ids || []);
   syncChoicePills();
+  configureLeadFormFlat();
   document.getElementById('modal-overlay').classList.remove('hidden');
 
   // Activity timeline
@@ -9532,6 +9637,7 @@ function openEditModalFromParsed(parsed) {
   renderItemsEditor(parsed.items || []);
   renderContactsEditor([]);
   syncChoicePills();
+  configureLeadFormFlat();
   // This modal is shared with Add/Edit. A prior openEditModal() may have left the
   // owner-only sharing / hide-from-team / send-to-database controls visible and
   // still wired to THAT lead's rowIndex; they don't apply to an AI-parsed lead, so

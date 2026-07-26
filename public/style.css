@@ -5198,3 +5198,58 @@ body{
   .choice-pill { padding: 11px 15px; font-size: 13.5px; }
   .prod-chip   { padding: 10px 14px; font-size: 13px; }
 }
+
+/* ══════════════════════════════════════════════════════════════
+   TWO-STEP QUICK-ADD  (Add-Lead: tap essentials → optional details)
+   ══════════════════════════════════════════════════════════════ */
+#lead-step-nav {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 2px 16px; margin-bottom: 4px;
+}
+.lsn-step {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 12px 6px 6px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--card-bg);
+  color: var(--text-muted); font: 600 12.5px/1 inherit;
+  transition: all var(--transition); -webkit-tap-highlight-color: transparent;
+}
+.lsn-step .lsn-dot {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+  color: var(--text-muted); font-weight: 700; font-size: 12px;
+  transition: all var(--transition);
+}
+.lsn-step.active {
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
+  background: color-mix(in srgb, var(--primary) 9%, transparent);
+}
+.lsn-step.active .lsn-dot { background: var(--primary); color: #fff; }
+.lsn-step.done { color: var(--success); border-color: color-mix(in srgb, var(--success) 40%, var(--border)); }
+.lsn-step.done .lsn-dot { background: var(--success); color: #fff; }
+.lsn-step.done .lsn-dot::after { content: '✓'; }
+.lsn-step.done .lsn-dot { font-size: 0; }
+.lsn-step.done .lsn-dot::after { font-size: 12px; }
+.lsn-line { flex: 1; height: 2px; border-radius: 2px; background: var(--border); }
+
+/* Step-1 product picker — big tap-to-toggle buttons */
+.qa-products { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.qa-prod {
+  padding: 10px 14px; min-height: 40px; border-radius: 12px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--card-bg); color: var(--text);
+  font: 600 13px/1 inherit; transition: all var(--transition);
+  -webkit-tap-highlight-color: transparent;
+}
+.qa-prod:hover { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); }
+.qa-prod:active { transform: scale(.96); }
+.qa-prod.active {
+  background: var(--primary); border-color: var(--primary); color: #fff;
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--primary) 32%, transparent);
+}
+
+@media (max-width: 640px) {
+  #lead-step-nav { padding-bottom: 14px; }
+  .lsn-step { font-size: 12px; padding: 7px 13px 7px 7px; }
+  .qa-prod  { padding: 12px 15px; min-height: 46px; font-size: 13.5px; }
+}

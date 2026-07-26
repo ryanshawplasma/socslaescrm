@@ -121,7 +121,10 @@ async function leadsForRequest(req, bucket = 'working') {
         .map(m => String(m.display_name || '').toLowerCase())
         .filter(Boolean);
     }
-    const leads   = bucketFilter(await db.getLeadsByTeam(ctx.teamId, memberNames), bucket);
+    // Non-managers also get leads shared to them via lead_access unioned into the
+    // team view (managers already see everything team-tagged), so an approved
+    // share surfaces where they actually work, not only in Personal.
+    const leads   = bucketFilter(await db.getLeadsByTeam(ctx.teamId, memberNames, manager ? null : req.user.username), bucket);
     const shared  = manager ? null : await db.getAccessibleLeadIds(req.user.username);
     let mapped    = leads.map(l => {
       const ownedOrShared = l.created_by === req.user.username || (shared && shared.has(Number(l.rowIndex)));

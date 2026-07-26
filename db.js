@@ -2055,12 +2055,24 @@ async function getJoinRequestByUserTeam(teamId, userId) {
 // members created in their Personal workspace (team_id IS NULL), so a manager
 // sees every lead of their people, not just the ones tagged to the team.
 // Regular members call this with no memberNames and see only team-tagged leads.
-async function getLeadsByTeam(teamId, memberNames = null) {
+async function getLeadsByTeam(teamId, memberNames = null, accessUser = null) {
   const includePersonal = Array.isArray(memberNames) && memberNames.length > 0;
-  const where  = includePersonal
-    ? `WHERE team_id=$1 OR (team_id IS NULL AND LOWER(created_by) = ANY($2::text[]))`
-    : `WHERE team_id=$1`;
-  const params = includePersonal ? [teamId, memberNames] : [teamId];
+  // Build the visibility OR-clause dynamically: always the team's own leads;
+  // for managers also their members' Personal leads; and — when accessUser is
+  // given — any lead explicitly SHARED to that user via lead_access, regardless
+  // of which team it's tagged to, so an approved share shows up here in the
+  // company view instead of only in the grantee's Personal workspace.
+  const clauses = ['team_id=$1'];
+  const params  = [teamId];
+  if (includePersonal) {
+    params.push(memberNames);
+    clauses.push(`(team_id IS NULL AND LOWER(created_by) = ANY($${params.length}::text[]))`);
+  }
+  if (accessUser) {
+    params.push(accessUser);
+    clauses.push(`id IN (SELECT lead_id FROM lead_access WHERE user_display_name=$${params.length})`);
+  }
+  const where = 'WHERE ' + clauses.join(' OR ');
   const { rows } = await pool.query(`
     SELECT id AS "rowIndex", factory_number, factory_name, person_in_charge, contact, designation,
       product, quantity, rate, stage, follow_up, notes, area,

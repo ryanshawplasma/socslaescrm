@@ -1721,11 +1721,16 @@ function exportCSV() {
   const headerCell = c => (biz().key === 'factory' || !TERM_COLS[c])
     ? c
     : `"${String(T(TERM_COLS[c])).replace(/"/g, '""')}"`;
-  const header = [...cols.map(headerCell), 'extra_contacts'].join(',');
+  const header = [...cols.map(headerCell), 'extra_products', 'extra_contacts'].join(',');
   const rows   = state.leads.map(l => {
     const base  = cols.map(c => `"${String(l[c] || '').replace(/"/g, '""')}"`).join(',');
+    // Secondary products (beyond the primary product/quantity/rate columns) so a
+    // multi-product lead isn't silently flattened to one on export/re-import.
+    const extraProds = (l.items || []).slice(1)
+      .filter(it => it.product)
+      .map(it => `${it.product}${it.quantity ? ' ' + it.quantity : ''}${it.rate ? ' @' + it.rate : ''}`).join(' | ');
     const extra = (l.contacts || []).slice(1).map(c => `${c.person_name}:${c.contact}`).join(' | ');
-    return base + `,"${extra.replace(/"/g, '""')}"`;
+    return base + `,"${extraProds.replace(/"/g, '""')}","${extra.replace(/"/g, '""')}"`;
   });
   const csv  = [header, ...rows].join('\n');
   const link = document.createElement('a');
@@ -3141,8 +3146,8 @@ function buildTable(leads, cols, actions = true, selectable = false, rowClickFn 
     product:          [T('product'), l => { const n = leadProductNames(l); if (!n.length) return '—';
                                             const shown = escHtml(n.slice(0, 2).join(', '));
                                             return n.length > 2 ? `${shown} <span class="more-badge" title="${escAttr(n.join(', '))}">+${n.length - 2}</span>` : shown; }],
-    quantity:         ['Qty',        l => escHtml(l.quantity         || '—')],
-    rate:             ['Rate',       l => escHtml(l.rate             || '—')],
+    quantity:         ['Qty',        l => { const q = (l.items || []).map(i => i.quantity).filter(Boolean); return q.length ? escHtml(q.join(', ')) : escHtml(l.quantity || '—'); }],
+    rate:             ['Rate',       l => { const r = (l.items || []).map(i => i.rate).filter(Boolean); return r.length ? escHtml(r.join(', ')) : escHtml(l.rate || '—'); }],
     stage:            ['Stage',      l => stageBadge(l)],
     follow_up:        ['Follow Up',  l => escHtml(l.follow_up        || '—')],
     area:             [T('area'),    l => escHtml(l.area             || '—')],

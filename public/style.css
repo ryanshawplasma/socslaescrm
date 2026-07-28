@@ -61,8 +61,24 @@ select {
   background-repeat: no-repeat !important;
   background-position: right 10px center !important;
   padding-right: 28px !important;
+  /* Consistent themed control in EVERY context (toolbar filters, in-table role /
+     team selects, dest, org switcher). Specific rules still override via the
+     cascade; this just guarantees a bare <select> is never unstyled/off-theme. */
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background-color: var(--card-bg);
+  color: var(--text);
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color var(--transition), box-shadow var(--transition);
 }
+select:hover { border-color: var(--text-muted); }
+select:focus-visible { outline: none; border-color: var(--primary); box-shadow: var(--ring, 0 0 0 3px var(--primary-glow)); }
+/* The open native option list — force theme colours so it's never white-on-white
+   in a dark/accent shell, and give the selected/hover rows an accent tint where
+   the browser honours it. */
 select option { background: var(--card-bg); color: var(--text); }
+select option:checked { background: color-mix(in srgb, var(--primary) 22%, var(--card-bg)); color: var(--text); }
 
 /* ── Midnight accent (electric blue / navy) ─────────────── */
 [data-accent="midnight"] {
@@ -1053,6 +1069,9 @@ html { scrollbar-width: thin; scrollbar-color: var(--text-muted) transparent; }
   margin-bottom: 6px;
   letter-spacing: -.3px;
 }
+.login-logo { width: 26px; height: 26px; vertical-align: -6px; border-radius: 7px; }
+/* The sidebar brand mark holds an inline arrow glyph now (not an emoji) */
+.brand-mark svg { display: block; }
 
 .login-title {
   font-size: 22px;

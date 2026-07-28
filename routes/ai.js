@@ -35,12 +35,13 @@ FACTORY NAME: The business/company name — often ends with words like "Industri
 
 PERSON IN CHARGE: The human contact at the factory — typically a first name or full name, often followed by honorifics like "ji", "bhai", "sahab", "sir". Appears AFTER factory name. NOT the factory name itself. Examples: "Rameshji", "Suresh bhai", "Amit sahab", "Rajesh".
 
-ITEMS: Extract as an array. Each item has product, quantity (with unit), and rate (number only, strip ₹ symbol).
+ITEMS: Extract as an array — output ONE array element PER PRODUCT. This is critical: if the message names two or three products, return two or three separate items. NEVER merge multiple products into a single item, and NEVER keep only the first product and drop the rest. Each item has product, quantity (with unit), and rate (number only, strip ₹ symbol).
 - Products (all aliases recognised): "hotmelt"/"htmlt"/"hotmolt"/"hm" → "Hotmelt"; "rubber adhesive"/"rubad"/"rub ad"/"ra" → "Rubber Adhesive"; "solvent"/"solv"/"solv ad"/"sa" → "Solvent"; "latex"/"ltx" → "Latex"; "bc" → "BC"; "toluene"/"tol" → "Toluene"; "r6" → "R6"; "mek" → "MEK"; "pu adhesive"/"pu ad"/"puad"/"pu" → "PU Adhesive"; "silicon"/"silicone"/"sil" → "Silicon"
-- Multiple items in ONE message: each product follows the pattern — product name → quantity → rate.
+- Multiple products in ONE message are usually joined by "aur"/"and"/","/"+"/"&"/"/"/";", or simply by starting the next product-name → quantity → rate sequence. Split on EACH product and emit one item for each — do not stop after the first.
+- Each product carries its OWN quantity and rate (the numbers that appear right after that product name). Don't attach the second product's numbers to the first.
 - Rate indicators: "@", "at", "rate", "₹", "rs", "pr", "per", "/kg", "/ltr"
-- Format: [{"product":"Hotmelt","quantity":"500 kg","rate":"120"}]
-- If only one item, still use array format. If no product found, use empty array [].
+- Format (the array may hold MANY items): [{"product":"Hotmelt","quantity":"500 kg","rate":"120"},{"product":"Solvent","quantity":"200 ltr","rate":"80"}]
+- If only one product, still use array format with a single element. If no product found, use empty array [].
 
 LEAD TYPE: "hot"/"urgent"/"priority"/"ready to buy"/"confirmed"/"pakka"/"fix" → "Hot"; "warm"/"maybe"/"soch raha"/"considering"/"thinking"/"interested"/"dekhte hain" → "Warm"; "cold"/"not interested"/"baad mein"/"dormant"/"inactive"/"later"/"nahi chahiye" → "Cold". If not mentioned → "".
 
@@ -65,6 +66,9 @@ EXAMPLES (input → key outputs):
    → factory_name:"Om Traders", person_in_charge:"Mehul bhai", stage:"Quotation", stage_number:4, follow_up:<today+7 as dd/MM/yyyy>
 3. "F12 sample pasand nahi aaya, nahi chahiye unko"
    → factory_number:"F12", lead_type:"Cold", notes:"Did not like the sample"
+4. "D5 Surat Plastics hotmelt 300kg 115, latex 100kg 90 aur mek 50 ltr @70" (THREE products)
+   → factory_number:"D5", factory_name:"Surat Plastics",
+     items:[{"product":"Hotmelt","quantity":"300 kg","rate":"115"},{"product":"Latex","quantity":"100 kg","rate":"90"},{"product":"MEK","quantity":"50 ltr","rate":"70"}]
 
 Return ONLY this JSON (no extra fields):
 {

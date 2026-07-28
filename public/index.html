@@ -18,7 +18,7 @@
        lazy-loaded on demand (dashboard/reports charts, import, map) via the
        ensureChart/ensureXLSX/ensureLeaflet loaders in app.js — off the startup
        critical path so the first paint isn't waiting on them. -->
-  <link rel="stylesheet" href="style.css?v=79" />
+  <link rel="stylesheet" href="style.css?v=80" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -37,7 +37,7 @@
           <h1 class="login-side-title">The CRM that<br><span>learns how you talk.</span></h1>
           <p class="login-side-sub">Type it, speak it, or snap a photo — it understands your shorthand, your products, your language.</p>
           <ul class="login-side-feats">
-            <li><span class="feat-ico">💬</span><div><b>Type naturally</b><small>"M277 Rameshji hotmelt 500@120 hot" — done.</small></div></li>
+            <li><span class="feat-ico">💬</span><div><b>Type naturally</b><small>"Kapoor Traders, Rameshji, 9876543210 — 500 kg @120, hot" — done.</small></div></li>
             <li><span class="feat-ico">🎤</span><div><b>Speak in Hinglish</b><small>Voice notes become leads, transcript included.</small></div></li>
             <li><span class="feat-ico">📷</span><div><b>Snap a business card</b><small>Cards, signboards &amp; notes turn into leads.</small></div></li>
             <li><span class="feat-ico">📚</span><div><b>Learns your shorthand</b><small>Correct it twice — it remembers forever.</small></div></li>
@@ -973,15 +973,10 @@
               <button class="chat-chip chip-warm" onclick="chatInsertChip('warm')">🟡 Warm</button>
               <button class="chat-chip chip-cold" onclick="chatInsertChip('cold')">🔵 Cold</button>
               <button class="chat-chip"           onclick="chatInsertChip('follow up')">📅 Follow-up</button>
-              <span class="chip-divider">|</span>
-              <button class="chat-chip" onclick="chatInsertChip('hotmelt')">Hotmelt</button>
-              <button class="chat-chip" onclick="chatInsertChip('latex')">Latex</button>
-              <button class="chat-chip" onclick="chatInsertChip('bc')">BC</button>
-              <button class="chat-chip" onclick="chatInsertChip('toluene')">Toluene</button>
-              <button class="chat-chip" onclick="chatInsertChip('r6')">R6</button>
-              <button class="chat-chip" onclick="chatInsertChip('mek')">MEK</button>
-              <button class="chat-chip" onclick="chatInsertChip('pu adhesive')">PU Adhesive</button>
-              <button class="chat-chip" onclick="chatInsertChip('silicon')">Silicon</button>
+              <span class="chip-divider" id="chat-chip-divider">|</span>
+              <!-- Item chips are rendered from the team's catalog (or this
+                   industry's typical items) by renderChatItemChips() -->
+              <span id="chat-item-chips"></span>
             </div>
             <!-- Input + autocomplete -->
             <div class="chat-input-wrap">
@@ -1290,7 +1285,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=82"></script>
+  <script src="app.js?v=83"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:1400, once:true };</script>
   <script src="dive-splash.js?v=2"></script>

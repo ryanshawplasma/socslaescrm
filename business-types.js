@@ -140,6 +140,62 @@ const BUSINESS_TYPES = {
 
 const BUSINESS_KEYS = Object.keys(BUSINESS_TYPES);
 
+// Per-industry ITEM vocabulary. `sampleItems` seeds the UI's quick-pick chips and
+// placeholder text before a team has built its own catalog; `itemHint` teaches the
+// AI how THIS industry writes quantity, quality/grade and packing, so "100 bags
+// OPC 53 grade" or "5 boxes 500mg strips" parse correctly. Kept out of the main
+// registry so the display/term contract above stays untouched.
+const BUSINESS_ITEMS = {
+  factory: {
+    sampleItems: ['Hotmelt', 'Rubber Adhesive', 'Solvent', 'Latex', 'PU Adhesive'],
+    itemHint: 'Quantities come in kg / ltr / drums / bags. Quality is a grade or technical spec (e.g. "premium", "industrial grade", a viscosity or number code) — keep it as part of the product name.',
+  },
+  retail: {
+    sampleItems: ['Soap', 'Shampoo', 'Detergent', 'Biscuits', 'Cooking Oil'],
+    itemHint: 'Quantities come in pieces / boxes / cartons / dozens / packs. Quality is usually a pack size or variant (e.g. "500ml", "large", "premium") — keep it in the product name.',
+  },
+  distribution: {
+    sampleItems: ['Cartons', 'Cases', 'Bulk Pack', 'Mixed Lot'],
+    itemHint: 'Quantities come in cartons / cases / boxes / bags. Quality is a grade or brand variant — keep it in the product name.',
+  },
+  construction: {
+    sampleItems: ['Cement', 'TMT Steel', 'Sand', 'Bricks', 'Waterproofing'],
+    itemHint: 'Quantities come in bags / tonnes / cft / brass / sq ft / running ft. Quality is a GRADE and matters a lot (e.g. cement "OPC 53 grade", steel "Fe500", concrete "M20") — always keep the grade with the product name.',
+  },
+  pharma: {
+    sampleItems: ['Tablets', 'Syrup', 'Injection', 'Capsules', 'Ointment'],
+    itemHint: 'Quantities come in strips / boxes / bottles / vials / units. Quality is the STRENGTH and form (e.g. "500mg", "250 mg", "10ml", "tablet"/"syrup") — always keep the strength with the brand name.',
+  },
+  services: {
+    sampleItems: ['Website', 'SEO', 'Social Media', 'Consulting', 'AMC'],
+    itemHint: 'Quantity is scope or duration (hours / months / users / seats / pages). Quality is a package tier (e.g. "basic", "premium", "annual") — keep it in the service name.',
+  },
+  logistics: {
+    sampleItems: ['FTL', 'PTL', 'Express', 'Warehousing', 'Cold Chain'],
+    itemHint: 'Quantity is loads / trips / tonnes / CBM / containers. Quality is service class (e.g. "express", "refrigerated", "FTL vs PTL") — keep it in the service name. A route like "Mumbai–Delhi" is the product.',
+  },
+  education: {
+    sampleItems: ['Class 10 Maths', 'JEE Foundation', 'Spoken English', 'Crash Course'],
+    itemHint: 'Quantity is seats / months / batches / sessions. Quality is the course level or batch type (e.g. "foundation", "crash course", "weekend batch") — keep it in the course name.',
+  },
+  hospitality: {
+    sampleItems: ['Coffee', 'Dairy', 'Vegetables', 'Beverages', 'Cutlery'],
+    itemHint: 'Quantities come in kg / ltr / crates / cases / packs, often per week or per month. Quality is a grade or variant (e.g. "A grade", "premium", "fresh") — keep it in the product name.',
+  },
+  agro: {
+    sampleItems: ['Urea', 'DAP', 'Seeds', 'Pesticide', 'Drip Pipe'],
+    itemHint: 'Quantities come in bags / kg / litres / packets / acres-worth. Quality is the variety, grade or composition (e.g. seed variety name, "NPK 19:19:19", "organic") — always keep it with the product name.',
+  },
+  finance: {
+    sampleItems: ['Term Insurance', 'Health Cover', 'Home Loan', 'Mutual Fund', 'FD'],
+    itemHint: 'Quantity is the SUM ASSURED / loan amount / premium (e.g. "1Cr", "25 lakh", "₹5000/month"). Quality is the plan or tenure (e.g. "20 year term", "floater") — keep it in the product name. Rate may be an interest rate or premium.',
+  },
+  custom: {
+    sampleItems: [],
+    itemHint: 'Quantity may be any unit the user says (pieces, kg, hours, units). Quality/grade/spec should stay attached to the product name.',
+  },
+};
+
 // Sanitize a custom stage-relabel map (business_custom.stages): only canonical
 // stage names (CANON_STAGES) may be keys — others are dropped — and values
 // become trimmed display labels capped at 30 chars, empties dropped. Returns a
@@ -232,7 +288,13 @@ function businessVocabPrompt(profile) {
     `- product = the ${product}`,
     `- area = the ${area}`,
     `Never rename the JSON keys — only interpret the user's ${entity.toLowerCase()}-related wording into them.`,
+    // How THIS industry expresses quantity / quality / grade, so specs land in the
+    // right place instead of being dropped or mistaken for a rate.
+    ...(BUSINESS_ITEMS[p.key || 'factory'] || BUSINESS_ITEMS.factory).itemHint
+      ? [`ITEM DETAILS for this industry: ${(BUSINESS_ITEMS[p.key || 'factory'] || BUSINESS_ITEMS.factory).itemHint}`,
+         `Keep any quality/grade/strength/spec wording ATTACHED to the product name (do not drop it and do not put it in the rate). Put the amount + its unit in quantity. Only a price goes in rate.`]
+      : [],
   ].join('\n');
 }
 
-module.exports = { BUSINESS_TYPES, BUSINESS_KEYS, CANON_STAGES, resolveBusinessProfile, businessVocabPrompt, entityTriggerWords, sanitizeCustomStages };
+module.exports = { BUSINESS_TYPES, BUSINESS_ITEMS, BUSINESS_KEYS, CANON_STAGES, resolveBusinessProfile, businessVocabPrompt, entityTriggerWords, sanitizeCustomStages };

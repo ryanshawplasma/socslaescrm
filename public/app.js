@@ -174,6 +174,33 @@ const BUSINESS_TYPES = {
 };
 const BUSINESS_KEYS = Object.keys(BUSINESS_TYPES);
 
+// Typical items per industry — CLIENT MIRROR of BUSINESS_ITEMS.sampleItems in
+// business-types.js. Used for quick-pick chips and placeholder text BEFORE a team
+// has built its own catalog (once state.myProducts has entries, the real catalog
+// always wins). The server copy also carries an itemHint used in the AI prompt.
+const BUSINESS_SAMPLE_ITEMS = {
+  factory:      ['Hotmelt', 'Rubber Adhesive', 'Solvent', 'Latex', 'PU Adhesive'],
+  retail:       ['Soap', 'Shampoo', 'Detergent', 'Biscuits', 'Cooking Oil'],
+  distribution: ['Cartons', 'Cases', 'Bulk Pack', 'Mixed Lot'],
+  construction: ['Cement', 'TMT Steel', 'Sand', 'Bricks', 'Waterproofing'],
+  pharma:       ['Tablets', 'Syrup', 'Injection', 'Capsules', 'Ointment'],
+  services:     ['Website', 'SEO', 'Social Media', 'Consulting', 'AMC'],
+  logistics:    ['FTL', 'PTL', 'Express', 'Warehousing', 'Cold Chain'],
+  education:    ['Class 10 Maths', 'JEE Foundation', 'Spoken English', 'Crash Course'],
+  hospitality:  ['Coffee', 'Dairy', 'Vegetables', 'Beverages', 'Cutlery'],
+  agro:         ['Urea', 'DAP', 'Seeds', 'Pesticide', 'Drip Pipe'],
+  finance:      ['Term Insurance', 'Health Cover', 'Home Loan', 'Mutual Fund', 'FD'],
+  custom:       [],
+};
+
+// The item names to offer as quick-picks: the team's OWN catalog when it has one,
+// otherwise this industry's typical items.
+function industryItems(limit = 8) {
+  const catalog = (state.myProducts || []).map(p => p.name).filter(Boolean);
+  if (catalog.length) return catalog.slice(0, limit);
+  return (BUSINESS_SAMPLE_ITEMS[biz().key] || BUSINESS_SAMPLE_ITEMS.factory).slice(0, limit);
+}
+
 // Resolve a profile: valid type key + custom-term overrides merged in (mirrors
 // resolveBusinessProfile() in business-types.js — keep both in sync). Custom
 // terms only apply to the 'custom' type. Always safe — unknown/missing keys
@@ -281,6 +308,17 @@ function applyBusinessTerms() {
   document.querySelectorAll('#f-stage option[value]').forEach(opt => {
     if (opt.value) opt.textContent = stageLabel(opt.value);
   });
+  // Industry-flavoured example/demo text: chat chips + placeholders that show a
+  // sample item or a whole sample sentence for THIS business.
+  renderChatItemChips();
+  const sample = industryItems(1)[0] || T('product');
+  const ph = (id, text) => { const el = document.getElementById(id); if (el) el.placeholder = text; };
+  ph('new-product-name',     `${T('product')} name (e.g. ${sample})`);
+  ph('new-product-division', `Division (e.g. ${biz().key === 'factory' ? 'Adhesives' : T('product') + ' group'})`);
+  ph('new-product-aliases',  `Aliases: short forms people type for ${sample}`);
+  // The lead-code placeholder should look like this industry's own codes.
+  const codeEl = document.getElementById('f-factory_number');
+  if (codeEl) codeEl.placeholder = String(biz().example || '').match(/\b[A-Z]{1,3}\d{1,4}\b/)?.[0] || T('code');
 }
 
 // ── Lazy library loaders ─────────────────────────────────────
@@ -1471,6 +1509,8 @@ async function loadProducts() {
   try { state.myProducts = await apiFetch('/api/products' + orgQuery()); }
   catch { state.myProducts = []; }
   _prodDivMapCache = null;   // catalog changed → rebuild the division map lazily
+  // A freshly-loaded catalog should replace the industry-sample quick-picks.
+  try { renderChatItemChips(); } catch (_) {}
   return state.myProducts;
 }
 
@@ -7991,6 +8031,22 @@ function chatFocusInput() {
 }
 
 // ── Chip insert ──────────────────────────────────────────
+// Quick-insert item chips in the chat bar — the team's own catalog items, else
+// this industry's typical ones. Re-rendered whenever the catalog or the business
+// profile changes, so an agro team never sees "Hotmelt".
+function renderChatItemChips() {
+  const wrap = document.getElementById('chat-item-chips');
+  if (!wrap) return;
+  const items = industryItems(8);
+  const divider = document.getElementById('chat-chip-divider');
+  if (divider) divider.style.display = items.length ? '' : 'none';
+  wrap.innerHTML = items.map(n =>
+    `<button class="chat-chip" onclick="chatInsertChip('${escAttr(n.toLowerCase())}')">${escHtml(n)}</button>`).join('');
+  // The free-text placeholder speaks the industry too.
+  const ci = document.getElementById('chat-input');
+  if (ci) ci.placeholder = `Type naturally… e.g. ${biz().example}`;
+}
+
 function chatInsertChip(text) {
   const input = document.getElementById('chat-input');
   if (!input) return;

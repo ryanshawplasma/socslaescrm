@@ -1184,6 +1184,7 @@ function showRegisterScreen(e) {
   document.getElementById('register-error').textContent    = '';
   const inviteEl = document.getElementById('reg-invite');
   if (inviteEl && !inviteEl.value) inviteEl.value = pendingRefCode() || pendingInviteCode();
+  renderIndustryPicker();
   setTimeout(() => document.getElementById('reg-name')?.focus(), 60);
 }
 
@@ -1294,6 +1295,34 @@ function onRegPasswordInput(input) {
   hint.style.color = err ? 'var(--danger, #e74c3c)' : '#27ae60';
 }
 
+// ── Industry picker (sign-up) ─────────────────────────────────
+// Choosing the trade at sign-up means the app's words, stages, AI vocabulary and
+// demo text are right from the first screen — instead of everyone starting on
+// the factory/adhesives defaults. Optional: skipping keeps the 'factory' default.
+var _regIndustry = '';
+function renderIndustryPicker() {
+  const grid = document.getElementById('reg-industry-grid');
+  if (!grid) return;
+  grid.innerHTML = BUSINESS_KEYS.map(k => {
+    const b = BUSINESS_TYPES[k];
+    return `<button type="button" class="ind-tile${_regIndustry === k ? ' active' : ''}" data-k="${escAttr(k)}"
+      onclick="pickIndustry(this.dataset.k)" title="${escAttr(b.label)}">
+      <span class="ind-ico">${b.icon}</span><span class="ind-name">${escHtml(b.label)}</span>
+    </button>`;
+  }).join('');
+  const ex = document.getElementById('reg-industry-example');
+  if (ex) {
+    const b = _regIndustry && BUSINESS_TYPES[_regIndustry];
+    ex.innerHTML = b
+      ? `You'll type leads like: <b>${escHtml(b.example)}</b>`
+      : `<span class="ind-example-muted">Pick one so the app speaks your trade (you can change it later in Settings).</span>`;
+  }
+}
+function pickIndustry(k) {
+  _regIndustry = (_regIndustry === k) ? '' : k;   // tap again to unset
+  renderIndustryPicker();
+}
+
 async function handleRegister(e) {
   e.preventDefault();
   const name  = document.getElementById('reg-name').value.toLowerCase().trim();
@@ -1319,7 +1348,7 @@ async function handleRegister(e) {
     const regRes  = await fetch('/api/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, password, mobile, inviteCode, fingerprint }),
+      body: JSON.stringify({ name, password, mobile, inviteCode, fingerprint, businessType: _regIndustry || undefined }),
     });
     const regData = await regRes.json();
     if (!regRes.ok) {
@@ -1345,6 +1374,12 @@ async function handleRegister(e) {
     const loginData = await loginRes.json();
     if (!loginRes.ok) throw new Error(loginData.error || 'Login failed after registration');
     toast('Welcome ' + name + '! Account created.', 'success');
+    // Reflect the chosen trade immediately so the very first render already uses
+    // its terms (initApp's /users/me fetch confirms it from the server after).
+    if (_regIndustry) {
+      state.me = { ...(state.me || {}), business_type: _regIndustry, business_custom: '' };
+      try { applyBusinessTerms(); } catch (_) {}
+    }
     // Flag captured now (before the await below) so it survives the
     // offerDeviceSetup → initApp chain; the referral toast fires right after
     // that whole chain resolves, once the app has actually loaded.

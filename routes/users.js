@@ -180,7 +180,7 @@ router.get('/check-username', checkUsernameLimiter, async (req, res, next) => {
 
 // ── POST /api/register (public self-registration) ─────────────
 router.post('/register', registerLimiter, async (req, res, next) => {
-  const { name, pin, mobile, password, inviteCode, fingerprint } = req.body || {};
+  const { name, pin, mobile, password, inviteCode, fingerprint, businessType } = req.body || {};
   const clean = (name || '').toLowerCase().trim();
   if (!isValidUsername(clean)) return res.status(400).json({ error: 'Invalid username — use 3–20 lowercase letters, numbers, _ or . only' });
   // Trim before validating AND storing — login trims before bcrypt.compare, so
@@ -194,6 +194,13 @@ router.post('/register', registerLimiter, async (req, res, next) => {
   try {
     const result = await db.createUser(clean, pin ? String(pin) : '', 'sales', '', pw);
     if (!result.ok) return res.status(409).json({ error: result.message });
+    // Industry picked during sign-up → the whole app (terms, stages, AI vocab,
+    // demo text) speaks their trade from the very first screen. Unknown/missing
+    // values fall back to 'factory' inside setUserBusiness, so this is safe.
+    if (businessType && BUSINESS_KEYS.includes(businessType)) {
+      const fresh = await db.getUserByName(clean);
+      if (fresh) await db.setUserBusiness(fresh.id, businessType, '').catch(() => {});
+    }
     if (mobile) {
       const m = String(mobile).replace(/[\s\-\(\)]/g, '');
       if (/^\+?\d{10,15}$/.test(m)) {

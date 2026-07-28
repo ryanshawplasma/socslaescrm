@@ -6125,6 +6125,94 @@ async function bulkDeleteProducts() {
     toast(`Removed ${r.deleted} product${r.deleted === 1 ? '' : 's'}`);
   } catch (err) { toast(err.message, 'error'); }
 }
+// ── AI catalog suggestions ────────────────────────────────────
+// Asks Gemini (server-side) which items a business in THIS industry typically
+// sells, excluding what the catalog already has. Nothing is saved until the user
+// ticks items and confirms — then it's one bulk-create request.
+var _prodSuggestions = [];
+async function suggestProductsAI() {
+  if (state.role === 'guest') { toast('Create an account to manage products', 'warning'); return; }
+  const btn   = document.getElementById('btn-suggest-products');
+  const panel = document.getElementById('prod-suggest-panel');
+  if (!panel) return;
+  const profile = biz();
+  // Industry = the business profile's label; for a custom profile fall back to
+  // its own entity/product wording so the prompt still has something concrete.
+  const industry = profile.key === 'custom'
+    ? `${T('entity')} business dealing in ${T('product')}`
+    : (profile.label || 'General business');
+  const team = (state.myTeams || []).find(t => String(t.id) === String(state.activeOrgId));
+  panel.classList.remove('hidden');
+  panel.innerHTML = '<div class="prod-suggest-loading">✨ Thinking about items for your industry…</div>';
+  if (btn) { btn.disabled = true; btn.textContent = 'Suggesting…'; }
+  try {
+    const r = await apiFetch('/api/ai/suggest-products', {
+      method: 'POST',
+      body: JSON.stringify({
+        industry,
+        businessName: team ? team.name : '',
+        existing: (state.myProducts || []).map(p => p.name),
+      }),
+    });
+    _prodSuggestions = (r && r.items) || [];
+    renderProductSuggestions(industry);
+  } catch (err) {
+    panel.innerHTML = `<div class="prod-suggest-err">${escHtml(err.message || 'Could not get suggestions')}</div>`;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '✨ Suggest items for my industry'; }
+  }
+}
+
+function renderProductSuggestions(industry) {
+  const panel = document.getElementById('prod-suggest-panel');
+  if (!panel) return;
+  if (!_prodSuggestions.length) {
+    panel.innerHTML = '<div class="prod-suggest-err">No new suggestions — your catalog already covers the usual items.</div>';
+    return;
+  }
+  panel.innerHTML = `
+    <div class="prod-suggest-head">
+      <b>Suggested for ${escHtml(industry)}</b>
+      <span>${_prodSuggestions.length} items · tick what you want</span>
+      <button class="btn btn-ghost btn-xs" onclick="toggleAllSuggestions()">Select all</button>
+      <button class="icon-btn" title="Close" onclick="document.getElementById('prod-suggest-panel').classList.add('hidden')">✕</button>
+    </div>
+    <div class="prod-suggest-list">
+      ${_prodSuggestions.map((s, i) => `
+        <label class="prod-suggest-item">
+          <input type="checkbox" class="prod-sug-cb" data-i="${i}" checked />
+          <span class="prod-sug-name">${escHtml(s.name)}</span>
+          ${s.division ? `<span class="prod-sug-div">${escHtml(s.division)}</span>` : ''}
+        </label>`).join('')}
+    </div>
+    <div class="prod-suggest-foot">
+      <button class="btn btn-primary btn-sm" onclick="addSelectedSuggestions()">＋ Add selected</button>
+    </div>`;
+}
+
+function toggleAllSuggestions() {
+  const boxes = [...document.querySelectorAll('.prod-sug-cb')];
+  const allOn = boxes.every(b => b.checked);
+  boxes.forEach(b => { b.checked = !allOn; });
+}
+
+async function addSelectedSuggestions() {
+  const picked = [...document.querySelectorAll('.prod-sug-cb')]
+    .filter(cb => cb.checked)
+    .map(cb => _prodSuggestions[Number(cb.dataset.i)])
+    .filter(Boolean);
+  if (!picked.length) { toast('Tick at least one item', 'warning'); return; }
+  try {
+    const r = await apiFetch('/api/products/bulk-create' + orgQuery(), {
+      method: 'POST', body: JSON.stringify({ items: picked }),
+    });
+    document.getElementById('prod-suggest-panel')?.classList.add('hidden');
+    await loadProducts();
+    renderProductsManageBody(); populateFilters(); renderLeadsView();
+    toast(`Added ${r.added} item${r.added === 1 ? '' : 's'}${r.skipped ? ` (${r.skipped} already existed)` : ''}`);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
 async function createProductFromModal() {
   const nameEl = document.getElementById('new-product-name');
   const divEl  = document.getElementById('new-product-division');

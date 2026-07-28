@@ -18,7 +18,7 @@
        lazy-loaded on demand (dashboard/reports charts, import, map) via the
        ensureChart/ensureXLSX/ensureLeaflet loaders in app.js — off the startup
        critical path so the first paint isn't waiting on them. -->
-  <link rel="stylesheet" href="style.css?v=77" />
+  <link rel="stylesheet" href="style.css?v=78" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -303,6 +303,11 @@
         <button class="btn btn-primary btn-sm" id="new-product-btn" onclick="createProductFromModal()">＋ Add</button>
       </div>
       <datalist id="division-suggestions"></datalist>
+      <div class="prod-suggest-row">
+        <button class="btn btn-ghost btn-sm" id="btn-suggest-products" onclick="suggestProductsAI()">✨ Suggest items for my industry</button>
+        <span class="prod-suggest-hint">AI proposes items typical for your business — tick the ones you want.</span>
+      </div>
+      <div id="prod-suggest-panel" class="prod-suggest-panel hidden"></div>
       <p id="products-modal-error" class="login-error" style="margin:6px 0 0"></p>
       <div id="products-bulk-bar" class="products-bulk-bar hidden">
         <label class="products-bulk-all"><input type="checkbox" id="products-select-all" onclick="toggleSelectAllProducts(this.checked)" /> Select all</label>
@@ -1281,7 +1286,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=80"></script>
+  <script src="app.js?v=81"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:1400, once:true };</script>
   <script src="dive-splash.js?v=2"></script>

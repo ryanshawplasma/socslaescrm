@@ -647,6 +647,64 @@ router.post('/ai/clarify', authMiddleware, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── POST /api/ai/suggest-products ────────────────────────────
+// Suggest catalog items for THIS company's industry. The model is asked for a
+// plain JSON array; anything it returns is validated + de-duped against the
+// caller's existing catalog before it reaches the client (which then lets the
+// user tick the ones to actually add). Nothing is written here — read-only.
+router.post('/ai/suggest-products', authMiddleware, async (req, res, next) => {
+  const { industry, businessName, existing } = req.body || {};
+  const ind  = String(industry || '').slice(0, 120).trim();
+  const name = String(businessName || '').slice(0, 120).trim();
+  const have = Array.isArray(existing)
+    ? existing.map(s => String(s || '').slice(0, 60)).filter(Boolean).slice(0, 120)
+    : [];
+  if (!ind) return res.status(400).json({ error: 'industry required' });
+  try {
+    const sys = `You suggest the products/items a sales team in India would keep in their CRM catalog.
+Output ONLY a raw JSON array of objects — no markdown, no code fences, no commentary.
+Each object: {"name":"<product name>","division":"<category>","aliases":"<comma-separated short forms/spellings>"}
+Rules:
+- Suggest 12–20 items that a real business in this industry actually sells or deals in.
+- Use the common Indian trade name for each item. Keep names short (1–4 words), Title Case.
+- "division" groups related items (e.g. a material family, a product line). Reuse the same division across related items.
+- "aliases" = the abbreviations/misspellings a salesperson would type (lowercase, comma-separated). Leave "" if none.
+- Do NOT repeat any item the team already has.
+- No duplicates within your own list.`;
+    const already = have.length ? `\nItems they ALREADY have (do not repeat these): ${have.join(', ')}` : '';
+    const userMsg = `Industry / business type: ${ind}${name ? `\nBusiness name: ${name}` : ''}${already}\nSuggest catalog items as a JSON array.`;
+    const out = await gemini.generateText(sys, userMsg, 1400);
+    if (!out || !out.text) return res.status(502).json({ error: 'Could not reach the suggestion service. Try again.' });
+
+    // Parse defensively — strip code fences, then take the outermost [...] block.
+    let list = [];
+    try {
+      const cleaned = String(out.text).replace(/```json|```/gi, '').trim();
+      const s = cleaned.indexOf('['), e = cleaned.lastIndexOf(']');
+      list = JSON.parse(s >= 0 && e > s ? cleaned.slice(s, e + 1) : cleaned);
+    } catch (_) { return res.status(422).json({ error: 'The suggestions came back unreadable. Try again.' }); }
+    if (!Array.isArray(list)) return res.status(422).json({ error: 'The suggestions came back unreadable. Try again.' });
+
+    const haveSet = new Set(have.map(h => h.toLowerCase()));
+    const seen = new Set();
+    const items = [];
+    for (const raw of list) {
+      const nm = String((raw && raw.name) || '').trim().slice(0, 60);
+      if (!nm) continue;
+      const key = nm.toLowerCase();
+      if (haveSet.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      items.push({
+        name: nm,
+        division: String((raw && raw.division) || '').trim().slice(0, 40),
+        aliases:  String((raw && raw.aliases)  || '').trim().slice(0, 120),
+      });
+      if (items.length >= 24) break;
+    }
+    res.json({ items, model: out.model });
+  } catch (err) { next(err); }
+});
+
 // ── POST /api/ai/correct — log correction + auto-learn ────────
 const LEARNABLE_FIELDS = ['factory_name', 'person_in_charge', 'area', 'product', 'factory_number'];
 

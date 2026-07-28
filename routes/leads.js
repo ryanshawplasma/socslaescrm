@@ -561,6 +561,32 @@ router.post('/products/bulk-delete', authMiddleware, noGuest, async (req, res, n
   } catch (err) { next(err); }
 });
 
+// POST /api/products/bulk-create { items:[{name,division,aliases}] }
+// Used by the "AI suggestions" flow so accepting a dozen items is ONE request.
+// Silently skips names that already exist (case-insensitive) or duplicate within
+// the payload, and reports how many were actually added.
+router.post('/products/bulk-create', authMiddleware, noGuest, async (req, res, next) => {
+  try {
+    const items = Array.isArray((req.body || {}).items) ? (req.body || {}).items : [];
+    if (!items.length) return res.status(400).json({ error: 'No items given' });
+    if (items.length > 50) return res.status(400).json({ error: 'Too many items at once (max 50)' });
+    const ctx = await resolveTeamContext(req);
+    if (ctx?.forbidden) return res.status(403).json({ error: 'Not a member of this team' });
+    const teamId = ctx?.teamId || null;
+    const existing = await db.getProductsForContext(req.user.username, teamId);
+    const seen = new Set(existing.map(p => String(p.name).toLowerCase()));
+    let added = 0, skipped = 0;
+    for (const raw of items) {
+      const name = String((raw && raw.name) || '').trim().slice(0, 80);
+      if (!name || seen.has(name.toLowerCase())) { skipped++; continue; }
+      seen.add(name.toLowerCase());
+      await db.createProduct(name, (raw.division || ''), (raw.aliases || ''), req.user.username, teamId);
+      added++;
+    }
+    res.json({ ok: true, added, skipped });
+  } catch (err) { next(err); }
+});
+
 // ── Product data clean-up (admin) ────────────────────────────
 // GET /api/products/cleanup-scan — distinct product values NOT matching the
 // catalog/aliases, each with its usage count + AI-proposed fix (one Gemini call).

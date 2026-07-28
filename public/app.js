@@ -14,6 +14,7 @@ const state = {
   filterProduct: '',
   filterDivision: '',
   filterSalesman: '',
+  filterTeam:  '',   // sub-team (department) facet — '' all, '__none__' unassigned, else dept id
   filterList:  '',
   filterGroup: '',   // '', 'active', 'won', 'lost' — set by clicking a dashboard KPI card
   myLists:     [],
@@ -3073,12 +3074,16 @@ function filteredLeads() {
     const matchDivision = !state.filterDivision ||
       prodNames.some(n => (divMap[n.toLowerCase()] || '') === state.filterDivision);
     const matchSalesman = !state.filterSalesman || l.created_by === state.filterSalesman;
+    // Team (sub-group) filter — a lead's Team comes from its creator's membership
+    // (server annotates department_id). '__none__' = leads not in any Team.
+    const matchTeam     = !state.filterTeam
+      || (state.filterTeam === '__none__' ? !l.department_id : String(l.department_id) === String(state.filterTeam));
     const matchGroup    = !state.filterGroup    || groupOf(l)   === state.filterGroup;
     const matchList     = !state.filterList
       || (state.filterList === '__none__'
             ? !(l.list_ids || []).length
             : (l.list_ids || []).map(String).includes(String(state.filterList)));
-    return matchSearch && matchStage && matchProduct && matchDivision && matchSalesman && matchGroup && matchList;
+    return matchSearch && matchStage && matchProduct && matchDivision && matchSalesman && matchTeam && matchGroup && matchList;
   });
   if (state.sortKey) {
     leads = [...leads].sort((a, b) => {
@@ -3687,6 +3692,25 @@ function populateFilters() {
     }
   }
 
+  // Team (sub-group) filter — shown in a company view once Teams exist in the data.
+  const teamEl = document.getElementById('filter-team');
+  if (teamEl) {
+    const seen = new Map();
+    for (const l of state.leads) {
+      if (l.department_id && !seen.has(String(l.department_id))) seen.set(String(l.department_id), l.department_name || 'Team');
+    }
+    const teams = [...seen.entries()];
+    const show  = !!state.activeOrgId && teams.length > 0;
+    teamEl.style.display = show ? '' : 'none';
+    if (show) {
+      teamEl.innerHTML = '<option value="">All Teams</option>' +
+        teams.map(([id, name]) => `<option value="${escAttr(id)}" ${String(id) === String(state.filterTeam) ? 'selected' : ''}>${escHtml(name)}</option>`).join('') +
+        `<option value="__none__" ${state.filterTeam === '__none__' ? 'selected' : ''}>— No team —</option>`;
+    } else if (state.filterTeam) {
+      state.filterTeam = '';
+    }
+  }
+
   // List (tag) filter — shown whenever the user has any lists
   const listEl = document.getElementById('filter-list');
   if (listEl) {
@@ -4138,7 +4162,7 @@ function closeLeadDetail() {
 // other lead filters first so the jump lands on a clean, predictable view.
 function _resetLeadFilters() {
   state.search = ''; state.filterStage = ''; state.filterProduct = '';
-  state.filterDivision = ''; state.filterSalesman = ''; state.filterGroup = ''; state.filterList = '';
+  state.filterDivision = ''; state.filterSalesman = ''; state.filterTeam = ''; state.filterGroup = ''; state.filterList = '';
   const gs = document.getElementById('global-search'); if (gs) gs.value = '';
 }
 function jumpToList(id)    { closeLeadDetail(); _resetLeadFilters(); state.filterList    = String(id); navigate('leads'); }
@@ -5887,7 +5911,7 @@ function renderListsBulkRow() {
   row.style.display = '';
 
   const filtered = !!(state.search || state.filterStage || state.filterProduct ||
-                      state.filterSalesman || state.filterGroup || state.filterList);
+                      state.filterSalesman || state.filterTeam || state.filterGroup || state.filterList);
   const n = shown.length;
   label.textContent = filtered
     ? `Add the ${n} lead${n === 1 ? '' : 's'} shown now to a list`
@@ -6462,6 +6486,10 @@ function wireEvents() {
   document.getElementById('btn-manage-lists')?.addEventListener('click', openListsModal);
   document.getElementById('filter-salesman')?.addEventListener('change', e => {
     state.filterSalesman = e.target.value;
+    renderLeadsView();
+  });
+  document.getElementById('filter-team')?.addEventListener('change', e => {
+    state.filterTeam = e.target.value;
     renderLeadsView();
   });
   document.getElementById('filter-list')?.addEventListener('change', e => {
@@ -8136,6 +8164,8 @@ async function wsRenderMembers() {
           <tbody>${rows}</tbody>
         </table></div>
       </div>`;
+    // Teams (sub-groups within the company) live right under the member roster.
+    renderDepartmentSection(ws.activeTeam.id);
   } catch (err) { panel.innerHTML = `<div class="ws-error">${escHtml(err.message)}</div>`; }
 }
 
@@ -10020,6 +10050,14 @@ function toggleDebugRow(i) {
 //  DEPARTMENT UI (Workspace Members tab extension)
 // ============================================================
 
+// "Teams" = sub-groups within the Company (a company/workspace can have many, by
+// area / product / target). Salespeople belong to a Team; a lead is attributed
+// to its creator's Team (server annotates department_id/name), which powers the
+// company-wide "Team" filter on the leads list + dashboard. All calls go through
+// wsTeamApiFetch so the required X-Team-ID header is sent (the old apiFetch path
+// 403'd, which is why this UI never worked).
+let _wsDeptMembers = [];   // active company members, for the add-member picker
+
 async function renderDepartmentSection(teamId) {
   let el = document.getElementById('ws-dept-section');
   if (!el) {
@@ -10030,30 +10068,62 @@ async function renderDepartmentSection(teamId) {
     el.className = 'dept-section';
     membersPanel.appendChild(el);
   }
-  el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:8px">Loading departments…</div>';
+  el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:8px">Loading teams…</div>';
   try {
-    const depts = await apiFetch(`/api/teams/${teamId}/departments`);
-    const isAdmin = ['owner', 'admin'].includes(state.teamRole || '');
+    const [depts, members] = await Promise.all([
+      wsTeamApiFetch(`/api/teams/${teamId}/departments`),
+      wsTeamApiFetch(`/api/teams/${teamId}/members`),
+    ]);
+    _wsDeptMembers = (members || []).filter(m => m.status === 'active');
+    const isAdmin = ['owner', 'admin'].includes(ws?.activeTeam?.role || state.teamRole || '');
+    // Fetch each Team's members in parallel so we can show + manage the roster.
+    const rosters = {};
+    await Promise.all((depts || []).map(async d => {
+      rosters[d.id] = await wsTeamApiFetch(`/api/teams/${teamId}/departments/${d.id}/members`).catch(() => []);
+    }));
     el.innerHTML = `
       <div class="dept-header">
-        <h3 class="dept-title">Departments</h3>
-        ${isAdmin ? `<button class="btn btn-ghost btn-sm" onclick="showCreateDeptForm(${teamId})">+ New</button>` : ''}
+        <h3 class="dept-title">🏢 Teams</h3>
+        ${isAdmin ? `<button class="btn btn-ghost btn-sm" onclick="showCreateDeptForm(${teamId})">+ New Team</button>` : ''}
       </div>
-      <div id="dept-create-form" class="hidden" style="margin-bottom:12px">
-        <input id="dept-name-input" type="text" placeholder="Department name…" class="form-input" style="width:200px;margin-right:8px"/>
+      <p class="dept-intro">Sub-groups within your company — split by area, product line or target. A salesperson's leads roll up to their Team, and you can filter the leads list &amp; dashboard by Team.</p>
+      <div id="dept-create-form" class="hidden dept-create">
+        <input id="dept-name-input" type="text" placeholder="Team name — e.g. North Zone, Hotmelt Division…" />
         <button class="btn btn-primary btn-sm" onclick="createDept(${teamId})">Create</button>
         <button class="btn btn-ghost btn-sm" onclick="document.getElementById('dept-create-form').classList.add('hidden')">Cancel</button>
       </div>
-      ${depts.length ? depts.map(d => `
-        <div class="dept-item">
-          <span class="dept-name">${escHtml(d.name)}</span>
-          <span class="dept-meta">${d.member_count || 0} members${d.manager_name ? ' · ' + escHtml(d.manager_name) : ''}</span>
-          ${isAdmin ? `<button class="btn btn-ghost btn-xs" onclick="archiveDept(${teamId},${d.id})">Archive</button>` : ''}
-        </div>`).join('')
-      : '<div style="color:var(--text-muted);font-size:13px;margin-top:8px">No departments yet.</div>'}`;
+      ${(depts && depts.length) ? depts.map(d => deptCardHtml(teamId, d, rosters[d.id] || [], isAdmin)).join('')
+        : '<div class="dept-empty">No teams yet. Create one to group salespeople by area, product or target.</div>'}`;
   } catch (err) {
     el.innerHTML = `<div style="color:var(--danger);font-size:12px">${escHtml(err.message)}</div>`;
   }
+}
+
+function deptCardHtml(teamId, d, members, isAdmin) {
+  const memberIds = new Set(members.map(m => m.user_id));
+  const available = _wsDeptMembers.filter(m => !memberIds.has(m.user_id));
+  const chips = members.length
+    ? members.map(m => `<span class="dept-chip">${escHtml(m.display_name)}${isAdmin
+        ? `<button class="dept-chip-x" title="Remove from team" onclick="deptRemoveMember(${teamId},${d.id},${m.user_id})">✕</button>` : ''}</span>`).join('')
+    : '<span class="dept-empty-inline">No members yet</span>';
+  return `<div class="dept-item">
+    <div class="dept-item-head">
+      <span class="dept-name">${escHtml(d.name)}</span>
+      <span class="dept-meta">${members.length} member${members.length !== 1 ? 's' : ''}${d.manager_name ? ' · 👤 ' + escHtml(d.manager_name) : ''}</span>
+      ${isAdmin ? `<button class="btn btn-ghost btn-xs" onclick="archiveDept(${teamId},${d.id})">Archive</button>` : ''}
+    </div>
+    <div class="dept-members">${chips}</div>
+    ${isAdmin ? `<div class="dept-controls">
+      <select class="dept-sel" onchange="if(this.value){deptAddMember(${teamId},${d.id},this.value); this.value=''}">
+        <option value="">+ Add member…</option>
+        ${available.map(m => `<option value="${m.user_id}">${escHtml(m.display_name)}</option>`).join('')}
+      </select>
+      <select class="dept-sel" onchange="deptSetManager(${teamId},${d.id},this.value)">
+        <option value="">Set manager…</option>
+        ${members.map(m => `<option value="${m.user_id}" ${String(d.manager_id) === String(m.user_id) ? 'selected' : ''}>${escHtml(m.display_name)}</option>`).join('')}
+      </select>
+    </div>` : ''}
+  </div>`;
 }
 
 function showCreateDeptForm(teamId) {
@@ -10065,17 +10135,41 @@ async function createDept(teamId) {
   const name = document.getElementById('dept-name-input')?.value.trim();
   if (!name) return;
   try {
-    await apiFetch(`/api/teams/${teamId}/departments`, { method: 'POST', body: JSON.stringify({ name }) });
-    toast(`Department "${name}" created`);
+    await wsTeamApiFetch(`/api/teams/${teamId}/departments`, { method: 'POST', body: JSON.stringify({ name }) });
+    toast(`Team "${name}" created`);
     renderDepartmentSection(teamId);
   } catch (err) { toast(err.message, 'error'); }
 }
 
 async function archiveDept(teamId, deptId) {
-  if (!confirm('Archive this department?')) return;
+  if (!confirm('Archive this team? Members stay in the company; only the grouping is removed.')) return;
   try {
-    await apiFetch(`/api/teams/${teamId}/departments/${deptId}`, { method: 'DELETE' });
-    toast('Department archived');
+    await wsTeamApiFetch(`/api/teams/${teamId}/departments/${deptId}`, { method: 'DELETE' });
+    toast('Team archived');
+    renderDepartmentSection(teamId);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function deptAddMember(teamId, deptId, userId) {
+  try {
+    await wsTeamApiFetch(`/api/teams/${teamId}/departments/${deptId}/members`, { method: 'POST', body: JSON.stringify({ userId: Number(userId) }) });
+    toast('Added to team');
+    renderDepartmentSection(teamId);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function deptRemoveMember(teamId, deptId, userId) {
+  try {
+    await wsTeamApiFetch(`/api/teams/${teamId}/departments/${deptId}/members/${userId}`, { method: 'DELETE' });
+    toast('Removed from team');
+    renderDepartmentSection(teamId);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function deptSetManager(teamId, deptId, userId) {
+  try {
+    await wsTeamApiFetch(`/api/teams/${teamId}/departments/${deptId}`, { method: 'PATCH', body: JSON.stringify({ managerId: userId ? Number(userId) : null }) });
+    toast(userId ? 'Team manager set' : 'Manager cleared');
     renderDepartmentSection(teamId);
   } catch (err) { toast(err.message, 'error'); }
 }

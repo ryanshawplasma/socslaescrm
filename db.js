@@ -2087,9 +2087,15 @@ async function getLeadsByTeam(teamId, memberNames = null, accessUser = null) {
   const itemMap = {}; const contactMap = {};
   for (const it of allItems)    { (itemMap[it.lead_id]    = itemMap[it.lead_id]    || []).push({ product: it.product||'', quantity: it.quantity||'', rate: it.rate||'' }); }
   for (const ct of allContacts) { (contactMap[ct.lead_id] = contactMap[ct.lead_id] || []).push({ id: ct.id, person_name: ct.person_name||'', contact: ct.contact||'', designation: ct.designation||'' }); }
+  // Attribute each lead to a sub-team ("Team") via its creator's membership, so
+  // the client can filter the company's leads by Team (client-side facet).
+  const deptMap = await getMemberDepartmentMap(teamId);
   return rows.map(r => {
     const out = {};
     for (const [k, v] of Object.entries(r)) out[k] = v == null ? '' : String(v);
+    const d = deptMap[String(out.created_by || '').toLowerCase()];
+    out.department_id   = d ? String(d.id) : '';
+    out.department_name = d ? d.name : '';
     out.items    = itemMap[r.rowIndex] || (out.product ? [{ product: out.product, quantity: out.quantity, rate: out.rate }] : []);
     const extras = contactMap[r.rowIndex] || [];
     out.contacts = [
@@ -3005,6 +3011,26 @@ async function removeDepartmentMember(deptId, userId) {
   );
 }
 
+// Map each company member (keyed by lowercased display name) → the sub-team
+// ("Team") they belong to. Used to attribute a lead to a Team via its creator,
+// without storing a department_id on the lead (no migration/backfill). A user in
+// more than one Team resolves to their earliest-joined one.
+async function getMemberDepartmentMap(teamId) {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT ON (LOWER(u.display_name))
+       LOWER(u.display_name) AS name, d.id AS dept_id, d.name AS dept_name
+     FROM department_members dm
+     JOIN departments d ON d.id = dm.department_id
+     JOIN users u        ON u.id = dm.user_id
+     WHERE d.team_id = $1 AND d.archived_at IS NULL
+     ORDER BY LOWER(u.display_name), dm.joined_at ASC`,
+    [teamId]
+  );
+  const map = {};
+  for (const r of rows) map[r.name] = { id: r.dept_id, name: r.dept_name };
+  return map;
+}
+
 // ── Granular permissions ──────────────────────────────────────
 async function getUserPermissions(userId, teamId) {
   const { rows } = await pool.query(
@@ -3193,7 +3219,7 @@ module.exports = {
   logLeadActivity, getLeadActivities, logLeadHistory, getLeadHistory,
   // Departments
   getDepartments, getDepartmentById, createDepartment, updateDepartment, archiveDepartment,
-  getDepartmentMembers, addDepartmentMember, removeDepartmentMember,
+  getDepartmentMembers, addDepartmentMember, removeDepartmentMember, getMemberDepartmentMap,
   // Granular permissions
   getUserPermissions, grantPermission, revokePermission,
   // Personal vocab

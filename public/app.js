@@ -3259,8 +3259,44 @@ function renderDashHero() {
   }
 }
 
+// Leads scoped to the dashboard's Team selector (shared with the leads-page
+// Team filter, so drilling from a dashboard card into Leads keeps the scope).
+function dashScopedLeads() {
+  if (!state.filterTeam) return state.leads;
+  return state.leads.filter(l => state.filterTeam === '__none__'
+    ? !l.department_id
+    : String(l.department_id) === String(state.filterTeam));
+}
+
+function dashTeamChange(v) {
+  state.filterTeam = v;
+  renderDashboard();
+}
+
+// Populate the dashboard's Team selector — only meaningful inside a company that
+// actually has Teams set up.
+function renderDashTeamRow() {
+  const row = document.getElementById('dash-team-row');
+  const sel = document.getElementById('dash-team-filter');
+  if (!row || !sel) return;
+  const seen = new Map();
+  for (const l of state.leads) {
+    if (l.department_id && !seen.has(String(l.department_id))) seen.set(String(l.department_id), l.department_name || 'Team');
+  }
+  const teams = [...seen.entries()];
+  const show  = !!state.activeOrgId && teams.length > 0;
+  row.style.display = show ? '' : 'none';
+  if (!show) { if (state.filterTeam) state.filterTeam = ''; return; }
+  sel.innerHTML = `<option value="">Whole company</option>` +
+    teams.map(([id, name]) => `<option value="${escAttr(id)}" ${String(id) === String(state.filterTeam) ? 'selected' : ''}>${escHtml(name)}</option>`).join('') +
+    `<option value="__none__" ${state.filterTeam === '__none__' ? 'selected' : ''}>— No team —</option>`;
+}
+
 function renderDashboard() {
-  const s = state.stats;
+  renderDashTeamRow();
+  // Recompute against the Team scope so every KPI + chart on this page reflects
+  // the selected Team (whole company when nothing is selected).
+  const s = state.filterTeam ? computeStats(dashScopedLeads()) : state.stats;
   if (!s || !s.by_stage) return;
 
   renderDashHero();
@@ -3341,7 +3377,7 @@ function renderDashboard() {
   }
 
   // Recent leads table
-  const recent = [...state.leads].reverse().slice(0, 8);
+  const recent = [...dashScopedLeads()].reverse().slice(0, 8);
   const recentCols = state.role === 'admin'
     ? ['factory_number','factory_name','product','stage','follow_up','created_by']
     : ['factory_number','factory_name','product','stage','follow_up'];
@@ -4913,7 +4949,7 @@ function computeFollowupStats() {
 
 function getMonthlyTrend() {
   const counts = {};
-  for (const l of state.leads) {
+  for (const l of dashScopedLeads()) {
     if (!l.last_updated) continue;
     const parts = l.last_updated.split('/');
     if (parts.length < 3) continue;
@@ -8167,11 +8203,66 @@ function wsShowTab(tab) {
 
 // ── Overview ─────────────────────────────────────────────────
 
+// Company snapshot — how the company's leads split across its Teams (derived
+// from the same department_id the server annotates onto each lead). Each row
+// drills into that Team's leads. Rendered above the Team Info cards.
+function wsCompanySnapshotHtml() {
+  const leads = state.leads || [];
+  if (!leads.length) return '';
+  const byTeam = new Map();     // deptId → { name, count, people:Set }
+  let unassigned = 0;
+  const people = new Set();
+  for (const l of leads) {
+    if (l.created_by) people.add(l.created_by);
+    if (!l.department_id) { unassigned++; continue; }
+    const k = String(l.department_id);
+    if (!byTeam.has(k)) byTeam.set(k, { name: l.department_name || 'Team', count: 0, people: new Set() });
+    const e = byTeam.get(k);
+    e.count++;
+    if (l.created_by) e.people.add(l.created_by);
+  }
+  const rows = [...byTeam.entries()]
+    .sort((a, b) => b[1].count - a[1].count)
+    .map(([id, e]) => `
+      <div class="ws-snap-row" role="button" tabindex="0" onclick="jumpToTeam('${escAttr(id)}')"
+           onkeydown="if(event.key==='Enter'){jumpToTeam('${escAttr(id)}')}">
+        <span class="ws-snap-name">${escHtml(e.name)}</span>
+        <span class="ws-snap-people">${e.people.size} ${e.people.size === 1 ? 'person' : 'people'}</span>
+        <span class="ws-snap-count">${e.count}</span>
+      </div>`).join('');
+  const unassignedRow = unassigned ? `
+      <div class="ws-snap-row ws-snap-muted" role="button" tabindex="0" onclick="jumpToTeam('__none__')"
+           onkeydown="if(event.key==='Enter'){jumpToTeam('__none__')}">
+        <span class="ws-snap-name">— Not in a team —</span>
+        <span class="ws-snap-people"></span>
+        <span class="ws-snap-count">${unassigned}</span>
+      </div>` : '';
+  return `
+    <div class="ws-info-card ws-snap-card">
+      <h3>🏢 Company at a glance</h3>
+      <div class="ws-snap-totals">
+        <div><b>${leads.length}</b><span>leads</span></div>
+        <div><b>${people.size}</b><span>${people.size === 1 ? 'salesperson' : 'salespeople'}</span></div>
+        <div><b>${byTeam.size}</b><span>${byTeam.size === 1 ? 'team' : 'teams'}</span></div>
+      </div>
+      ${rows || unassignedRow ? `<div class="ws-snap-list">${rows}${unassignedRow}</div>`
+        : `<p class="ws-snap-empty">No Teams yet — create them under Members to group salespeople by area, product or target.</p>`}
+    </div>`;
+}
+
+// Drill from the company snapshot straight into that Team's leads.
+function jumpToTeam(deptId) {
+  _resetLeadFilters();
+  state.filterTeam = String(deptId);
+  navigate('leads');
+}
+
 function wsRenderOverview() {
   const t    = ws.activeTeam;
   const link = `${location.origin}?join=${t.invite_code}`;
   document.getElementById('ws-panel-overview').innerHTML = `
     <div class="ws-cards">
+      ${wsCompanySnapshotHtml()}
       <div class="ws-info-card">
         <h3>Team Info</h3>
         <div class="ws-info-row"><span>Name</span><b>${escHtml(t.name)}</b></div>

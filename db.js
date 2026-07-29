@@ -375,6 +375,24 @@ async function initSchema() {
       ON users(mobile) WHERE mobile IS NOT NULL AND mobile != ''
     `).catch(e => console.warn('[db] non-fatal:', e && e.message));
 
+    // Password-reset links. Only a SHA-256 hash of the token is stored — the
+    // plaintext exists solely inside the email we send. A database leak
+    // therefore hands an attacker nothing usable, exactly as with pin_hash /
+    // password_hash. Rows are single-use (used_at) and time-boxed (expires_at).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS password_resets (
+        id           SERIAL PRIMARY KEY,
+        user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash   TEXT NOT NULL,
+        expires_at   TIMESTAMPTZ NOT NULL,
+        used_at      TIMESTAMPTZ,
+        requested_ip TEXT DEFAULT '',
+        created_at   TIMESTAMPTZ DEFAULT NOW()
+      )
+    `).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets(token_hash)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_password_resets_user  ON password_resets(user_id)`).catch(e => console.warn('[db] non-fatal:', e && e.message));
+
     // Sessions: one row per active login (any device)
     await client.query(`
       CREATE TABLE IF NOT EXISTS sessions (
@@ -1379,6 +1397,85 @@ async function setUserPassword(userId, password) {
   const hash = await bcrypt.hash(String(password), 10);
   await pool.query(`UPDATE users SET password_hash = $1, must_change_password = FALSE WHERE id = $2`, [hash, userId]);
   return { ok: true };
+}
+
+// ── Password reset by emailed link ───────────────────────────
+// The plaintext token is returned to the caller ONCE, to put in the email, and
+// never stored: only its SHA-256 hash goes to the database. Same reasoning as
+// password_hash — a leaked table must not be usable to take over accounts.
+const RESET_TTL_MINUTES = 60;
+
+function hashResetToken(token) {
+  return crypto.createHash('sha256').update(String(token)).digest('hex');
+}
+
+async function createPasswordReset(userId, ip = '') {
+  // Invalidate this user's outstanding links first. Requesting a new one should
+  // retire the old, or an email forwarded/leaked earlier stays live alongside it.
+  await pool.query(
+    `UPDATE password_resets SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL`,
+    [userId]);
+  const token = crypto.randomBytes(32).toString('hex');
+  await pool.query(
+    `INSERT INTO password_resets (user_id, token_hash, expires_at, requested_ip)
+     VALUES ($1, $2, NOW() + ($3 || ' minutes')::interval, $4)`,
+    [userId, hashResetToken(token), String(RESET_TTL_MINUTES), String(ip || '').slice(0, 60)]);
+  return { token, minutes: RESET_TTL_MINUTES };
+}
+
+// Look up a reset token without consuming it — lets the reset screen tell the
+// user "this link expired" before they type a new password, rather than after.
+async function peekPasswordReset(token) {
+  if (!token) return null;
+  const { rows } = await pool.query(`
+    SELECT pr.id, pr.user_id, pr.expires_at, pr.used_at, u.display_name
+      FROM password_resets pr
+      JOIN users u ON u.id = pr.user_id
+     WHERE pr.token_hash = $1`, [hashResetToken(token)]);
+  const r = rows[0];
+  if (!r) return null;
+  if (r.used_at) return { valid: false, reason: 'used' };
+  if (new Date(r.expires_at) <= new Date()) return { valid: false, reason: 'expired' };
+  return { valid: true, userId: r.user_id, displayName: r.display_name };
+}
+
+// Consume the token and set the new password atomically. The UPDATE ... WHERE
+// used_at IS NULL RETURNING is the claim: two concurrent submits of the same
+// link race on that row and exactly one wins, so a link can never be spent
+// twice. Same pattern as redeemAccessCode.
+async function consumePasswordReset(token, newPassword) {
+  if (!token) return { ok: false, reason: 'invalid' };
+  const tokenHash = hashResetToken(token);
+  return await withTransaction(async (client) => {
+    const { rows } = await client.query(`
+      UPDATE password_resets
+         SET used_at = NOW()
+       WHERE token_hash = $1
+         AND used_at IS NULL
+         AND expires_at > NOW()
+      RETURNING user_id`, [tokenHash]);
+    if (!rows[0]) {
+      // Distinguish "never existed" from "already used / expired" for the message.
+      const { rows: any } = await client.query(
+        `SELECT used_at, expires_at FROM password_resets WHERE token_hash = $1`, [tokenHash]);
+      if (!any[0]) return { ok: false, reason: 'invalid' };
+      return { ok: false, reason: any[0].used_at ? 'used' : 'expired' };
+    }
+    const userId = rows[0].user_id;
+    const hash   = await bcrypt.hash(String(newPassword), 10);
+    await client.query(
+      `UPDATE users
+          SET password_hash = $1, must_change_password = FALSE,
+              failed_attempts = 0, locked_until = NULL
+        WHERE id = $2`, [hash, userId]);
+    // Signing in again is the point of the flow, so drop every existing session:
+    // if someone else knew the old password, this is what evicts them. No
+    // .catch() — swallowing an error inside a transaction leaves Postgres
+    // aborted and the COMMIT fails anyway; rolling back is the right outcome.
+    await client.query(`DELETE FROM sessions WHERE user_id = $1`, [userId]);
+    const { rows: [u] } = await client.query(`SELECT display_name FROM users WHERE id = $1`, [userId]);
+    return { ok: true, userId, displayName: u && u.display_name };
+  });
 }
 
 // Admin-forced reset for one account: doesn't touch the existing credential,
@@ -3267,6 +3364,7 @@ module.exports = {
   grantLeadAccess, revokeLeadAccess, getLeadAccess, claimFollowUp, reassignFollowUp,
   createUser, getUserByName, getUserByTelegramId, updateUserPin, updateUserName, updateUserDefaultArea,
   getAllUsers, deleteUser, verifyUserPin, verifyUserPassword, setUserPassword, seedAdminUser,
+  createPasswordReset, peekPasswordReset, consumePasswordReset,
   setUserRole, setUserDesignation, setUserBusiness, normBusinessCustom, getAdminCount,
   setMustChangePassword, setMustChangePasswordForAll,
   saveWebAuthnCred, getWebAuthnCred, getUserByWebAuthnCredId,

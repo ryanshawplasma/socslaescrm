@@ -21,7 +21,7 @@
        lazy-loaded on demand (dashboard/reports charts, import, map) via the
        ensureChart/ensureXLSX/ensureLeaflet loaders in app.js — off the startup
        critical path so the first paint isn't waiting on them. -->
-  <link rel="stylesheet" href="style.css?v=86" />
+  <link rel="stylesheet" href="style.css?v=88" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -120,8 +120,15 @@
             </label>
             <a href="#" onclick="showForgotPin(event)" style="color:var(--text-muted);text-decoration:none;font-size:12px">Forgot password?</a>
           </div>
-          <div id="forgot-pin-box" style="display:none;margin-bottom:10px;padding:10px 14px;background:var(--bg);border-radius:8px;border:1px solid var(--border);font-size:13px;color:var(--text-muted);line-height:1.6">
-            Ask your <b style="color:var(--text)">admin</b> to reset your password from <b style="color:var(--text)">Team → Reset Password</b>.
+          <div id="forgot-pin-box" style="display:none">
+            <div class="forgot-box">
+              <div class="forgot-title">Reset your password</div>
+              <p class="forgot-sub">Enter your email (or username) and we'll send you a reset link.</p>
+              <input id="forgot-credential" type="text" placeholder="you@company.com" autocomplete="username" spellcheck="false" />
+              <button type="button" id="forgot-send-btn" class="btn btn-primary full-width" onclick="requestPasswordReset()">Send reset link</button>
+              <p id="forgot-msg" class="forgot-msg"></p>
+              <p class="forgot-alt">No email on your account? Your admin can still reset it from <b>Team → Reset Password</b>.</p>
+            </div>
           </div>
           <p id="login-error" class="login-error"></p>
           <button type="submit" id="login-btn" class="btn btn-primary full-width">Sign In</button>
@@ -151,6 +158,12 @@
               <span id="reg-username-status" class="username-status"></span>
             </div>
             <div id="reg-username-hint" class="username-hint">3–20 chars · letters, numbers, _ and . only</div>
+          </div>
+          <div class="form-group">
+            <label>Email</label>
+            <input id="reg-email" type="email" placeholder="you@company.com" autocomplete="email"
+              maxlength="254" spellcheck="false" oninput="onRegEmailInput(this)" />
+            <div id="reg-email-hint" class="username-hint">Used to reset your password if you forget it</div>
           </div>
           <div class="form-group">
             <label>Mobile <span style="font-weight:400;color:var(--text-muted)">(optional · use to log in if you forget username)</span></label>
@@ -185,6 +198,34 @@
         </form>
         <p style="text-align:center;margin-top:14px;font-size:13px;color:var(--text-muted)">
           Already have an account? <a href="#" onclick="showLoginScreen(event)" style="color:var(--primary);text-decoration:none;font-weight:500">Sign in</a>
+        </p>
+      </div>
+
+      <!-- ── Set-a-new-password screen (opened by ?reset=<token>) ── -->
+      <div id="reset-screen" style="display:none">
+        <h2 class="login-title">Choose a new password</h2>
+        <p id="reset-who" class="forgot-sub"></p>
+        <form id="reset-form" autocomplete="off">
+          <div class="form-group">
+            <label>New password <span style="font-weight:400;color:var(--text-muted)">(min 8 chars)</span></label>
+            <div class="pw-wrap">
+              <input id="reset-password" type="password" placeholder="Create a new password" autocomplete="new-password" oninput="onRegPasswordInput(this)" />
+              <button type="button" class="pw-toggle" aria-label="Show password" onclick="togglePw('reset-password', this)">👁</button>
+            </div>
+            <div id="reset-password-hint" class="username-hint">At least 8 characters, with a letter and a number</div>
+          </div>
+          <div class="form-group">
+            <label>Confirm new password</label>
+            <div class="pw-wrap">
+              <input id="reset-password2" type="password" placeholder="Re-enter password" autocomplete="new-password" />
+              <button type="button" class="pw-toggle" aria-label="Show password" onclick="togglePw('reset-password2', this)">👁</button>
+            </div>
+          </div>
+          <p id="reset-error" class="login-error"></p>
+          <button type="submit" id="reset-btn" class="btn btn-primary full-width">Set new password</button>
+        </form>
+        <p style="text-align:center;margin-top:14px;font-size:13px;color:var(--text-muted)">
+          <a href="#" onclick="showLoginScreen(event)" style="color:var(--primary);text-decoration:none;font-weight:500">Back to sign in</a>
         </p>
       </div>
       </div><!-- /login-main -->
@@ -1297,7 +1338,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=90"></script>
+  <script src="app.js?v=91"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:1400, once:true };</script>
   <script src="dive-splash.js?v=2"></script>

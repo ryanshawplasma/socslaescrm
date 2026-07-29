@@ -525,7 +525,162 @@ function updateCredentialLabel(val) {
 function showForgotPin(e) {
   if (e) e.preventDefault();
   const box = document.getElementById('forgot-pin-box');
-  box.style.display = box.style.display === 'none' ? '' : 'none';
+  const opening = box.style.display === 'none';
+  box.style.display = opening ? '' : 'none';
+  if (opening) {
+    // Carry across whatever they already typed into the sign-in box — most
+    // people reach for "Forgot password?" only after a failed attempt.
+    const typed = (document.getElementById('login-username')?.value || '').trim();
+    const input = document.getElementById('forgot-credential');
+    if (input) { if (typed && !input.value) input.value = typed; input.focus(); }
+  }
+}
+
+// Deliberately permissive: the authoritative test of an address is whether the
+// reset mail arrives, and over-strict regexes reject valid real-world addresses.
+function getEmailError(email) {
+  const v = String(email || '').trim();
+  if (!v) return 'Email is required — it\'s how you reset your password';
+  if (v.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v)) return 'That email doesn\'t look right';
+  return '';
+}
+
+function onRegEmailInput(el) {
+  const hint = document.getElementById('reg-email-hint');
+  if (!hint) return;
+  const v = (el.value || '').trim();
+  if (!v) {
+    hint.textContent = 'Used to reset your password if you forget it';
+    hint.className = 'username-hint';
+    return;
+  }
+  const err = getEmailError(v);
+  hint.textContent = err || '✓ Looks good';
+  hint.className = 'username-hint' + (err ? ' hint-bad' : ' hint-ok');
+}
+
+// ── Forgot password → emailed reset link ─────────────────────
+async function requestPasswordReset() {
+  const input = document.getElementById('forgot-credential');
+  const msg   = document.getElementById('forgot-msg');
+  const btn   = document.getElementById('forgot-send-btn');
+  const credential = (input?.value || '').trim();
+  if (!msg || !btn) return;
+  if (!credential) {
+    msg.textContent = 'Enter your email or username first';
+    msg.className = 'forgot-msg is-bad';
+    input?.focus();
+    return;
+  }
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'Sending…';
+  try {
+    const r = await fetch('/api/auth/forgot-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'Could not send the reset link');
+    // The server answers identically whether or not the account exists, so this
+    // message must not imply we found one.
+    msg.textContent = d.message || 'If that account exists, a reset link is on its way.';
+    msg.className = 'forgot-msg is-ok';
+  } catch (err) {
+    msg.textContent = err.message;
+    msg.className = 'forgot-msg is-bad';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+// A reset link lands as "/?reset=<token>". Pull it out of the URL immediately so
+// the token never lingers in the address bar (or in a screenshot / shared link),
+// then show the set-a-new-password screen.
+let _resetToken = '';
+function capturePendingReset() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const token  = (params.get('reset') || '').trim();
+    if (!token) return false;
+    _resetToken = token;
+    params.delete('reset');
+    const qs = params.toString();
+    history.replaceState({}, '', location.pathname + (qs ? '?' + qs : ''));
+    return true;
+  } catch (_) { return false; }
+}
+
+async function showResetScreen() {
+  ['login-screen', 'register-screen', 'pin-unlock-screen'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+  const screen = document.getElementById('reset-screen');
+  const who    = document.getElementById('reset-who');
+  const errEl  = document.getElementById('reset-error');
+  if (!screen) return;
+  screen.style.display = '';
+  document.getElementById('login-overlay')?.classList.remove('hidden');
+  document.getElementById('app')?.classList.add('hidden');
+  if (errEl) errEl.textContent = '';
+  // Check the link BEFORE they type anything — being told "expired" only after
+  // filling in two password fields is a needlessly annoying way to find out.
+  try {
+    const r = await fetch(`/api/auth/reset-password?token=${encodeURIComponent(_resetToken)}`);
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.valid) {
+      if (who) who.textContent = '';
+      if (errEl) errEl.textContent = d.error || 'That link is no longer valid. Request a new one.';
+      document.getElementById('reset-form')?.classList.add('hidden');
+      return;
+    }
+    if (who) who.textContent = `Signing back in as ${d.displayName}.`;
+    document.getElementById('reset-form')?.classList.remove('hidden');
+    document.getElementById('reset-password')?.focus();
+  } catch (_) {
+    if (errEl) errEl.textContent = 'Could not check that link. Try again.';
+  }
+}
+
+async function handleResetSubmit(e) {
+  e.preventDefault();
+  const pw1   = document.getElementById('reset-password').value;
+  const pw2   = document.getElementById('reset-password2').value;
+  const errEl = document.getElementById('reset-error');
+  const btn   = document.getElementById('reset-btn');
+  errEl.textContent = '';
+  const pwErr = getPasswordError(pw1);
+  if (pwErr)      { errEl.textContent = pwErr; return; }
+  if (pw1 !== pw2) { errEl.textContent = 'Passwords do not match'; return; }
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/auth/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: _resetToken, password: pw1 }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'Could not set your new password');
+    // The server dropped every session for this account, so send them to a clean
+    // sign-in with the username prefilled rather than trying to auto-login.
+    _resetToken = '';
+    document.getElementById('reset-screen').style.display = 'none';
+    showLoginScreen();
+    const u = document.getElementById('login-username');
+    if (u && d.username) u.value = d.username;
+    const le = document.getElementById('login-error');
+    if (le) { le.textContent = 'Password updated — sign in with your new password.'; le.classList.add('login-ok'); }
+    document.getElementById('login-password')?.focus();
+  } catch (err) {
+    errEl.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Set new password';
+  }
 }
 
 // ── Invite deep-links (…?join=CODE) ───────────────────────────
@@ -1347,6 +1502,12 @@ async function handleRegister(e) {
   errEl.textContent = '';
   const fmtErr = getUsernameFormatError(name);
   if (fmtErr)                    { errEl.textContent = fmtErr; return; }
+  // Email is required: it's the only self-service way back into an account.
+  // Validated here as well as on the server so the user gets the message
+  // without a round trip.
+  const email = (document.getElementById('reg-email')?.value || '').trim().toLowerCase();
+  const mailErr = getEmailError(email);
+  if (mailErr) { errEl.textContent = mailErr; document.getElementById('reg-email')?.focus(); return; }
   const pwErr = getPasswordError(password);
   if (pwErr)                     { errEl.textContent = pwErr; return; }
   if (password !== password2)    { errEl.textContent = 'Passwords do not match'; return; }
@@ -1362,15 +1523,19 @@ async function handleRegister(e) {
     const regRes  = await fetch('/api/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, password, mobile, inviteCode, fingerprint, businessType: _regIndustry || undefined }),
+      body: JSON.stringify({ name, email, password, mobile, inviteCode, fingerprint, businessType: _regIndustry || undefined }),
     });
     const regData = await regRes.json();
     if (!regRes.ok) {
       if (regRes.status === 409) {
-        errEl.innerHTML = 'Name already taken. <a href="#" id="reg-login-link" style="color:var(--primary)">Log in instead →</a>';
+        // A 409 can now mean either the username OR the email is taken, so show
+        // the server's own message rather than always blaming the name — and
+        // prefill sign-in with whichever identifier they'd actually use.
+        const isEmailClash = /email/i.test(regData.error || '');
+        errEl.innerHTML = `${escHtml(regData.error || 'Name already taken.')} <a href="#" id="reg-login-link" style="color:var(--primary)">Log in instead →</a>`;
         document.getElementById('reg-login-link').onclick = function(ev) {
           ev.preventDefault();
-          document.getElementById('login-username').value = name;
+          document.getElementById('login-username').value = isEmailClash ? email : name;
           showLoginScreen();
         };
         return;
@@ -6960,6 +7125,7 @@ function wireEvents() {
 
   document.getElementById('login-form').addEventListener('submit', handleLogin);
   document.getElementById('register-form').addEventListener('submit', handleRegister);
+  document.getElementById('reset-form')?.addEventListener('submit', handleResetSubmit);
   renderPinStrength('pin-setup-input', 'pin-setup-strength');
   // Security modal ESC to close
   document.addEventListener('keydown', e => {
@@ -7914,6 +8080,15 @@ async function init() {
   initInstallPrompt();
   initIdleLock();           // heartbeat + re-lock after a long idle gap
   capturePendingInvite();   // park ?join=CODE so it survives the login/register wall
+  // A password-reset link takes priority over every other auth path: the person
+  // following it can't sign in (that's why they're here), so skip the remembered
+  // session / PIN-unlock routing entirely and go straight to setting a password.
+  if (capturePendingReset()) {
+    document.getElementById('login-overlay').classList.remove('hidden');
+    document.getElementById('app').classList.add('hidden');
+    await showResetScreen();
+    return;
+  }
   // Show overlay while we check auth state
   document.getElementById('login-overlay').classList.remove('hidden');
   document.getElementById('app').classList.add('hidden');

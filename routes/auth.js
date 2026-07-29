@@ -12,11 +12,25 @@ const {
   verifyAuthenticationResponse,
 } = require('@simplewebauthn/server');
 const cache    = require('../cache');
+const mailer   = require('../mailer');
 const {
   signAccessToken, signToken, signGuestToken,
   authMiddleware,
   parseBrowser, parseOS, parseDeviceName, getIP,
 } = require('../middleware/auth');
+
+// Absolute base URL for links we put in emails. A relative path is useless in an
+// inbox, so this has to resolve to something externally reachable: an explicit
+// ORIGIN wins, then the URL Render injects automatically, then the proxy headers
+// of the request itself, and only then a localhost fallback for dev.
+function resolveOrigin(req) {
+  const explicit = (process.env.ORIGIN || process.env.RENDER_EXTERNAL_URL || '').trim();
+  if (explicit) return explicit.replace(/\/+$/, '');
+  const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim();
+  const host  = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+  if (host) return `${proto}://${host}`;
+  return `http://localhost:${process.env.PORT || 4173}`;
+}
 
 const router = express.Router();
 
@@ -323,16 +337,85 @@ router.delete('/auth/pin', authMiddleware, async (req, res, next) => {
 });
 
 // ── POST /api/auth/forgot-password ───────────────────────────
+// Emails a single-use reset link. The response is deliberately IDENTICAL
+// whether or not the account exists and whether or not it has an email on
+// file — otherwise this endpoint becomes an oracle for "does this user exist
+// here", which is exactly what the login route already takes care to avoid.
 router.post('/auth/forgot-password', resetLimiter, async (req, res, next) => {
   const { credential } = req.body || {};
   if (!credential) return res.status(400).json({ error: 'Credential required' });
+  const GENERIC = 'If that account exists, we\'ve sent a reset link to its email address. Check your inbox and spam folder.';
   try {
-    const user = await db.getUserByCredential(credential.trim());
-    if (user) {
-      await db.logSecurity(user.id, 'reset_requested', { credential: maskCredential(credential) },
-        getIP(req), req.headers['user-agent'] || '', null, null);
+    const user = await db.getUserByCredential(String(credential).trim());
+    if (!user || !user.email) {
+      // Log the attempt (masked) for the security timeline, then answer exactly
+      // as if we had sent something.
+      if (user) {
+        await db.logSecurity(user.id, 'reset_requested_no_email',
+          { credential: maskCredential(credential) },
+          getIP(req), req.headers['user-agent'] || '', null, null).catch(() => {});
+      }
+      return res.json({ message: GENERIC });
     }
-    res.json({ message: 'If that account exists, your admin can reset your PIN from Team → Reset PIN.' });
+
+    const { token, minutes } = await db.createPasswordReset(user.id, getIP(req));
+    const link = `${resolveOrigin(req)}/?reset=${encodeURIComponent(token)}`;
+    const mail = mailer.passwordResetEmail({ displayName: user.display_name, link, minutes });
+    const sent = await mailer.sendMail({ to: user.email, ...mail });
+
+    await db.logSecurity(user.id, 'reset_requested',
+      { credential: maskCredential(credential), delivered: sent.sent, reason: sent.reason || '' },
+      getIP(req), req.headers['user-agent'] || '', null, null).catch(() => {});
+
+    // With no SMTP credentials configured the link would otherwise vanish. Print
+    // it to the server log so the flow is fully testable before a provider is
+    // wired up — gated on non-production so a real deployment never logs a live
+    // reset token.
+    if (!sent.sent && process.env.NODE_ENV !== 'production') {
+      console.log(`[auth] SMTP not configured — reset link for ${user.display_name}: ${link}`);
+    }
+    res.json({ message: GENERIC });
+  } catch (err) { next(err); }
+});
+
+// ── GET /api/auth/reset-password?token= ──────────────────────
+// Checked when the reset screen opens so an expired or already-used link says
+// so up front, instead of after the user has typed a new password twice.
+router.get('/auth/reset-password', async (req, res, next) => {
+  try {
+    const info = await db.peekPasswordReset(String(req.query.token || ''));
+    if (!info || !info.valid) {
+      return res.status(400).json({
+        valid: false,
+        error: info && info.reason === 'used'
+          ? 'That link has already been used. Request a new one.'
+          : 'That link has expired. Request a new one.',
+      });
+    }
+    res.json({ valid: true, displayName: info.displayName });
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/auth/reset-password ────────────────────────────
+router.post('/auth/reset-password', resetLimiter, async (req, res, next) => {
+  const token = String((req.body || {}).token || '');
+  const pw    = String((req.body || {}).password || '').trim();
+  if (!token) return res.status(400).json({ error: 'Reset token required' });
+  // Same strength rule as registration and the voluntary change flow.
+  const pwErr = validatePassword(pw);
+  if (pwErr) return res.status(400).json({ error: pwErr });
+  try {
+    const result = await db.consumePasswordReset(token, pw);
+    if (!result.ok) {
+      return res.status(400).json({
+        error: result.reason === 'used'    ? 'That link has already been used. Request a new one.'
+             : result.reason === 'expired' ? 'That link has expired. Request a new one.'
+             : 'That reset link is not valid. Request a new one.',
+      });
+    }
+    await db.logSecurity(result.userId, 'password_reset_completed', {},
+      getIP(req), req.headers['user-agent'] || '', null, null).catch(() => {});
+    res.json({ success: true, username: result.displayName });
   } catch (err) { next(err); }
 });
 

@@ -5600,3 +5600,46 @@ body{
   color: var(--text);
 }
 .import-skip-list.import-failed i { color: var(--text-muted); }
+
+/* ══════════════════════════════════════════════════════════
+   FORGOT / RESET PASSWORD — emailed reset-link flow.
+   ══════════════════════════════════════════════════════════ */
+.forgot-box {
+  margin-bottom: 10px; padding: 14px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+}
+.forgot-title { font-size: 14px; font-weight: 650; color: var(--text); margin-bottom: 4px; }
+.forgot-sub   { font-size: 12.5px; color: var(--text-muted); line-height: 1.55; margin: 0 0 10px; }
+/* This input sits outside a .form-group, so the app's shared input rules don't
+   reach it — without explicit styling it collapsed to a ~22px unstyled box. */
+.forgot-box input[type="text"] {
+  width: 100%; margin-bottom: 9px;
+  padding: 11px 12px; min-height: 44px;   /* 44px: one-handed touch target */
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--card-bg); color: var(--text);
+  font-family: inherit; font-size: 16px;  /* 16px stops iOS zooming on focus */
+  outline: none;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.forgot-box input[type="text"]:focus {
+  border-color: var(--primary);
+  box-shadow: var(--ring, 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent));
+}
+#forgot-send-btn { margin-bottom: 8px; }
+.forgot-msg { font-size: 12.5px; line-height: 1.55; margin: 0; min-height: 0; }
+.forgot-msg.is-ok  { color: #0f9d58; }
+.forgot-msg.is-bad { color: #dc2626; }
+[data-theme="dark"] .forgot-msg.is-ok  { color: #6ee7b7; }
+[data-theme="dark"] .forgot-msg.is-bad { color: #fca5a5; }
+.forgot-alt {
+  font-size: 11.5px; color: var(--text-muted); line-height: 1.55;
+  margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--border);
+}
+/* Inline validity feedback on the registration email field. */
+.username-hint.hint-ok  { color: #0f9d58; }
+.username-hint.hint-bad { color: #dc2626; }
+[data-theme="dark"] .username-hint.hint-ok  { color: #6ee7b7; }
+[data-theme="dark"] .username-hint.hint-bad { color: #fca5a5; }
+/* A success note reuses .login-error's slot, so recolour it when it's good news. */
+.login-error.login-ok { color: #0f9d58; }
+[data-theme="dark"] .login-error.login-ok { color: #6ee7b7; }

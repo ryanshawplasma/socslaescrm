@@ -180,9 +180,18 @@ router.get('/check-username', checkUsernameLimiter, async (req, res, next) => {
 
 // ── POST /api/register (public self-registration) ─────────────
 router.post('/register', registerLimiter, async (req, res, next) => {
-  const { name, pin, mobile, password, inviteCode, fingerprint, businessType } = req.body || {};
+  const { name, pin, mobile, email, password, inviteCode, fingerprint, businessType } = req.body || {};
   const clean = (name || '').toLowerCase().trim();
   if (!isValidUsername(clean)) return res.status(400).json({ error: 'Invalid username — use 3–20 lowercase letters, numbers, _ or . only' });
+  // Email is required from here on: it's the ONLY way to recover an account
+  // without an admin, so an account created without one is unrecoverable by its
+  // own owner. Deliberately permissive validation — the real proof that an
+  // address works is that the reset mail arrives.
+  const mail = String(email || '').trim().toLowerCase();
+  if (!mail) return res.status(400).json({ error: 'Email is required — it\'s how you reset your password' });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(mail) || mail.length > 254) {
+    return res.status(400).json({ error: 'That email doesn\'t look right' });
+  }
   // Trim before validating AND storing — login trims before bcrypt.compare, so
   // storing an untrimmed password with leading/trailing whitespace would lock
   // the account out permanently.
@@ -192,8 +201,25 @@ router.post('/register', registerLimiter, async (req, res, next) => {
   // PIN is now optional (device quick-unlock); validate only if supplied.
   if (pin && !/^\d{4,6}$/.test(String(pin))) return res.status(400).json({ error: 'PIN must be 4–6 digits' });
   try {
+    // Check the address before creating anything. There's a unique index on
+    // LOWER(email), so without this the insert fails midway and the user gets a
+    // generic "already exists" that doesn't say WHICH field collided.
+    const { rows: dupe } = await pool.query(
+      `SELECT 1 FROM users WHERE LOWER(email) = $1 LIMIT 1`, [mail]);
+    if (dupe.length) {
+      return res.status(409).json({ error: 'That email is already registered — try signing in, or reset your password' });
+    }
     const result = await db.createUser(clean, pin ? String(pin) : '', 'sales', '', pw);
     if (!result.ok) return res.status(409).json({ error: result.message });
+    // Store the email immediately after creation. If this ever failed the
+    // account would exist with no recovery address, so it is NOT best-effort:
+    // a failure here deletes the half-made account rather than stranding it.
+    try {
+      await pool.query(`UPDATE users SET email = $1 WHERE display_name = $2`, [mail, clean]);
+    } catch (mailErr) {
+      await pool.query(`DELETE FROM users WHERE display_name = $1`, [clean]).catch(() => {});
+      return res.status(409).json({ error: 'That email is already registered — try signing in, or reset your password' });
+    }
     // Industry picked during sign-up → the whole app (terms, stages, AI vocab,
     // demo text) speaks their trade from the very first screen. Unknown/missing
     // values fall back to 'factory' inside setUserBusiness, so this is safe.

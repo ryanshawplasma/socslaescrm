@@ -123,7 +123,7 @@
       '}',
       '#dive-splash-logo::after{',
       '  content:""; position:absolute; inset:0;',
-      '  background:no-repeat center/52% url(data:image/svg+xml,%3Csvg%20xmlns%3D%22http://www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23fff%22%20stroke-width%3D%222.4%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M4%2016L10%2010L14%2013.5L20%206.5%22/%3E%3Cpath%20d%3D%22M15.5%206.5L20%206.5L20%2011%22/%3E%3C/svg%3E);',
+      '  background:no-repeat center/74% url(data:image/svg+xml,%3Csvg%20xmlns%3D%22http://www.w3.org/2000/svg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Ccircle%20cx%3D%228.2%22%20cy%3D%2214.4%22%20r%3D%223.6%22%20fill%3D%22%23fff%22/%3E%3Ccircle%20cx%3D%2223.8%22%20cy%3D%2214.4%22%20r%3D%223.6%22%20fill%3D%22%23fff%22/%3E%3Cellipse%20cx%3D%2216%22%20cy%3D%2216.2%22%20rx%3D%227.1%22%20ry%3D%227.4%22%20fill%3D%22%23fff%22/%3E%3Cellipse%20cx%3D%2216%22%20cy%3D%2219.4%22%20rx%3D%224.5%22%20ry%3D%223.4%22%20fill%3D%22%23DCEEFB%22/%3E%3Ccircle%20cx%3D%2213.5%22%20cy%3D%2214.2%22%20r%3D%221.25%22%20fill%3D%22%230B2338%22/%3E%3Ccircle%20cx%3D%2218.5%22%20cy%3D%2214.2%22%20r%3D%221.25%22%20fill%3D%22%230B2338%22/%3E%3Cpath%20d%3D%22M13.9%2019.4c.6.8%201.3%201.2%202.1%201.2s1.5-.4%202.1-1.2%22%20fill%3D%22none%22%20stroke%3D%22%230B2338%22%20stroke-width%3D%221.15%22%20stroke-linecap%3D%22round%22/%3E%3C/svg%3E);',
       '}',
       '#dive-splash-word{',
       '  font-family:Fraunces, Georgia, "Times New Roman", serif;',

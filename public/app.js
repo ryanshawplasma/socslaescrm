@@ -696,6 +696,18 @@ function resetAccountScopedState() {
   state.myProducts   = [];
   state.selectedLeads.clear();
   state.dbSelected.clear();
+  // The AI understanding card is account-scoped too. It holds the previous
+  // user's parsed lead (name/phone/notes) and an "Update" button still wired to
+  // THEIR lead id — and because showLoginPage() only toggles a class on #app,
+  // that card stays in the DOM across a sign-out. Left alone, the next person to
+  // sign in on this device saw it and could tap Update, writing to a lead they
+  // have no relationship to. _chatInited must reset too, or renderPage('chat')
+  // takes its "already initialised" branch and never rebuilds the card area.
+  aiSession = null;
+  window._aiParsedData = {};
+  _chatInited = false;
+  const _cardArea = document.getElementById('ai-card-area');
+  if (_cardArea) _cardArea.innerHTML = '';
 }
 
 // Kill every background loop the app runs while signed in. Without this,
@@ -978,7 +990,9 @@ async function offerDeviceSetup(loginData) {
   // session-expiry re-login as someone else) must not inherit the previous
   // account's workspace scope: a stale crm_org_id would make the first
   // loadLeads() 403. Resetting also clears the previous user's cached leads.
-  const prevUser = localStorage.getItem('crm_user');
+  // Fall back to crm_last_user: the session-expiry path clears crm_user, so
+  // reading only that key left this guard blind exactly when it was needed.
+  const prevUser = localStorage.getItem('crm_user') || localStorage.getItem('crm_last_user');
   if (prevUser && prevUser.toLowerCase() !== String(username).toLowerCase()) resetAccountScopedState();
   storeTokens(accessToken, refreshToken);
   localStorage.setItem('crm_user',      username);
@@ -1463,6 +1477,14 @@ async function apiFetch(path, opts = {}) {
       res = await makeRequest();
     } else {
       stopBackgroundTimers();   // stop the 401 storm from heartbeat/auto-refresh
+      // Session expiry is a sign-out like any other: drop the previous account's
+      // leads/teams/stats and cached rows. Skipping this leaked data across
+      // accounts — the next person to sign in on this device saw the previous
+      // user's leads painted from stale in-memory state until the fresh
+      // loadLeads() landed. It matters doubly because we clear crm_user just
+      // below, which is the very key offerDeviceSetup() reads to notice that a
+      // *different* account is signing in; without this call that guard is dead.
+      resetAccountScopedState();
       clearTokens();
       localStorage.removeItem('crm_role');
       localStorage.removeItem('crm_user');
@@ -1598,7 +1620,11 @@ function getLeadDest() {
 function setLeadDest(v) { localStorage.setItem('crm_lead_dest', v == null ? '' : String(v)); }
 
 function onLeadDestChange(v) {
-  setLeadDest(v);
+  // Deliberately does NOT persist: this select is the Add-form's per-lead "Save
+  // to" override, and createLead reads its value directly at submit time. Saving
+  // it here made a one-off cross-post stick as the global default — the exact
+  // behaviour createLead's comment says this selector must avoid, and a quiet
+  // way for later leads to land in a team the user didn't intend.
   const wrap = document.querySelector('.dest-3d-wrap');
   if (wrap) { wrap.classList.remove('dest-pop'); void wrap.offsetWidth; wrap.classList.add('dest-pop'); }
 }
@@ -2335,6 +2361,17 @@ async function runImport() {
           result.skipped.slice(0, 12).map(s => `Row ${s.row}: ${escHtml(s.reason)}`).join('<br>')
         }${result.skipped.length > 12 ? `<br>…and ${result.skipped.length - 12} more` : ''}</div>`
       : '';
+    // Rows the server accepted but couldn't write. Shown separately from
+    // "skipped" (which is a deliberate choice, like a duplicate) so a genuine
+    // write failure is never mistaken for a clean import — re-running a partial
+    // import is how you end up with duplicates of everything that did land.
+    const failedRows = result.failed || [];
+    const failedHtml = failedRows.length
+      ? `<div class="import-skip-list import-failed"><b>⚠️ ${failedRows.length} row${failedRows.length === 1 ? '' : 's'} could not be saved:</b><br>${
+          failedRows.slice(0, 12).map(s => `Row ${s.row}: ${escHtml(s.reason)}`).join('<br>')
+        }${failedRows.length > 12 ? `<br>…and ${failedRows.length - 12} more` : ''}<br>
+        <i>Everything else imported — re-import only these rows.</i></div>`
+      : '';
     // AI product normalisation summary — "N auto-matched, M need review".
     const nNorm = result.normalized || 0;
     const nUnmatched = (result.unmatched || []).length;
@@ -2345,7 +2382,7 @@ async function runImport() {
       : '';
     document.getElementById('import-result-summary').innerHTML = `
       <div class="import-result-big">✅ Imported <b>${result.added}</b> of ${result.total} lead${result.total === 1 ? '' : 's'}</div>
-      ${normHtml}${reviewHtml}${skippedHtml}`;
+      ${normHtml}${reviewHtml}${failedHtml}${skippedHtml}`;
     document.getElementById('import-step-map').classList.add('hidden');
     document.getElementById('import-step-done').classList.remove('hidden');
   } catch (err) {
@@ -2837,6 +2874,17 @@ async function renderMap() {
     return;
   }
   await ensureLeaflet();   // lazy-load Leaflet + its CSS the first time the map opens
+  // Re-check after the await. A second renderMap() can start while the first is
+  // still downloading Leaflet (tap Map → navigate away → tap Map again, easy to
+  // do on a phone). Both would have passed the guard above with _leafletMap
+  // still null, and the loser would call L.map() on an already-initialised
+  // container, throwing "Map container is already initialized".
+  if (_leafletMap) {
+    _leafletMap.invalidateSize();
+    Object.values(agentData).forEach(a => upsertAgentMarker(a));
+    renderFactoryChecklist();
+    return;
+  }
 
   const map = L.map('crm-map', { zoomControl: true });
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -3435,14 +3483,19 @@ function renderDashboard() {
   };
   const card = (accent, key, label, value, sub) => {
     const group = key === 'total' ? '' : key;   // total → all leads
+    // `label` is not always a literal — the Lost card passes stageLabel('Lost'),
+    // which resolves to whatever wording the team configured in their business
+    // profile. Escape it in both slots; `group`, `value` and `sub` are internal
+    // keys and computed numbers.
+    const safeLabel = escHtml(label);
     return `
     <div class="stat-card stat-${accent} stat-clickable" role="button" tabindex="0"
-         title="View ${label.toLowerCase()} in Leads"
+         title="View ${escHtml(String(label).toLowerCase())} in Leads"
          onclick="dashFilter('${group}')"
          onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();dashFilter('${group}')}">
       <div class="stat-top">
         <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[key]}</svg></span>
-        <span class="stat-label">${label}</span>
+        <span class="stat-label">${safeLabel}</span>
       </div>
       <div class="stat-value">${value}</div>
       <div class="stat-sub">${sub} ›</div>
@@ -4132,6 +4185,28 @@ async function bulkDeleteSelected() {
 
 // A readable, stacked card per lead — far easier than the wide side-by-side
 // table on a phone/tablet. Tap a card to edit.
+// A relative, colour-coded due label — the same vocabulary the Follow-ups
+// screen uses, so "Overdue 3d" reads identically everywhere in the app. Reuses
+// the .fu-due classes rather than inventing a second set of urgency colours.
+// Returns null when the lead has no (parseable) follow-up date.
+function leadDueChip(l) {
+  const raw = String(l.follow_up || '').trim();
+  if (!raw) return null;                  // nothing set — render no chip at all
+  const d = parseDMY(raw);
+  // Free-text follow-ups ("ASAP", "next week") reach us through CSV import,
+  // which passes a non-date column through verbatim. Show the text rather than
+  // hiding the follow-up entirely — the Follow-ups screen never drops it, and a
+  // lead silently losing its only scheduling cue in the list is worse than an
+  // unstyled one.
+  if (!d) return { cls: 'fu-future', label: escHtml(raw) };
+  const diff = Math.round((d - fuToday()) / 86400000);
+  if (diff <   0) return { cls: 'fu-overdue', label: `Overdue ${-diff}d` };
+  if (diff === 0) return { cls: 'fu-today',   label: 'Today' };
+  if (diff === 1) return { cls: 'fu-soon',    label: 'Tomorrow' };
+  if (diff <=  7) return { cls: 'fu-soon',    label: `In ${diff}d` };
+  return { cls: 'fu-future', label: escHtml(l.follow_up) };
+}
+
 function buildCards(leads) {
   if (!leads.length) return emptyState(state.leads.length
     ? 'No leads match your filters.'
@@ -4142,13 +4217,30 @@ function buildCards(leads) {
     const typeTag  = l.lead_type ? `<span class="lead-card-type">${TYPE_EMOJI[l.lead_type] || ''} ${escHtml(l.lead_type)}</span>` : '';
     const stageCol = STAGE_COLORS[l.stage] || '#64748b';
     const c        = (l.contacts && l.contacts[0]) || { person_name: l.person_in_charge, contact: l.contact };
-    const person   = [c.person_name, c.contact].filter(Boolean).map(escHtml).join(' · ');
-    // All items on the lead, one chip per product (multi-product friendly).
+
+    // Urgency reads first: scanning fifty leads with one thumb, "Overdue 3d"
+    // lands instantly where a raw 12/08/2026 makes you do the arithmetic.
+    const due = leadDueChip(l);
+
+    // One muted identity line (number · person · phone · owner) replaces the old
+    // stack of emoji-prefixed rows — same information, roughly half the height,
+    // so noticeably more cards fit on a phone screen.
+    const meta = [
+      (l.factory_number && l.factory_name) ? escHtml(l.factory_number) : '',
+      escHtml(c.person_name || ''),
+      escHtml(c.contact || ''),
+      showOwner ? escHtml(l.created_by || '') : '',
+    ].filter(Boolean).join(' · ');
+
+    // Products: first two, then a count. A seven-item lead used to render a card
+    // three times taller than its neighbours and wreck the scan rhythm.
     const itemLines = leadItemLines(l);
-    const prod = itemLines.length
-      ? itemLines.map(t => `<span class="lead-item-chip">${escHtml(t)}</span>`).join('')
+    const chips = itemLines.slice(0, 2)
+      .map(t => `<span class="lead-item-chip">${escHtml(t)}</span>`).join('');
+    const more = itemLines.length > 2
+      ? `<span class="lead-item-chip lead-item-more" title="${escHtml(itemLines.slice(2).join(', '))}">+${itemLines.length - 2} more</span>`
       : '';
-    const line = (icon, val, clip) => val ? `<div class="lead-card-line${clip ? ' lead-card-line-clip' : ''}"><span>${icon}</span> ${val}</div>` : '';
+
     // Thumb-reachable quick actions right on the card — call / WhatsApp the
     // primary contact without opening the detail sheet (stopPropagation so the
     // tap doesn't also open the lead).
@@ -4159,19 +4251,19 @@ function buildCards(leads) {
            onkeydown="if(event.key==='Enter'){openLeadDetail(${l.rowIndex})}">
         <div class="lead-card-head">
           <div class="lead-card-name">${String(l.visibility) === 'private' ? '<span title="Hidden from the team">🙈</span> ' : ''}${escHtml(l.factory_name || l.factory_number || '—')}</div>
-          ${typeTag}
+          ${due ? `<span class="lead-card-due ${due.cls}">${due.label}</span>` : ''}
         </div>
-        ${l.factory_number && l.factory_name ? `<div class="lead-card-num">${escHtml(l.factory_number)}</div>` : ''}
-        ${line('👤', person, true)}
-        ${line('📦', prod)}
-        ${line('📍', escHtml(l.area || ''), true)}
-        ${line('📅', l.follow_up ? escHtml(l.follow_up) : '')}
-        ${showOwner ? line('🙋', escHtml(l.created_by || ''), true) : ''}
+        ${meta ? `<div class="lead-card-meta">${meta}</div>` : ''}
+        ${l.area ? `<div class="lead-card-area">📍 ${escHtml(l.area)}</div>` : ''}
+        ${itemLines.length ? `<div class="lead-card-items">${chips}${more}</div>` : ''}
         <div class="lead-card-foot">
-          ${state.role === 'guest'
-            ? `<span class="lead-card-stage" style="--stg:${stageCol}">${escHtml(l.stage ? stageLabel(l.stage) : '—')}</span>`
-            : `<button type="button" class="lead-card-stage lead-card-stage-btn" style="--stg:${stageCol}" title="Tap to change stage"
-                 onclick="event.stopPropagation(); openStagePicker(${l.rowIndex})">${escHtml(l.stage ? stageLabel(l.stage) : '—')} ▾</button>`}
+          <div class="lc-status">
+            ${typeTag}
+            ${state.role === 'guest'
+              ? `<span class="lead-card-stage" style="--stg:${stageCol}">${escHtml(l.stage ? stageLabel(l.stage) : '—')}</span>`
+              : `<button type="button" class="lead-card-stage lead-card-stage-btn" style="--stg:${stageCol}" title="Tap to change stage"
+                   onclick="event.stopPropagation(); openStagePicker(${l.rowIndex})">${escHtml(l.stage ? stageLabel(l.stage) : '—')} ▾</button>`}
+          </div>
           ${(tel || wa) ? `<div class="lc-quick">
             ${tel ? `<a class="lc-q lc-q-call" href="${escHtml(tel)}" onclick="event.stopPropagation()" title="Call" aria-label="Call">📞</a>` : ''}
             ${wa  ? `<a class="lc-q lc-q-wa" href="${escHtml(wa)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="WhatsApp" aria-label="WhatsApp">💬</a>` : ''}
@@ -5871,6 +5963,14 @@ function openAddModal() {
     const el = document.getElementById('f-' + f);
     if (el) el.value = '';
   });
+  // A new lead has no row yet, so the "Hide from team" toggle can't apply to it.
+  // Clear it explicitly: openEditModal binds the toggle to the edited lead via
+  // dataset.row, and without this reset that binding survived Cancel → Add, so
+  // flipping the toggle on the Add form PATCHed the *previously edited* lead.
+  const hideSection = document.getElementById('modal-hide-section');
+  const hideToggle  = document.getElementById('f-hide-toggle');
+  if (hideSection) hideSection.style.display = 'none';
+  if (hideToggle) { hideToggle.checked = false; delete hideToggle.dataset.row; }
   // Pre-fill default area if set in profile
   const defaultArea = localStorage.getItem('crm_default_area') || '';
   if (defaultArea) {
@@ -6563,6 +6663,15 @@ async function handleFormSubmit(e) {
     }
   });
   data.stage_number = STAGE_NUMBERS[data.stage] ?? '';
+  // A lead needs at least something to identify it by. Nothing stopped an empty
+  // submit before, so tapping Save on a blank form created a nameless, numberless
+  // row that showed as "—" in every list and could only be found to delete it.
+  if (!data.factory_name && !data.factory_number) {
+    toast(`Add a name or number for this ${T('entity').toLowerCase()} first`, 'error');
+    const first = document.getElementById('f-factory_name') || document.getElementById('f-factory_number');
+    if (first) first.focus();
+    return;
+  }
   data.contacts = collectContacts();
   data.items    = collectItems();
   if (data.items.length) {
@@ -6958,6 +7067,13 @@ async function switchOrg(id) {
   // Personal/All-leads leaves the last team destination intact (so an admin can
   // view everything while new leads still pool into their team).
   if (id) setLeadDest(id);
+  // Every lead filter is scoped to the workspace you were just in — sub-Team
+  // ids, salesman names, product names and list ids all differ across
+  // workspaces. Carrying them over matched nothing in the new workspace, so the
+  // Leads page and every dashboard KPI read zero while the filter selects
+  // displayed "All" (no <option> matches, so the browser shows the first one) —
+  // a team with real data looking empty, with nothing on screen explaining why.
+  _resetLeadFilters();
   const team = state.myTeams.find(t => String(t.id) === String(id));
   toast(team ? `Workspace: ${team.name} · new leads save here` : 'Personal workspace');
   try {
@@ -8060,7 +8176,7 @@ async function loginWithBiometric() {
     // Logged in — persist a FULL remembered session (refresh token + expiry) via
     // storeTokens, exactly like password login, so it survives past the 15-minute
     // access-token TTL instead of silently logging the user out.
-    const prevUser = localStorage.getItem('crm_user');
+    const prevUser = localStorage.getItem('crm_user') || localStorage.getItem('crm_last_user');
     if (prevUser && prevUser.toLowerCase() !== String(data.username).toLowerCase()) resetAccountScopedState();
     storeTokens(data.accessToken || data.token, data.refreshToken);
     localStorage.setItem('crm_role',      data.role);
@@ -8271,18 +8387,40 @@ const ws = {
   myTeams:      [],
 };
 
-function wsTeamApiFetch(path, opts = {}) {
-  if (!ws.activeTeam) return Promise.reject(new Error('No active team'));
-  const headers = { 'Content-Type': 'application/json' };
-  const token = localStorage.getItem('crm_token');
-  if (token) headers['Authorization'] = 'Bearer ' + token;
-  headers['X-Team-ID'] = String(ws.activeTeam.id);
-  return fetch(path, { headers, ...opts, headers })
-    .then(async r => {
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || `${r.status}`);
-      return d;
-    });
+async function wsTeamApiFetch(path, opts = {}) {
+  if (!ws.activeTeam) throw new Error('No active team');
+  const send = () => {
+    const headers = { 'Content-Type': 'application/json' };
+    const token = localStorage.getItem('crm_token');
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    headers['X-Team-ID'] = String(ws.activeTeam.id);
+    return fetch(path, { ...opts, headers });
+  };
+  let r = await send();
+  // Team-scoped calls used to ignore 401 completely. Once the 15-minute access
+  // token lapsed, every Workspace action — remove member, regenerate invite,
+  // approve a join request, all the Teams CRUD — surfaced a raw "token_expired"
+  // string and the button simply looked dead until a manual page reload.
+  // Refresh once and retry, matching what apiFetch already does.
+  if (r.status === 401) {
+    if (await tryRefreshToken()) {
+      r = await send();
+    } else {
+      stopBackgroundTimers();
+      resetAccountScopedState();
+      clearTokens();
+      localStorage.removeItem('crm_role');
+      localStorage.removeItem('crm_user');
+      state.role = null;
+      showLoginPage();
+      throw new Error('Session expired. Please log in again.');
+    }
+  }
+  // A gateway/proxy error returns HTML, not JSON — don't let the parse itself
+  // throw an unrelated SyntaxError over the real status.
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || `${r.status}`);
+  return d;
 }
 
 async function renderWorkspace() {
@@ -9041,7 +9179,7 @@ async function loadSessionsList() {
           <div class="sec-row-title">${escHtml(s.device_name || s.browser || 'Unknown')} ${s.current ? '<span class="sec-badge">Current</span>' : ''}</div>
           <div class="sec-row-meta">${escHtml(s.os || '')} · ${escHtml(s.ip_address || '')} · Last active ${fmtRelTime(s.last_active_at)}</div>
         </div>
-        ${!s.current ? `<button class="btn btn-ghost btn-sm" onclick="revokeSession('${escHtml(s.id)}')">Revoke</button>` : ''}
+        ${!s.current ? `<button class="btn btn-ghost btn-sm" onclick="revokeSession('${escAttr(s.id)}')">Revoke</button>` : ''}
       </div>
     `).join('');
   } catch (e) { el.innerHTML = `<p class="sec-error">${escHtml(e.message)}</p>`; }
@@ -9074,7 +9212,7 @@ async function loadDevicesList() {
           <div class="sec-row-title">${escHtml(d.device_name)} ${d.id === myDevId ? '<span class="sec-badge">This device</span>' : ''}</div>
           <div class="sec-row-meta">${escHtml(d.browser)} · ${escHtml(d.os)} · ${fmtRelTime(d.last_active_at)}</div>
         </div>
-        <button class="btn btn-ghost btn-sm sec-danger" onclick="removeDevice('${escHtml(d.id)}')">Remove</button>
+        <button class="btn btn-ghost btn-sm sec-danger" onclick="removeDevice('${escAttr(d.id)}')">Remove</button>
       </div>
     `).join('');
   } catch (e) { el.innerHTML = `<p class="sec-error">${escHtml(e.message)}</p>`; }
@@ -9083,11 +9221,18 @@ async function loadDevicesList() {
 async function removeDevice(id) {
   if (!confirm('Remove this trusted device? Its sessions and PIN will be revoked.')) return;
   try {
+    const isThisDevice = id === localStorage.getItem('crm_device_id');
     await apiFetch(`/api/devices/${id}`, { method: 'DELETE' });
-    if (id === localStorage.getItem('crm_device_id')) {
+    if (isThisDevice) {
       localStorage.removeItem('crm_device_id');
       localStorage.removeItem('crm_device_trusted');
       localStorage.removeItem('crm_device_has_pin');
+      // The server revokes this device's sessions too, so the current session is
+      // already dead — only the device flags were being cleared, leaving the UI
+      // "logged in" until the next request 401'd. Sign out properly instead.
+      toast('Device removed — signing you out');
+      logout();
+      return;
     }
     loadDevicesList(); toast('Device removed');
   } catch (e) { toast(e.message, 'error'); }
@@ -9429,6 +9574,33 @@ function aiClearCard(uuid) {
 }
 
 // ── Confirm & save ────────────────────────────────────────────
+// An AI update message describes a DELTA ("M277 bhi latex 100kg daalo") — the
+// model only extracts what THIS message mentions. But db.updateLead replaces
+// lead_items wholesale whenever an items array is present, so sending the
+// parsed items straight through permanently deleted every product the user
+// didn't happen to name. Merge instead: a product already on the lead has its
+// quantity/rate refreshed, a genuinely new one is appended.
+//
+// This deliberately errs toward keeping products. A phrasing that MEANT to
+// replace ("change it to only latex") leaves a stale row the user can delete in
+// one tap from Edit — whereas the old behaviour destroyed data outright, and
+// there is no soft-delete or undo to recover it from.
+function mergeLeadItems(existingRow, incoming) {
+  const lead    = findLead(existingRow);
+  const current = (lead && Array.isArray(lead.items) ? lead.items : [])
+    .filter(it => (it.product || '').trim());
+  if (!current.length) return incoming;
+  const key    = s => String(s || '').trim().toLowerCase();
+  const merged = current.map(it => ({ ...it }));
+  incoming.forEach(inc => {
+    const hit = merged.find(m => key(m.product) === key(inc.product));
+    if (!hit) { merged.push(inc); return; }
+    if (String(inc.quantity || '').trim()) hit.quantity = inc.quantity;
+    if (String(inc.rate     || '').trim()) hit.rate     = inc.rate;
+  });
+  return merged;
+}
+
 async function aiConfirmFromCard(uuid) {
   const d = window._aiParsedData?.[uuid];
   if (!d) return;
@@ -9473,10 +9645,11 @@ async function aiConfirmFromCard(uuid) {
         .forEach(k => { if (parsed[k] != null && String(parsed[k]).trim() !== '') upd[k] = parsed[k]; });
       if (upd.stage) upd.stage_number = STAGE_NUMBERS[upd.stage] ?? 0;
       if (realItems.length) {
-        upd.items    = realItems;
-        upd.product  = realItems[0].product;
-        upd.quantity = realItems[0].quantity;
-        upd.rate     = realItems[0].rate;
+        const mergedItems = mergeLeadItems(existingRow, realItems);
+        upd.items    = mergedItems;
+        upd.product  = mergedItems[0].product;
+        upd.quantity = mergedItems[0].quantity;
+        upd.rate     = mergedItems[0].rate;
       }
       auditPayload = upd;
       await apiFetch(`/api/leads/${existingRow}`, { method: 'PUT', body: JSON.stringify(upd) });
@@ -9914,6 +10087,13 @@ async function aiAnswerClarification(answer) {
 
 async function aiConfirmSave() {
   if (!aiSession?.parsed) return;
+  // Double-submit guard. The sibling flow (aiConfirmFromCard) disables its
+  // button before awaiting; this one — the main chat/voice/photo path — did not,
+  // so a fast double-tap, or one tap on a slow connection, fired two concurrent
+  // createLead() calls and produced duplicate leads. Guard on the session rather
+  // than the button because this card is rebuilt on re-render.
+  if (aiSession._saving) return;
+  aiSession._saving = true;
   const parsed = aiSession.parsed;
   // Drop the model's placeholder empty item so it can't wipe real products.
   const realItems = (parsed.items || []).filter(it => (it.product || '').trim());
@@ -9940,7 +10120,11 @@ async function aiConfirmSave() {
     const existingRow = aiSession.existingRow;
     let savedRow  = null;
     let savedName = parsed.factory_name || parsed.factory_number || '';
-    if (existingRow && existingRow !== -1) {
+    // `!= null` rather than a truthy test, matching renderUnderstandingCard and
+    // aiConfirmFromCard. A lead id of 0 is falsy, so the card could show
+    // "🔄 Update" (computed with the null-safe check) while this branch fell
+    // through and silently created a duplicate instead.
+    if (existingRow != null && existingRow !== -1) {
       // Editing an existing lead from chat: only send the fields the user
       // actually gave. updateLead() writes every non-undefined key, so passing
       // '' for an unmentioned field would BLANK it — this keeps "make Arun's
@@ -9950,8 +10134,9 @@ async function aiConfirmSave() {
         .forEach(k => { if (parsed[k] != null && String(parsed[k]).trim() !== '') upd[k] = parsed[k]; });
       if (upd.stage) upd.stage_number = STAGE_NUMBERS[upd.stage] ?? 0;
       if (realItems.length) {
-        upd.items   = realItems;
-        upd.product = realItems[0].product; upd.quantity = realItems[0].quantity; upd.rate = realItems[0].rate;
+        const mergedItems = mergeLeadItems(existingRow, realItems);
+        upd.items   = mergedItems;
+        upd.product = mergedItems[0].product; upd.quantity = mergedItems[0].quantity; upd.rate = mergedItems[0].rate;
       }
       await apiFetch(`/api/leads/${existingRow}`, { method: 'PUT', body: JSON.stringify(upd) });
       savedRow = existingRow;
@@ -9972,6 +10157,11 @@ async function aiConfirmSave() {
     // the chat stays interactive (view the lead, or start the next one).
     aiRenderSavedCard(savedName, existingRow && existingRow !== -1, savedRow);
   } catch (err) { toast('Save failed: ' + err.message, 'error'); }
+  // Release the double-submit guard on EVERY exit — the failure path and the
+  // duplicate-conflict early return included, or a user whose first attempt
+  // failed could never retry. On success aiRenderSavedCard has already nulled
+  // aiSession, so a fresh parse starts unguarded anyway.
+  finally { if (aiSession) aiSession._saving = false; }
 }
 
 // A compact confirmation shown in place of the parse card after a save, so the
@@ -10209,11 +10399,16 @@ async function commandSend(text) {
 
     // A confirmable mutating action — show what it WILL do + action buttons.
     if (data.preview) {
+      // encodeURIComponent leaves the apostrophe unescaped (it's an unreserved
+      // mark), so a command like "mark sharma's traders hot" closed the quoted
+      // attribute early and left the handler as malformed JS — Confirm/Edit did
+      // nothing at all. %27 round-trips cleanly through decodeURIComponent.
+      const encText = encodeURIComponent(text).replace(/'/g, '%27');
       chatReplaceLastBot(
         `<div class="cmd-confirm-q">Confirm this?</div>${cmdHtml(data.message)}` +
         `<div class="cmd-confirm-actions">
-           <button class="btn btn-primary" onclick="confirmCommand(this,'${encodeURIComponent(text)}')">✅ Confirm</button>
-           <button class="btn btn-ghost" onclick="editCommand(this,'${encodeURIComponent(text)}')">✏️ Edit</button>
+           <button class="btn btn-primary" onclick="confirmCommand(this,'${encText}')">✅ Confirm</button>
+           <button class="btn btn-ghost" onclick="editCommand(this,'${encText}')">✏️ Edit</button>
            <button class="btn btn-ghost" onclick="cancelCommand(this)">Cancel</button>
          </div>`);
       return;

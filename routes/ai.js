@@ -643,6 +643,12 @@ router.post('/ai/clarify', authMiddleware, async (req, res, next) => {
   try {
     const augmented = `${originalText}\n[Clarification for ${field}: ${answer}]`;
     const result    = await runUnderstandingPipeline(augmented, teamId, req.user.username, sessionId || uuidv4());
+    // When every fallback model fails the pipeline returns { error, fallback }
+    // with no `parsed` key. Sending that as a 200 made the client hand it to
+    // renderUnderstandingCard, which destructures `parsed` and threw
+    // "Cannot read properties of undefined" straight into the user's face.
+    // /ai/understand already guards this way; clarify never did.
+    if (result.error) return res.status(422).json(result);
     res.json(result);
   } catch (err) { next(err); }
 });

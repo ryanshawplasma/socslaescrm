@@ -749,8 +749,17 @@ async function getLeads(limit = null, offset = 0) {
     FROM leads ORDER BY id ASC${paging}
   `, params);
 
-  const { rows: allItems }    = await pool.query(`SELECT * FROM lead_items    ORDER BY lead_id, id ASC`);
-  const { rows: allContacts } = await pool.query(`SELECT * FROM lead_contacts ORDER BY lead_id, id ASC`);
+  // Scope the item/contact fetch to the leads actually being returned. The old
+  // unqualified SELECT * pulled every lead_items / lead_contacts row in the
+  // whole database and discarded all but these — cost that grew with total
+  // system size regardless of the `limit` above. getLeadsForUser was fixed this
+  // way already; getLeads (used by admin views and getStats) was missed.
+  const leadIds = rows.map(r => r.rowIndex);
+  let allItems = [], allContacts = [];
+  if (leadIds.length) {
+    ({ rows: allItems }    = await pool.query(`SELECT * FROM lead_items    WHERE lead_id = ANY($1) ORDER BY lead_id, id ASC`, [leadIds]));
+    ({ rows: allContacts } = await pool.query(`SELECT * FROM lead_contacts WHERE lead_id = ANY($1) ORDER BY lead_id, id ASC`, [leadIds]));
+  }
 
   const itemsByLead = {};
   for (const item of allItems) {
@@ -787,7 +796,24 @@ async function getLeadsForUser(displayName) {
       lead_type, created_by, assigned_to, last_updated, created_at, mapped_stage, stage_number,
       COALESCE(bucket,'working') AS bucket
     FROM leads
-    WHERE created_by = $1
+    WHERE (
+            created_by = $1
+            -- A lead stamped with a team_id belongs to that team, so the creator
+            -- only keeps sight of it while they are still an active member.
+            -- Without this clause a removed salesperson could switch to their
+            -- Personal workspace and still read every lead they had ever entered
+            -- for the company. Personal leads (team_id IS NULL) are unaffected.
+            AND (
+              team_id IS NULL
+              OR team_id IN (
+                SELECT tm.team_id
+                  FROM team_members tm
+                  JOIN users u ON u.id = tm.user_id
+                 WHERE LOWER(u.display_name) = LOWER($1)
+                   AND tm.status = 'active'
+              )
+            )
+          )
        OR id IN (SELECT lead_id FROM lead_access WHERE user_display_name = $2)
     ORDER BY id ASC
   `, [displayName, displayName]);
@@ -898,7 +924,15 @@ async function addLead(data, createdBy = '') {
   const contactNum     = data.contact          || (primaryContact && primaryContact.contact)     || '';
   const designation    = data.designation      || (primaryContact && primaryContact.designation) || '';
 
-  const { rows: [newRow] } = await pool.query(`
+  // A lead, its products and its extra contacts are ONE record as far as the
+  // user is concerned, so they commit together or not at all. Previously these
+  // were separate autocommitting pool.query calls: a failure partway through the
+  // item loop (pool exhaustion — max 5 connections — or a network blip) left a
+  // committed lead with some or none of its products, the caller saw a bare 500,
+  // and retrying created a duplicate. updateLead/deleteLead already work this
+  // way; addLead was the one write path that never got the same treatment.
+  return await withTransaction(async (client) => {
+  const { rows: [newRow] } = await client.query(`
     INSERT INTO leads
       (factory_number, factory_name, person_in_charge, contact, designation, product,
        quantity, rate, stage, follow_up, notes, area, lead_type, created_by,
@@ -931,13 +965,13 @@ async function addLead(data, createdBy = '') {
 
   if (items.length) {
     for (const item of items) {
-      await pool.query(
+      await client.query(
         `INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES ($1,$2,$3,$4)`,
         [leadId, item.product || '', item.quantity || '', item.rate || '']
       );
     }
   } else if (data.product || flat.product) {
-    await pool.query(
+    await client.query(
       `INSERT INTO lead_items (lead_id, product, quantity, rate) VALUES ($1,$2,$3,$4)`,
       [leadId, flat.product || '', flat.quantity || '', flat.rate || '']
     );
@@ -947,7 +981,7 @@ async function addLead(data, createdBy = '') {
   if (Array.isArray(data.contacts) && data.contacts.length > 1) {
     for (const c of data.contacts.slice(1)) {
       if (c.person_name || c.contact) {
-        await pool.query(
+        await client.query(
           `INSERT INTO lead_contacts (lead_id, person_name, contact, designation) VALUES ($1,$2,$3,$4)`,
           [leadId, c.person_name || '', c.contact || '', c.designation || '']
         );
@@ -956,6 +990,7 @@ async function addLead(data, createdBy = '') {
   }
 
   return { ok: true, rowIndex: leadId };
+  });
 }
 
 // ── WRITE: bulk import (Excel / Google Sheets) ───────────────
@@ -976,6 +1011,10 @@ async function importLeads(rows, defaultCreatedBy, teamId, listId, bucket = 'wor
   const now = nowIST();
   let added = 0;
   const skipped = [];
+  // Rows that were valid but could not be written (constraint, connection blip).
+  // Reported separately from `skipped` so the caller can tell "we chose not to
+  // import this" apart from "this one genuinely failed".
+  const failed = [];
 
   for (let i = 0; i < rows.length; i++) {
     const r    = rows[i] || {};
@@ -988,7 +1027,14 @@ async function importLeads(rows, defaultCreatedBy, teamId, listId, bucket = 'wor
     const numKey = num.toLowerCase(), nameKey = name.toLowerCase();
     if (numKey && b.nums.has(numKey))            { skipped.push({ row: i + 1, reason: `duplicate factory number "${num}"` }); continue; }
     if (!numKey && nameKey && b.names.has(nameKey)) { skipped.push({ row: i + 1, reason: `duplicate factory name "${name}"` }); continue; }
-    const { rows: [newRow] } = await pool.query(`
+    // Isolate the row. Previously an INSERT failure threw straight out of the
+    // loop: every row before it stayed committed (each statement autocommits),
+    // but the caller saw only an error and told the user the import failed —
+    // so they would re-run it and duplicate everything that had landed. Now one
+    // bad row is recorded and the remaining rows still import.
+    let newRow;
+    try {
+      ({ rows: [newRow] } = await pool.query(`
       INSERT INTO leads
         (factory_number, factory_name, person_in_charge, contact, designation, product,
          quantity, rate, stage, follow_up, notes, area, lead_type, created_by,
@@ -1013,7 +1059,12 @@ async function importLeads(rows, defaultCreatedBy, teamId, listId, bucket = 'wor
       r.stage_number != null && r.stage_number !== '' ? String(r.stage_number) : '',
       teamId || null,
       dest,
-    ]);
+    ]));
+    } catch (e) {
+      failed.push({ row: i + 1, reason: (e && e.message) || 'could not be saved' });
+      console.warn(`[db] import row ${i + 1} failed:`, e && e.message);
+      continue;
+    }
 
     // Persist every product as its own line item. A multi-product import row
     // arrives with items[] (one per product); a single-product row falls back to
@@ -1043,7 +1094,7 @@ async function importLeads(rows, defaultCreatedBy, teamId, listId, bucket = 'wor
     added++;
   }
 
-  return { added, skipped, total: rows.length };
+  return { added, skipped, failed, total: rows.length };
 }
 
 // ── WRITE: update an existing lead ───────────────────────────
@@ -1126,6 +1177,14 @@ async function deleteLead(rowIndex) {
     await client.query(`DELETE FROM lead_photos     WHERE lead_id = $1`, [rowIndex]);
     await client.query(`DELETE FROM lead_access      WHERE lead_id = $1`, [rowIndex]);
     await client.query(`DELETE FROM lead_list_items WHERE lead_id = $1`, [rowIndex]);
+    // team_tasks.lead_id has no FK either, so a task attached to this lead would
+    // keep pointing at a row that no longer exists and its jump-to-lead link
+    // would dead-end. Detach rather than delete — the task itself is still real
+    // work someone was assigned.
+    // No .catch() here on purpose: inside a transaction a swallowed error leaves
+    // Postgres in an aborted state and every later statement (including COMMIT)
+    // fails anyway. Let it roll the whole delete back instead.
+    await client.query(`UPDATE team_tasks SET lead_id = NULL WHERE lead_id = $1`, [rowIndex]);
     await client.query(`DELETE FROM leads            WHERE id = $1`, [rowIndex]);
   });
   return { ok: true };
@@ -1463,6 +1522,17 @@ async function updateUserName(userId, newName) {
     await client.query(`UPDATE team_messages      SET sender            = $1 WHERE sender            = $2`, [newName, oldName]);
     await client.query(`UPDATE lead_share_requests SET requester        = $1 WHERE requester         = $2`, [newName, oldName]);
     await client.query(`UPDATE lead_share_requests SET owner            = $1 WHERE owner             = $2`, [newName, oldName]);
+    // Personal lists and catalog products are owner-keyed the same way, and were
+    // missed here: after a rename they were looked up under the NEW name, so
+    // they vanished from "My Lists"/"My Products" and canManageList/
+    // canManageProduct started returning 403 for the person who created them.
+    // Worse, the vacated old name can later be claimed by someone else, who
+    // would then inherit them.
+    await client.query(`UPDATE lead_lists         SET owner             = $1 WHERE LOWER(owner) = LOWER($2)`, [newName, oldName]);
+    await client.query(`UPDATE products           SET owner             = $1 WHERE LOWER(owner) = LOWER($2)`, [newName, oldName]);
+    // Timelines should read with the current name too, not the pre-rename one.
+    await client.query(`UPDATE lead_activities    SET performed_by      = $1 WHERE performed_by = $2`, [newName, oldName]);
+    await client.query(`UPDATE lead_history       SET changed_by        = $1 WHERE changed_by   = $2`, [newName, oldName]);
   });
   return { ok: true };
 }

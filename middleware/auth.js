@@ -154,19 +154,30 @@ async function requireLeadAccess(req, res, next) {
       return next();
     }
 
-    const hasAccess = lead.created_by === req.user.username ||
+    // A lead carrying a team_id belongs to that TEAM, not to whoever typed it
+    // in. Creator access must therefore be conditional on STILL being an active
+    // member of that team — matching this alone on created_by meant a
+    // salesperson removed from the company kept full read/edit/delete rights
+    // over every lead they had ever entered for it, indefinitely, just by
+    // switching the app to their Personal workspace.
+    // Personal leads (no team_id) are unaffected: their creator always owns them.
+    let member = null;
+    if (lead.team_id) {
+      const user = await db.getUserByName(req.user.username);
+      if (user) member = await db.getTeamMember(lead.team_id, user.id);
+    }
+    const activeMember = !lead.team_id || !!(member && member.status === 'active');
+
+    // An explicit share (lead_access) is a deliberate per-person grant, so it
+    // still stands on its own — revoke the share to revoke that access.
+    const hasAccess =
+      (lead.created_by === req.user.username && activeMember) ||
       await db.userHasLeadAccess(leadId, req.user.username);
     if (hasAccess) return next();
 
-    // Team leads: owner/admin/manager of the lead's team can edit
-    if (lead.team_id) {
-      const user = await db.getUserByName(req.user.username);
-      if (user) {
-        const member = await db.getTeamMember(lead.team_id, user.id);
-        if (member && member.status === 'active' && ['owner', 'admin', 'manager'].includes(member.role)) {
-          return next();
-        }
-      }
+    // Team leads: owner/admin/manager of the lead's team can edit.
+    if (member && member.status === 'active' && ['owner', 'admin', 'manager'].includes(member.role)) {
+      return next();
     }
     return res.status(403).json({ error: 'Forbidden', code: 'no_lead_access' });
   } catch (err) {

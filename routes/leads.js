@@ -173,6 +173,13 @@ router.get('/leads', authMiddleware, async (req, res, next) => {
 // ── POST /api/leads ───────────────────────────────────────────
 router.post('/leads', authMiddleware, noGuest, async (req, res, next) => {
   try {
+    // Every lead needs at least one identifier. Without this a blank POST
+    // created a nameless, numberless row that rendered as "—" everywhere and
+    // was effectively only findable in order to delete it.
+    if (!String(req.body?.factory_name || '').trim() &&
+        !String(req.body?.factory_number || '').trim()) {
+      return res.status(400).json({ error: 'A name or number is required' });
+    }
     // Team scoping: honor a client-supplied team_id only for active members —
     // otherwise a user could write into any team, and a stale dest lands in an
     // ex-team. Mirrors the import path's membership check.
@@ -215,13 +222,19 @@ router.put('/leads/:row', authMiddleware, noGuest, requireLeadAccess, async (req
     const before = await db.getLeadById(rowId);
     const result = await db.updateLead(rowId, req.body);
 
-    // Stage change → log specific activity
+    // Which team's activity feed this entry lands in is decided by the lead's
+    // ACTUAL team_id from the database — never by the request body. Trusting
+    // req.body.team_id let any user post arbitrary text into an unrelated team's
+    // activity feed by PUT-ing their own lead with someone else's team id
+    // (getTeamActivity filters on team_id alone), and POST /leads already
+    // validates team_id against active membership while this path never did.
+    const logTeamId = before?.team_id || null;
     if (req.body.stage) {
-      db.logLeadActivity(rowId, req.body.team_id || before?.team_id || null, 'stage_change',
+      db.logLeadActivity(rowId, logTeamId, 'stage_change',
         `Stage changed to ${req.body.stage}`,
         { stage: req.body.stage }, req.user.username).catch(() => {});
     } else {
-      db.logLeadActivity(rowId, req.body.team_id || before?.team_id || null, 'edit',
+      db.logLeadActivity(rowId, logTeamId, 'edit',
         `Lead updated by ${req.user.username}`, {}, req.user.username).catch(() => {});
     }
 
@@ -232,7 +245,7 @@ router.put('/leads/:row', authMiddleware, noGuest, requireLeadAccess, async (req
       if (newVal === undefined) continue;
       const oldVal = before ? String(before[field] ?? '') : '';
       if (String(newVal) === oldVal) continue;
-      db.logLeadHistory(rowId, req.user.username, field, oldVal, newVal, req.body.team_id || before?.team_id || null).catch(() => {});
+      db.logLeadHistory(rowId, req.user.username, field, oldVal, newVal, logTeamId).catch(() => {});
     }
 
     if (req.body.stage === 'Order Won') {
@@ -751,11 +764,20 @@ router.post('/leads/bulk-delete', authMiddleware, noGuest, async (req, res, next
     for (const id of ids) {
       const lead = await db.getLeadById(id);
       if (!lead) continue;
-      let allowed = req.user.role === 'admin' || lead.created_by === req.user.username;
-      if (!allowed && lead.team_id) {
+      // Deletes here are permanent (no soft-delete, no undo), so the creator
+      // shortcut is gated on STILL being an active member of the lead's team.
+      // Without that check a just-removed salesperson could hard-delete every
+      // lead they had ever entered for the company on their way out.
+      let member = null;
+      if (lead.team_id) {
         const user = await db.getUserByName(req.user.username);
-        const member = user && await db.getTeamMember(lead.team_id, user.id);
-        allowed = !!(member && member.status === 'active' && TEAM_MANAGER_ROLES.includes(member.role));
+        member = user && await db.getTeamMember(lead.team_id, user.id);
+      }
+      const activeMember = !lead.team_id || !!(member && member.status === 'active');
+      let allowed = req.user.role === 'admin'
+        || (lead.created_by === req.user.username && activeMember);
+      if (!allowed && member) {
+        allowed = !!(member.status === 'active' && TEAM_MANAGER_ROLES.includes(member.role));
       }
       if (!allowed) { denied++; continue; }
       await db.deleteLead(id);
@@ -1023,12 +1045,19 @@ async function requireLeadManage(req, res, next) {
     const lead = await db.getLeadById(leadId);
     if (!lead) return res.status(404).json({ error: 'Lead not found' });
     req.lead = lead;
-    if (req.user.role === 'admin' || lead.created_by === req.user.username) return next();
+    if (req.user.role === 'admin') return next();
+    // Sharing and visibility are the most sensitive things a non-admin can do to
+    // a lead — granting access hands another account ongoing read/write. Gate the
+    // owner shortcut on STILL being an active member of the lead's team, or a
+    // removed employee could keep handing their old company's leads to outsiders.
+    let member = null;
     if (lead.team_id) {
       const user = await db.getUserByName(req.user.username);
-      const member = user && await db.getTeamMember(lead.team_id, user.id);
-      if (member && member.status === 'active' && ['owner', 'admin'].includes(member.role)) return next();
+      member = user && await db.getTeamMember(lead.team_id, user.id);
     }
+    const activeMember = !lead.team_id || !!(member && member.status === 'active');
+    if (lead.created_by === req.user.username && activeMember) return next();
+    if (member && member.status === 'active' && ['owner', 'admin'].includes(member.role)) return next();
     return res.status(403).json({ error: 'Only the lead owner or an admin can manage sharing' });
   } catch (err) { next(err); }
 }
@@ -1043,6 +1072,18 @@ router.post('/leads/:id/access', authMiddleware, noGuest, requireLeadManage, asy
   const { user_display_name } = req.body || {};
   if (!user_display_name) return res.status(400).json({ error: 'user_display_name required' });
   try {
+    // Display names are globally unique across the whole install, so without a
+    // membership check any real name — including someone at an unrelated
+    // company — could be granted ongoing read/write on a team's lead. The client
+    // only ever offers teammates in its dropdown; this enforces the same rule on
+    // the API, which is what actually matters.
+    if (req.lead?.team_id) {
+      const grantee = await db.getUserByName(user_display_name);
+      const gm = grantee && await db.getTeamMember(req.lead.team_id, grantee.id);
+      if (!gm || gm.status !== 'active') {
+        return res.status(403).json({ error: 'You can only share with active members of this team' });
+      }
+    }
     const result = await db.grantLeadAccess(parseInt(req.params.id, 10), user_display_name, req.user.username);
     db.logLeadActivity(parseInt(req.params.id, 10), req.lead?.team_id || null, 'shared',
       `Shared with ${user_display_name} by ${req.user.username}`, {}, req.user.username).catch(() => {});

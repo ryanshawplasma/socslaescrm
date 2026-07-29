@@ -10,6 +10,7 @@ const axios   = require('axios');
 const db      = require('./db');
 
 const { globalErrorHandler } = require('./middleware/errors');
+const { verifyAccessToken }  = require('./middleware/auth');
 // Telegram integration is frozen — code archived under _archive/telegram.
 // Set TELEGRAM_ENABLED=true (and restore the module) to bring it back.
 
@@ -32,6 +33,13 @@ function requireProdSecrets() {
   // the normal access path), so it can't take the deploy down.
   if (!process.env.JWT_SECRET) {
     console.error('🚨 Refusing to start in production — JWT_SECRET is not set. Set it and redeploy.');
+    process.exit(1);
+  }
+  // Fail closed even if NODE_ENV is somehow unset: the dev fallback string is
+  // public in this repo, so signing real tokens with it would let anyone forge
+  // an admin session.
+  if (process.env.JWT_SECRET === 'dev_only_insecure_secret_change_me') {
+    console.error('🚨 Refusing to start — JWT_SECRET is still the public development value.');
     process.exit(1);
   }
   if (!process.env.ADMIN_PASS) {
@@ -109,13 +117,53 @@ function pruneStaleAgents() {
 }
 setInterval(pruneStaleAgents, 60 * 1000).unref();
 
-io.on('connection', (socket) => {
+// Live location is staff PII. Every socket must present a valid access token,
+// and both the snapshot and the broadcasts are scoped to the sender's own team —
+// without this, anyone who opened a socket to the public URL received the real
+// names + live GPS of every tracked rep across EVERY tenant, and could forge a
+// position for any of them (agentId was a guessable client-supplied string).
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+  const user  = verifyAccessToken(token);
+  if (!user || user.role === 'guest') return next(new Error('unauthorized'));
+  socket.user = user;
+  next();
+});
+
+// Resolve the caller's team once per connection so broadcasts stay tenant-scoped.
+async function socketTeamRoom(user) {
+  try {
+    const dbUser = await db.getUserByName(user.username);
+    if (!dbUser) return null;
+    const teams = await db.getUserTeams(dbUser.id);
+    return teams && teams.length ? `team:${teams[0].id}` : `user:${dbUser.id}`;
+  } catch { return null; }
+}
+
+io.on('connection', async (socket) => {
   pruneStaleAgents();
-  if (Object.keys(agentLocations).length) socket.emit('agents-snapshot', agentLocations);
-  socket.on('update-agent-location', ({ agentId, lat, lng, name, accuracy }) => {
-    if (!agentId || lat == null || lng == null) return;
-    agentLocations[agentId] = { agentId, lat, lng, name: name || agentId, accuracy: accuracy || 0, ts: Date.now() };
-    io.emit('agent-moved', agentLocations[agentId]);
+  const room = await socketTeamRoom(socket.user);
+  if (!room) return socket.disconnect(true);
+  socket.join(room);
+
+  // Snapshot only this room's agents.
+  const mine = {};
+  for (const [id, loc] of Object.entries(agentLocations)) if (loc.room === room) mine[id] = loc;
+  if (Object.keys(mine).length) socket.emit('agents-snapshot', mine);
+
+  socket.on('update-agent-location', ({ lat, lng, accuracy }) => {
+    if (lat == null || lng == null) return;
+    if (!Number.isFinite(+lat) || !Number.isFinite(+lng)) return;
+    // Identity comes from the VERIFIED token, never the client payload.
+    const agentId = `u:${socket.user.username}`;
+    agentLocations[agentId] = {
+      agentId, room,
+      name: socket.user.username,
+      lat: +lat, lng: +lng,
+      accuracy: Number(accuracy) || 0,
+      ts: Date.now(),
+    };
+    io.to(room).emit('agent-moved', agentLocations[agentId]);
   });
 });
 
@@ -172,6 +220,25 @@ function startKeepWarm() {
   setInterval(ping, 10 * 60 * 1000);   // 10 min < Render's ~15 min idle window
   console.log(`   Keep-warm   : ${url} every 10m`);
 }
+
+// Last-resort process nets. A single unhandled rejection anywhere (a stray
+// promise in a route, a socket handler) would otherwise terminate the process
+// and drop every in-flight request for every user.
+process.on('unhandledRejection', (reason) => {
+  console.error('[fatal] unhandled rejection:', reason && (reason.stack || reason.message || reason));
+});
+process.on('uncaughtException', (err) => {
+  console.error('[fatal] uncaught exception:', err && (err.stack || err.message));
+});
+// Render sends SIGTERM on every deploy — stop accepting connections and drain
+// the pool instead of severing in-flight requests.
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received — draining…');
+  httpServer.close(() => {
+    db.pool.end().catch(() => {}).finally(() => process.exit(0));
+  });
+  setTimeout(() => process.exit(0), 10000).unref();
+});
 
 startServer().catch(err => {
   console.error('🚨 Failed to start:', err.message);

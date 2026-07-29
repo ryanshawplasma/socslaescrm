@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Dive</title>
-  <link rel="icon" type="image/svg+xml" href="favicon.svg?v=4" />
+  <link rel="icon" type="image/svg+xml" href="favicon.svg?v=5" />
   <link rel="manifest" href="manifest.json" />
-  <meta name="theme-color" content="#3b82f6" />
+  <meta name="theme-color" content="#0C8CE9" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -18,7 +18,7 @@
        lazy-loaded on demand (dashboard/reports charts, import, map) via the
        ensureChart/ensureXLSX/ensureLeaflet loaders in app.js — off the startup
        critical path so the first paint isn't waiting on them. -->
-  <link rel="stylesheet" href="style.css?v=81" />
+  <link rel="stylesheet" href="style.css?v=82" />
   <script>(function(){var t=localStorage.getItem('crm_theme')||'light';var a=localStorage.getItem('crm_accent')||'';document.documentElement.setAttribute('data-theme',t);if(a)document.documentElement.setAttribute('data-accent',a);}());</script>
 </head>
 <body>
@@ -48,7 +48,7 @@
 
       <!-- Form panel -->
       <div class="login-main">
-      <div class="login-brand"><img src="favicon.svg?v=4" alt="" class="login-logo" /> Dive</div>
+      <div class="login-brand"><img src="favicon.svg?v=5" alt="" class="login-logo" /> Dive</div>
       <div class="login-tagline">The CRM that <b>learns how you talk</b> — type, speak or snap a photo.</div>
 
       <!-- ── Unlock / Welcome-back screen (trusted device) ──── -->
@@ -582,7 +582,7 @@
     <!-- ── Sidebar ─────────────────────────────────────────── -->
     <aside id="sidebar">
       <div class="sidebar-brand">
-        <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" width="20" height="20"><path d="M4 16 L10 10 L14 13.5 L20 6.5"/><path d="M15.5 6.5 L20 6.5 L20 11"/></svg></span>
+        <span class="brand-mark"><svg viewBox="0 0 32 32" width="20" height="20" aria-hidden="true"><rect x="5.4" y="17.2" width="4.6" height="9.4" rx="2.3" fill="#fff" opacity=".55"/><rect x="13.7" y="11.6" width="4.6" height="15" rx="2.3" fill="#fff" opacity=".78"/><rect x="22" y="5.2" width="4.6" height="21.4" rx="2.3" fill="#fff"/></svg></span>
         <span class="brand-text">
           <span class="brand-name">Dive</span>
           <span class="brand-tag">Smart Sales OS</span>
@@ -758,9 +758,13 @@
             <span class="dash-team-label">🏢 Showing</span>
             <select id="dash-team-filter" onchange="dashTeamChange(this.value)"></select>
           </div>
+          <!-- First-run panel: replaces the analytics below while the account is
+               still empty (rendered by renderFirstRun) -->
+          <div id="dash-firstrun" style="display:none"></div>
+
           <div class="stat-grid" id="stat-cards"></div>
 
-          <div class="row-2col">
+          <div class="row-2col" id="dash-charts-1">
             <div class="card">
               <div class="card-header"><h3>Pipeline by Stage</h3></div>
               <div class="chart-wrap"><canvas id="chart-stage"></canvas></div>
@@ -771,7 +775,7 @@
             </div>
           </div>
 
-          <div class="row-2col mt-16">
+          <div class="row-2col mt-16" id="dash-charts-2">
             <div class="card">
               <div class="card-header"><h3>Monthly Lead Trend</h3></div>
               <div class="chart-wrap"><canvas id="chart-monthly"></canvas></div>
@@ -782,7 +786,7 @@
             </div>
           </div>
 
-          <div class="card mt-16">
+          <div class="card mt-16" id="dash-recent-card">
             <div class="card-header">
               <h3>Recent Leads</h3>
               <a class="link-sm" data-page="leads">View all →</a>
@@ -807,7 +811,7 @@
             <div class="toolbar-actions">
               <button id="btn-manage-products" class="btn btn-ghost btn-sm" title="Manage your major items / products">📦 Products</button>
               <button id="btn-manage-lists" class="btn btn-ghost btn-sm" title="Create and manage lists">🏷️ Lists</button>
-              <button id="btn-cleanup" class="btn btn-ghost btn-sm" title="Fix imported leads: Proper-Case names/areas + snap products to your catalog">✨ Clean up</button>
+              <button id="btn-cleanup" class="btn btn-ghost btn-sm admin-only" title="Fix imported leads: Proper-Case names/areas + snap products to your catalog">✨ Clean up</button>
               <div class="col-menu-wrap">
                 <button id="btn-columns" class="btn btn-ghost btn-sm" title="Choose which columns to show" onclick="toggleColumnMenu(event)">⚙ Columns</button>
                 <div id="col-menu" class="col-menu hidden"></div>
@@ -1290,7 +1294,7 @@
 
   <script src="https://unpkg.com/@simplewebauthn/browser@8/dist/bundle/index.es5.umd.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=84"></script>
+  <script src="app.js?v=85"></script>
 
   <script>window.DIVE_SPLASH = { video:'dive-launch.mp4', tail:5, autoMs:1400, once:true };</script>
   <script src="dive-splash.js?v=2"></script>

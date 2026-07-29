@@ -31,6 +31,18 @@ const pool = new Pool({
   ssl: _dbSsl,
   max: 5,
   idleTimeoutMillis: 30000,
+  // Without these, a stuck query holds a pooled client forever; with max:5 a
+  // handful of them wedges the whole app.
+  connectionTimeoutMillis: 10000,
+  statement_timeout: 15000,
+});
+
+// pg emits 'error' on IDLE clients when the backend drops them (Aiven
+// maintenance, failover, hobby-tier restarts). Pool is an EventEmitter, so an
+// 'error' with no listener THROWS and takes the whole process down — which looks
+// like random unexplained outages plus a Render cold start for the next visitor.
+pool.on('error', (err) => {
+  console.error('[db] idle client error (recovered):', err && err.message);
 });
 
 // ── Helpers ─────────────────────────────────────────────────

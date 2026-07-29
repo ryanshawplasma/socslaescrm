@@ -1,11 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <linearGradient id="dp" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#5E6AD2"/>
-      <stop offset="1" stop-color="#818CF8"/>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#56C0F5"/>
+      <stop offset="1" stop-color="#0270C4"/>
     </linearGradient>
   </defs>
-  <rect width="32" height="32" rx="8" fill="#0f1024"/>
-  <path d="M7 20.5 L13 14.5 L17 18 L25 9.5" fill="none" stroke="url(#dp)" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M20 9.5 L25 9.5 L25 14.5" fill="none" stroke="url(#dp)" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect width="32" height="32" rx="9" fill="url(#sky)"/>
+  <!-- ascending growth bars — reads as sales momentum at any size -->
+  <rect x="7.4"  y="18.2" width="4"   height="7.4"  rx="2" fill="#fff" opacity=".55"/>
+  <rect x="14"   y="13.6" width="4"   height="12"   rx="2" fill="#fff" opacity=".78"/>
+  <rect x="20.6" y="8.2"  width="4"   height="17.4" rx="2" fill="#fff"/>
+  <!-- rising tick above the tallest bar -->
+  <path d="M20.4 6.6 L24.8 6.6 L24.8 11" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>
 </svg>

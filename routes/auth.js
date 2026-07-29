@@ -28,6 +28,22 @@ const ADMIN_PASS = process.env.ADMIN_PASS || '';
 const SALES_USER = process.env.SALES_USER || '';
 const SALES_PASS = process.env.SALES_PASS || '';
 
+// ONE message for every "we won't say why" auth failure. Using an identical
+// string for unknown-account and wrong-password keeps login from confirming
+// which usernames exist.
+const INVALID_CREDENTIALS = 'Invalid username or password';
+
+// Mask a submitted credential before it goes into security_logs. Users routinely
+// type an email, a phone number, or (by accident) their password into that box —
+// none of which should be retained in cleartext. Keeps just enough to correlate
+// repeat abuse from one source.
+function maskCredential(raw) {
+  const s = String(raw || '');
+  if (!s) return '';
+  const head = s.slice(0, 2);
+  return `${head}${'*'.repeat(Math.max(0, Math.min(s.length - 2, 6)))}(${s.length})`;
+}
+
 // Shared password strength check — min 8 chars with at least one letter and one number.
 function validatePassword(pw) {
   const s = String(pw || '');
@@ -80,8 +96,10 @@ router.post(['/auth/login', '/login'], loginLimiter, async (req, res, next) => {
 
     const user = await db.getUserByCredential(cred);
     if (!user) {
-      await db.logSecurity(null, 'login_failed', { credential: cred, reason: 'user_not_found' }, ip, ua, null, null);
-      return res.status(401).json({ error: 'Invalid credentials' });
+      // Log a MASKED credential — the raw value is often a real email/phone (or a
+      // password typed into the wrong box), which shouldn't sit in the log table.
+      await db.logSecurity(null, 'login_failed', { credential: maskCredential(cred), reason: 'user_not_found' }, ip, ua, null, null);
+      return res.status(401).json({ error: INVALID_CREDENTIALS });
     }
 
     if (user.locked_until && new Date(user.locked_until) > new Date()) {
@@ -110,12 +128,15 @@ router.post(['/auth/login', '/login'], loginLimiter, async (req, res, next) => {
       await db.logSecurity(user.id, 'login_failed', { reason: 'wrong_secret' }, ip, ua, null, null);
       const updated = await db.getUserByCredential(cred);
       const attempts = updated?.failed_attempts || 0;
-      const attemptsLeft = Math.max(0, 5 - attempts);
-      return res.status(401).json({
-        error: attemptsLeft > 0
-          ? `Invalid credentials. ${attemptsLeft} attempt${attemptsLeft !== 1 ? 's' : ''} remaining.`
-          : 'Account locked for 15 minutes due to too many failed attempts.',
-      });
+      // Deliberately the SAME message as the unknown-account path above. Telling a
+      // caller "3 attempts remaining" confirmed the username exists, turning login
+      // into an account-enumeration oracle. Only the actual lockout (after 5 tries,
+      // and behind the login rate limiter) reports itself, so a legitimate user
+      // still learns why they're blocked.
+      if (attempts >= 5) {
+        return res.status(423).json({ error: 'Account locked for 15 minutes due to too many failed attempts.' });
+      }
+      return res.status(401).json({ error: INVALID_CREDENTIALS });
     }
 
     await db.resetFailedAttempts(user.id);
@@ -308,7 +329,7 @@ router.post('/auth/forgot-password', resetLimiter, async (req, res, next) => {
   try {
     const user = await db.getUserByCredential(credential.trim());
     if (user) {
-      await db.logSecurity(user.id, 'reset_requested', { credential },
+      await db.logSecurity(user.id, 'reset_requested', { credential: maskCredential(credential) },
         getIP(req), req.headers['user-agent'] || '', null, null);
     }
     res.json({ message: 'If that account exists, your admin can reset your PIN from Team → Reset PIN.' });

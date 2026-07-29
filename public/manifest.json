@@ -4,12 +4,12 @@
   "description": "Dive — Smart Sales OS",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0f172a",
-  "theme_color": "#3b82f6",
+  "background_color": "#0B1F33",
+  "theme_color": "#0C8CE9",
   "orientation": "portrait-primary",
   "icons": [
     {
-      "src": "favicon.svg?v=4",
+      "src": "favicon.svg?v=5",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"

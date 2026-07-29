@@ -2798,7 +2798,9 @@ function upsertAgentMarker(agent) {
 // ── Socket.io connection ─────────────────────────────────────
 function initSocket() {
   if (_socket) return;
-  _socket = io();
+  // The server requires a verified token on the handshake and scopes live-agent
+  // broadcasts to your own team (see io.use in index.js).
+  _socket = io({ auth: { token: localStorage.getItem('crm_token') || '' } });
 
   _socket.on('agents-snapshot', (snapshot) => {
     Object.assign(agentData, snapshot);
@@ -3328,9 +3330,14 @@ function renderDashHero() {
     const bits = [];
     if (dueToday) bits.push(`<a class="hero-link" role="button" tabindex="0" onclick="state.fuFilter='today';navigate('followups')"><b class="hero-hot">${dueToday}</b> follow-up${dueToday>1?'s':''} due today</a>`);
     if (overdue)  bits.push(`<a class="hero-link" role="button" tabindex="0" onclick="state.fuFilter='overdue';navigate('followups')"><b class="hero-warn">${overdue}</b> overdue</a>`);
+    // "All caught up 🎉" is only true if there's actually something to be caught
+    // up ON — on an empty account it reads as the app congratulating you for
+    // having no data.
     sub.innerHTML = bits.length
       ? `${today} · ${bits.join(' · ')}`
-      : `${today} · You're all caught up — no follow-ups pending. 🎉`;
+      : (state.leads.length
+          ? `${today} · You're all caught up — no follow-ups pending. 🎉`
+          : `${today} · Let's add your first ${escHtml(T('entity').toLowerCase())}.`);
   }
 }
 
@@ -3367,8 +3374,51 @@ function renderDashTeamRow() {
     `<option value="__none__" ${state.filterTeam === '__none__' ? 'selected' : ''}>— No team —</option>`;
 }
 
+// ── First run ─────────────────────────────────────────────────
+// A brand-new account has no leads, so the dashboard would otherwise be four
+// zeroes, two blank charts and "No leads found" — while cheerfully claiming
+// "you're all caught up". Instead we show the three things that actually work
+// and are otherwise undiscoverable: add a lead, build the catalog with AI, and
+// the natural-language chat. Returns true when the first-run view is showing.
+function renderFirstRun() {
+  const panel = document.getElementById('dash-firstrun');
+  if (!panel) return false;
+  const empty = !state.leads.length && state.role !== 'guest';
+  const hide  = ['dash-charts-1', 'dash-charts-2', 'dash-recent-card'];
+  hide.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = empty ? 'none' : ''; });
+  const cards = document.getElementById('stat-cards');
+  if (cards) cards.style.display = empty ? 'none' : '';
+  panel.style.display = empty ? '' : 'none';
+  if (!empty) return false;
+
+  const ent = T('entity').toLowerCase();
+  const step = (n, icon, title, body, label, onclick) => `
+    <div class="fr-step">
+      <div class="fr-step-n">${n}</div>
+      <div class="fr-step-body">
+        <div class="fr-step-title">${icon} ${escHtml(title)}</div>
+        <div class="fr-step-sub">${escHtml(body)}</div>
+      </div>
+      <button class="btn btn-primary btn-sm fr-step-btn" onclick="${onclick}">${escHtml(label)}</button>
+    </div>`;
+  panel.innerHTML = `
+    <div class="card fr-card">
+      <div class="fr-head">
+        <div class="fr-title">Let's set up your ${escHtml(biz().label)} CRM</div>
+        <div class="fr-sub">Three quick steps — about a minute.</div>
+      </div>
+      ${step(1, '➕', `Add your first ${ent}`, 'Or just type it in plain language and the AI fills in the fields.', `Add ${ent}`, 'openAddModal()')}
+      ${step(2, '📦', 'Build your item list', `Let AI suggest the items a ${biz().label} business usually sells — then edit as you like.`, 'Suggest items', 'openProductsModal()')}
+      ${step(3, '💬', 'Try the AI chat', `Type "${escHtml(String(biz().example || '').slice(0, 52))}…" and watch it become a ${ent}.`, 'Open chat', "navigate('chat')")}
+      <div class="fr-foot">Got existing data? <a href="#" onclick="event.preventDefault();openImportModal()">Import from Excel or Google Sheets →</a></div>
+    </div>`;
+  return true;
+}
+
 function renderDashboard() {
   renderDashTeamRow();
+  // Empty account → guided setup instead of a wall of zeros.
+  if (renderFirstRun()) { renderDashHero(); return; }
   // Recompute against the Team scope so every KPI + chart on this page reflects
   // the selected Team (whole company when nothing is selected).
   const s = state.filterTeam ? computeStats(dashScopedLeads()) : state.stats;
@@ -3417,6 +3467,10 @@ function renderDashboard() {
 
   // Leads by Product — horizontal bar sorted by count
   const prodEntries = Object.entries(s.by_product || {}).sort(([,a],[,b]) => b - a);
+  // Hide the whole card when there's nothing to plot — an empty titled box reads
+  // as a broken chart (the monthly/area charts already do this).
+  const prodCard = document.getElementById('chart-product')?.closest('.card');
+  if (prodCard) prodCard.style.display = prodEntries.length ? '' : 'none';
   renderChart('chart-product', 'hbar',
     prodEntries.map(([k]) => k),
     prodEntries.map(([,v]) => v),
@@ -4079,7 +4133,9 @@ async function bulkDeleteSelected() {
 // A readable, stacked card per lead — far easier than the wide side-by-side
 // table on a phone/tablet. Tap a card to edit.
 function buildCards(leads) {
-  if (!leads.length) return emptyState('No leads match your filters.');
+  if (!leads.length) return emptyState(state.leads.length
+    ? 'No leads match your filters.'
+    : `No ${T('entityPlural').toLowerCase()} yet — tap ➕ Add to create your first one.`);
   const showOwner = state.role === 'admin' || !!state.activeOrgId;
   const cards = leads.map(l => {
     const typeCls  = TYPE_CARD_CLASS[l.lead_type] || '';
@@ -4594,7 +4650,9 @@ function renderToday() {
     const n = overdue.length + dueToday.length;
     sub.innerHTML = n
       ? `${dateStr} · <b>${n}</b> ${n === 1 ? 'lead needs' : 'leads need'} a follow-up now`
-      : `${dateStr} · You're all caught up — nothing due. 🎉`;
+      : (state.leads.length
+          ? `${dateStr} · You're all caught up — nothing due. 🎉`
+          : `${dateStr} · Let's get your first ${escHtml(T('entity').toLowerCase())} in.`);
   }
 
   // Quick-jump chips → the relevant filtered screen.
@@ -4613,12 +4671,20 @@ function renderToday() {
   const actionable = [...overdue, ...dueToday].sort((a, b) => (parseDMY(a.follow_up) || 0) - (parseDMY(b.follow_up) || 0));
   const body = document.getElementById('today-body');
   if (body) {
+    // Distinguish "you've cleared your list" from "you have no data at all" —
+    // the second case must offer a way FORWARD, not a link to another empty screen.
+    const ent = escHtml(T('entity').toLowerCase());
     body.innerHTML = actionable.length
       ? buildFollowupCards(actionable)
-      : `<div class="today-clear"><div class="today-clear-emoji">🎉</div>
-           <div>Nothing needs a follow-up right now.</div>
-           <button class="btn btn-ghost btn-sm" onclick="navigate('leads')">Browse all ${escHtml(T('entity').toLowerCase())}s →</button>
-         </div>`;
+      : (state.leads.length
+          ? `<div class="today-clear"><div class="today-clear-emoji">🎉</div>
+               <div>Nothing needs a follow-up right now.</div>
+               <button class="btn btn-ghost btn-sm" onclick="navigate('leads')">Browse all ${ent}s →</button>
+             </div>`
+          : `<div class="today-clear"><div class="today-clear-emoji">👋</div>
+               <div>Nothing here yet — add your first ${ent} and give it a follow-up date.</div>
+               <button class="btn btn-primary btn-sm" onclick="openAddModal()">➕ Add ${ent}</button>
+             </div>`);
   }
 }
 function todayChip(icon, value, label, onclick, tone) {
@@ -4676,7 +4742,9 @@ function renderFollowups() {
 
   document.getElementById('followup-table').innerHTML = filtered.length
     ? buildFollowupCards(filtered)
-    : emptyState('No follow-ups for this filter');
+    : emptyState(state.leads.length
+        ? 'No follow-ups for this filter'
+        : `No follow-ups yet — add a ${T('entity').toLowerCase()} with a follow-up date and it appears here.`);
 }
 
 // ── Follow-up action cards ──────────────────────────────────
@@ -4948,6 +5016,9 @@ function renderReports() {
   // Revenue by Product — horizontal bar, ₹ formatted tooltip
   const rev        = s.by_product_revenue || {};
   const revEntries = Object.entries(rev).filter(([,v]) => v > 0).sort(([,a],[,b]) => b - a);
+  // Same as above: no revenue data → hide the card rather than leave a blank box.
+  const revCard = document.getElementById('chart-revenue')?.closest('.card');
+  if (revCard) revCard.style.display = revEntries.length ? '' : 'none';
   if (revEntries.length) {
     renderChart('chart-revenue', 'hbar',
       revEntries.map(([k]) => k),
@@ -8732,7 +8803,14 @@ function wsRenderCreate() {
       <div class="form-group" style="margin-bottom:16px">
         <label>Business Type</label>
         <select id="ws-create-biz" class="ws-input">
-          ${BUSINESS_KEYS.map(k => `<option value="${k}" ${k === 'factory' ? 'selected' : ''}>${escHtml(BUSINESS_TYPES[k].icon + ' ' + BUSINESS_TYPES[k].label)}</option>`).join('')}
+          ${(() => {
+            // Default to the industry the user already chose (at sign-up or in
+            // Settings) — NOT a hardcoded 'factory'. Creating a team is the
+            // natural next step, and pre-selecting factory silently reverted
+            // every label back to Factory/Person in Charge/Area.
+            const _cur = (state.me && BUSINESS_KEYS.includes(state.me.business_type)) ? state.me.business_type : 'factory';
+            return BUSINESS_KEYS.map(k => `<option value="${k}" ${k === _cur ? 'selected' : ''}>${escHtml(BUSINESS_TYPES[k].icon + ' ' + BUSINESS_TYPES[k].label)}</option>`).join('');
+          })()}
         </select>
         <p style="font-size:12px;color:var(--text-muted);margin:6px 0 0;line-height:1.4">You can change this anytime in Settings.</p>
       </div>

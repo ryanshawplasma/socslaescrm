@@ -9,12 +9,12 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg:      #0f172a;
-      --card:    #1e293b;
-      --border:  #334155;
+      --bg:      #08121C;
+      --card:    #101E2B;
+      --border:  #1E3244;
       --text:    #f1f5f9;
       --muted:   #94a3b8;
-      --primary: #3b82f6;
+      --primary: #0C8CE9;
       --success: #10b981;
       --danger:  #ef4444;
     }
@@ -154,7 +154,7 @@
 </head>
 <body>
 
-  <div class="brand"><img src="favicon.svg?v=4" alt="" style="width:22px;height:22px;vertical-align:-4px;margin-right:2px"/> Dive</div>
+  <div class="brand"><img src="favicon.svg?v=5" alt="" style="width:22px;height:22px;vertical-align:-4px;margin-right:2px"/> Dive</div>
 
   <!-- ── Setup Screen ──────────────────────────────────── -->
   <div id="screen-setup" class="card">
@@ -197,7 +197,15 @@
   </div>
 
   <script>
-    const socket  = io();
+    // Live location is staff PII — the server now requires a valid access token
+    // on the socket handshake and scopes broadcasts to your own team.
+    const _tok = localStorage.getItem('crm_token') || localStorage.getItem('crm_access_token') || '';
+    const socket = io({ auth: { token: _tok } });
+    socket.on('connect_error', (e) => {
+      if (String(e && e.message) === 'unauthorized') {
+        setStatus('error', 'Please sign in to the CRM on this device first');
+      }
+    });
     let watchId   = null;
     let updateCount = 0;
 

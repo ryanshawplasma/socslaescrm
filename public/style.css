@@ -6,20 +6,21 @@
      scrollbars, checkboxes) in the light scheme — otherwise the OS defaults
      the popup list to white/black regardless of our custom dark theme. */
   color-scheme: light;
-  /* Linear (default) — indigo palette */
-  --bg:            #F7F7F8;
-  --sidebar-bg:    #16161A;
+  /* Dive (default) — premium sky-blue palette. Neutrals carry a slight blue
+     bias so greys read as chosen rather than inherited. */
+  --bg:            #F4F8FC;
+  --sidebar-bg:    #0B1F33;
   --sidebar-w:     220px;
   --topbar-h:      60px;
   --card-bg:       #ffffff;
-  --border:        #E5E5E7;
-  --text:          #141418;
-  --text-muted:    #52525C;
-  --primary:       #5E6AD2;
-  --primary-dk:    #4C59C4;
-  --primary-muted: rgba(94,106,210,.15);
-  --primary-glow:  rgba(94,106,210,.1);
-  --primary-lt:    #818CF8;
+  --border:        #DEE9F2;
+  --text:          #0C1B2A;
+  --text-muted:    #55708C;
+  --primary:       #0C8CE9;
+  --primary-dk:    #0270C4;
+  --primary-muted: rgba(12,140,233,.15);
+  --primary-glow:  rgba(12,140,233,.12);
+  --primary-lt:    #56C0F5;
   --primary-fg:    #ffffff;
   --success:       #10b981;
   --warning:       #f59e0b;
@@ -33,17 +34,17 @@
 /* ── Dark Theme (Linear dark — default) ─────────────────── */
 [data-theme="dark"] {
   color-scheme: dark;
-  --bg:            #141414;
-  --sidebar-bg:    #0E0E10;
-  --card-bg:       #1C1C1E;
-  --border:        #2A2A2E;
-  --text:          #EBEBEF;
-  --text-muted:    #8A8A9A;
-  --primary:       #7C84E0;
-  --primary-dk:    #6B73D4;
-  --primary-muted: rgba(124,132,224,.15);
-  --primary-glow:  rgba(124,132,224,.1);
-  --primary-lt:    #A5ADFF;
+  --bg:            #08121C;
+  --sidebar-bg:    #050D16;
+  --card-bg:       #101E2B;
+  --border:        #1E3244;
+  --text:          #E4EFF8;
+  --text-muted:    #8CA6BE;
+  --primary:       #38BDF8;
+  --primary-dk:    #0EA5E9;
+  --primary-muted: rgba(56,189,248,.16);
+  --primary-glow:  rgba(56,189,248,.12);
+  --primary-lt:    #7DD3FC;
   --shadow:        0 1px 2px rgba(0,0,0,.4), 0 4px 14px -4px rgba(0,0,0,.5);
   --shadow-md:     0 16px 44px -8px rgba(0,0,0,.7);
 }
@@ -3805,6 +3806,35 @@ tr.row-cold:hover td { background: #dbeafe; }
   padding: 22px 24px; box-shadow: 0 24px 70px rgba(0,0,0,.35);
 }
 .products-modal-hint { font-size: 12.5px; color: var(--text-muted); margin: 0 0 14px; line-height: 1.5; }
+
+/* ── First-run setup panel (empty dashboard) ────────────────── */
+.fr-card { padding: 20px; }
+.fr-head { margin-bottom: 16px; }
+.fr-title { font-size: 17px; font-weight: 700; color: var(--text); letter-spacing: -.2px; }
+.fr-sub   { font-size: 13px; color: var(--text-muted); margin-top: 3px; }
+.fr-step {
+  display: flex; align-items: center; gap: 13px; padding: 13px 0;
+  border-top: 1px solid var(--border);
+}
+.fr-step-n {
+  flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; color: var(--primary-fg);
+  background: linear-gradient(135deg, var(--primary), var(--primary-lt));
+}
+.fr-step-body { flex: 1; min-width: 0; }
+.fr-step-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.fr-step-sub   { font-size: 12.5px; color: var(--text-muted); margin-top: 2px; line-height: 1.45; }
+.fr-step-btn   { flex-shrink: 0; }
+.fr-foot {
+  border-top: 1px solid var(--border); margin-top: 4px; padding-top: 13px;
+  font-size: 12.5px; color: var(--text-muted);
+}
+.fr-foot a { color: var(--primary); text-decoration: none; font-weight: 600; }
+@media (max-width: 640px) {
+  .fr-step { flex-wrap: wrap; }
+  .fr-step-btn { width: 100%; margin-left: 39px; }
+}
 
 /* ── Industry picker (sign-up) ──────────────────────────────── */
 .ind-grid {

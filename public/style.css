@@ -4933,8 +4933,22 @@ button.tag-chip:hover { filter: brightness(1.06); }
 /* Smooth in-page scrolling + contained overscroll (no page-bounce leaking). */
 html { scroll-behavior: smooth; }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
-#content, .ld-body, .lead-cards, .fu-list, .table-scroll, .chat-messages, #ai-card-area {
+#content, .ld-body, .lead-cards, .fu-list, .chat-messages, #ai-card-area {
   overscroll-behavior: contain;
+}
+
+/* .table-scroll is deliberately NOT in the list above — it only scrolls
+   sideways, but it is a scroll container on BOTH axes: CSS computes
+   `overflow-y: visible` to `auto` whenever the other axis isn't visible. So a
+   blanket `contain` told the browser "vertical scrolling stops here" on a box
+   that can never scroll vertically, and every vertical drag that began on a
+   table was swallowed instead of chaining up to #content — the page simply
+   refused to scroll. Bites on phones (Leads/Database/Team/Workspace), where the
+   table is wide enough to actually overflow sideways and covers most of the
+   screen. Contain the axis that really scrolls; let the other one chain. */
+.table-scroll {
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
 }
 
 /* Themed text selection + input carets. */
